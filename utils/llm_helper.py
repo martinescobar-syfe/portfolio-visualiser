@@ -128,3 +128,72 @@ def get_gemini_recommendation(api_key, client_profile):
         return f"Error generating recommendation: All models failed. Last error: {str(last_error)}"
     except Exception as e:
         return f"Error configuring API: {str(e)}"
+
+def parse_recommendation_table(recommendation_text):
+    """
+    Parses the Markdown table from the AI recommendation to extract products and weights.
+    Returns a dictionary of {Ticker: Weight(decimal)}.
+    """
+    import re
+    
+    # Mapping from AI Product Name to Ticker in PV_sec_list.csv
+    product_map = {
+        "Core Equity100": "Core Equity100",
+        "Core Growth": "Core Growth",
+        "Core Balanced": "Core Balanced",
+        "Core Defensive": "Core Defensive",
+        "REIT+": "REIT 100", # Default to 100 if generic
+        "REIT+ 100% REITs": "REIT 100",
+        "REIT+ with Risk Management": "REIT Risk Managed",
+        "Income+ Preserve": "Income Preserve",
+        "Income+ Enhance": "Income Enhance",
+        "Disruptive Technology": "Disruptive Technology",
+        "Healthcare Innovation": "Healthcare Innovation",
+        "ESG & Clean Energy": "ESG & Clean Energy",
+        "China Growth": "China Growth",
+        "Cash+ Flexi (SGD)": "Cash SGD flexi",
+        "Cash+ Flexi (USD)": "Cash USD flexi",
+        "Cash+ Guaranteed": "Cash SGD guaranteed", # Proxy
+        # Add more mappings as needed
+    }
+    
+    allocations = {}
+    
+    try:
+        lines = recommendation_text.split('\n')
+        for line in lines:
+            # Look for table rows: | Goal | ... | Product | Allocation | ... |
+            if '|' in line and '---' not in line and 'Goal Bucket' not in line:
+                parts = [p.strip() for p in line.split('|') if p.strip()]
+                if len(parts) >= 5:
+                    # Expected: Goal Bucket | Goal Name | Horizon | Syfe Product | Alloc % | Rationale
+                    product_name = parts[3]
+                    alloc_str = parts[4].replace('%', '').strip()
+                    
+                    try:
+                        weight = float(alloc_str) / 100.0
+                        
+                        # Map product name to ticker
+                        # Try exact match first, then partial
+                        ticker = product_map.get(product_name)
+                        if not ticker:
+                            # Fuzzy matching or fallback
+                            for key, val in product_map.items():
+                                if key in product_name:
+                                    ticker = val
+                                    break
+                        
+                        if ticker and weight > 0:
+                            if ticker in allocations:
+                                allocations[ticker] += weight
+                            else:
+                                allocations[ticker] = weight
+                                
+                    except ValueError:
+                        continue # Skip if weight isn't a number
+                        
+    except Exception as e:
+        print(f"Error parsing table: {e}")
+        return {}
+        
+    return allocations

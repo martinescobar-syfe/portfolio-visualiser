@@ -1155,7 +1155,50 @@ with tab_recommender:
                 
                 recommendation = get_gemini_recommendation(GEMINI_API_KEY, client_profile)
                 
+                # Store recommendation in session state to persist across reruns
+                st.session_state.last_recommendation = recommendation
+                
                 st.markdown("### Analysis & Allocation")
                 st.write(recommendation)
                 
                 st.success("Recommendation generated based on Syfe's product suite.")
+
+    # --- Add to Analysis Button ---
+    if 'last_recommendation' in st.session_state:
+        st.markdown("---")
+        if st.button("Add to Portfolio Analysis", type="secondary"):
+            from utils.llm_helper import parse_recommendation_table
+            
+            new_allocations = parse_recommendation_table(st.session_state.last_recommendation)
+            
+            if new_allocations:
+                # Create new portfolio entry
+                new_port_id = len(st.session_state.portfolios) + 1
+                new_port_name = f"Syfe AI Recommendation {new_port_id}"
+                
+                # Convert to DataFrame format expected by app
+                # weights_df needs columns: ['Ticker', 'Weight']
+                # Actually app uses a dict structure for portfolios:
+                # {'name': ..., 'type': 'Fixed Weight', 'weights': df, ...}
+                
+                # Create weights DataFrame
+                weights_data = [{'Ticker': t, 'Weight': w} for t, w in new_allocations.items()]
+                weights_df = pd.DataFrame(weights_data)
+                
+                if not weights_df.empty:
+                    # Add to session state
+                    st.session_state.portfolios.append({
+                        'name': new_port_name,
+                        'type': 'Fixed Weight',
+                        'weights': weights_df,
+                        'initial_amount': 100000, # Default
+                        'rebalance': 'Quarterly', # Default
+                        'start_date': pd.to_datetime('2015-01-01'), # Default
+                        'cash_invested': 0
+                    })
+                    
+                    st.success(f"Added '{new_port_name}' to Portfolio Analysis tab! (Scroll to bottom of Analysis tab)")
+                else:
+                    st.warning("Could not extract valid allocations from the recommendation.")
+            else:
+                st.warning("No allocations found in the recommendation text.")
