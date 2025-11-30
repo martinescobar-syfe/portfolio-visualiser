@@ -7,14 +7,15 @@ from styles.syfe_colors import PALETTE, HEATMAP_COLORS
 
 def apply_syfe_layout(fig, title="", height=500):
     fig.update_layout(
-        title={'text': f'<b>{title}</b>', 'font': {'size': 20, 'color': '#172B4D'}},
-        font={'family': 'Helvetica Neue, Arial', 'color': '#172B4D'},
-        plot_bgcolor='white',
-        paper_bgcolor='white',
+        title={'text': f'<b>{title}</b>', 'font': {'size': 20}},
+        font={'family': 'Helvetica Neue, Arial'},
+        # plot_bgcolor='white',  # Removed to allow theme adaptation
+        # paper_bgcolor='white', # Removed to allow theme adaptation
         height=height,
-        xaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
-        yaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
-        colorway=PALETTE
+        xaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'}, # Semi-transparent grid
+        yaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'},
+        colorway=PALETTE,
+        margin=dict(l=40, r=40, t=80, b=40)
     )
     return fig
 
