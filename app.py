@@ -248,23 +248,47 @@ with tab_analysis:
                     st.plotly_chart(fig_asset, use_container_width=True)
             
                 # Load into Portfolio 1 Button
-                if st.button("Load into Portfolio 1"):
-                    # Update underlying data
-                    st.session_state.portfolios[0]['name'] = "Client Portfolio"
-                    st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
-                    st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
-                    st.session_state.portfolios[0]['fixed_weights'] = client_weights
-                    st.session_state.portfolios[0]['cash_invested'] = total_nav
+                c_load1, c_load_new = st.columns(2)
                 
-                    # Update dollar amounts and decimal weights dictionaries
-                    st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
-                    st.session_state.portfolios[0]['decimal_weights'] = client_weights
+                with c_load1:
+                    if st.button("Load into Portfolio 1"):
+                        # Update underlying data
+                        st.session_state.portfolios[0]['name'] = "Client Portfolio"
+                        st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
+                        st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
+                        st.session_state.portfolios[0]['fixed_weights'] = client_weights
+                        st.session_state.portfolios[0]['cash_invested'] = total_nav
+                    
+                        # Update dollar amounts and decimal weights dictionaries
+                        st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
+                        st.session_state.portfolios[0]['decimal_weights'] = client_weights
+                    
+                        # Increment refresh counter to force widget update
+                        st.session_state.refresh_counter += 1
+                    
+                        st.success("Loaded client portfolio into Portfolio 1!")
+                        st.rerun()
                 
-                    # Increment refresh counter to force widget update
-                    st.session_state.refresh_counter += 1
-                
-                    st.success("Loaded client portfolio into Portfolio 1!")
-                    st.rerun()
+                with c_load_new:
+                    if st.button("Load as New Portfolio"):
+                        new_id = len(st.session_state.portfolios) + 1
+                        new_port = {
+                            'id': new_id,
+                            'name': f"Client Upload {new_id}",
+                            'tickers': list(client_weights.keys()),
+                            'allocation_type': 'Fixed Weight',
+                            'rebal_freq': 'Annually',
+                            'min_weight': 0.0,
+                            'max_weight': 1.0,
+                            'cash_invested': total_nav,
+                            'fixed_weights': client_weights,
+                            'dollar_amounts': client_holdings,
+                            'decimal_weights': client_weights
+                        }
+                        st.session_state.portfolios.append(new_port)
+                        st.session_state.refresh_counter += 1
+                        st.success(f"Created new portfolio 'Client Upload {new_id}'!")
+                        st.rerun()
             else:
                 st.warning("No valid active portfolios found with NAV >= $50.")
             
@@ -1176,29 +1200,35 @@ with tab_recommender:
                 new_port_id = len(st.session_state.portfolios) + 1
                 new_port_name = f"Syfe AI Recommendation {new_port_id}"
                 
-                # Convert to DataFrame format expected by app
-                # weights_df needs columns: ['Ticker', 'Weight']
-                # Actually app uses a dict structure for portfolios:
-                # {'name': ..., 'type': 'Fixed Weight', 'weights': df, ...}
+                # Prepare data structures
+                tickers = list(new_allocations.keys())
+                fixed_weights = new_allocations
+                decimal_weights = new_allocations
                 
-                # Create weights DataFrame
-                weights_data = [{'Ticker': t, 'Weight': w} for t, w in new_allocations.items()]
-                weights_df = pd.DataFrame(weights_data)
+                # Calculate dollar amounts based on default 100k
+                default_amount = 100000.0
+                dollar_amounts = {t: w * default_amount for t, w in new_allocations.items()}
                 
-                if not weights_df.empty:
-                    # Add to session state
-                    st.session_state.portfolios.append({
-                        'name': new_port_name,
-                        'type': 'Fixed Weight',
-                        'weights': weights_df,
-                        'initial_amount': 100000, # Default
-                        'rebalance': 'Quarterly', # Default
-                        'start_date': pd.to_datetime('2015-01-01'), # Default
-                        'cash_invested': 0
-                    })
-                    
-                    st.success(f"Added '{new_port_name}' to Portfolio Analysis tab! (Scroll to bottom of Analysis tab)")
-                else:
-                    st.warning("Could not extract valid allocations from the recommendation.")
+                new_port = {
+                    'id': new_port_id,
+                    'name': new_port_name,
+                    'tickers': tickers,
+                    'allocation_type': 'Fixed Weight',
+                    'rebal_freq': 'Quarterly',
+                    'min_weight': 0.0,
+                    'max_weight': 1.0,
+                    'cash_invested': default_amount,
+                    'fixed_weights': fixed_weights,
+                    'dollar_amounts': dollar_amounts,
+                    'decimal_weights': decimal_weights
+                }
+                
+                st.session_state.portfolios.append(new_port)
+                st.session_state.refresh_counter += 1
+                
+                st.success(f"Added '{new_port_name}' to Portfolio Analysis tab! (Scroll to bottom of Analysis tab)")
+                st.rerun()
             else:
-                st.warning("No allocations found in the recommendation text.")
+                st.warning("Could not extract valid allocations from the recommendation.")
+        else:
+            st.warning("No allocations found in the recommendation text.")
