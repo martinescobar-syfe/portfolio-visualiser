@@ -158,6 +158,7 @@ def parse_recommendation_table(recommendation_text):
     }
     
     allocations = {}
+    failed_items = []
     
     try:
         lines = recommendation_text.split('\n')
@@ -188,12 +189,16 @@ def parse_recommendation_table(recommendation_text):
                                 allocations[ticker] += weight
                             else:
                                 allocations[ticker] = weight
+                        else:
+                            # Failed to map or weight is 0
+                            if weight > 0:
+                                failed_items.append((product_name, weight))
                                 
                     except ValueError:
                         continue # Skip if weight isn't a number
                         
     except Exception as e:
         print(f"Error parsing table: {e}")
-        return {}
+        return {}, []
         
-    return allocations
+    return allocations, failed_items

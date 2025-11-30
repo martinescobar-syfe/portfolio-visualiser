@@ -1181,19 +1181,32 @@ with tab_recommender:
                 
                 # Store recommendation in session state to persist across reruns
                 st.session_state.last_recommendation = recommendation
-                
-                st.markdown("### Analysis & Allocation")
-                st.write(recommendation)
-                
-                st.success("Recommendation generated based on Syfe's product suite.")
+                st.rerun() # Force rerun to show results in the persistent block below
 
-    # --- Add to Analysis Button ---
+    # --- Persistent Results Display ---
     if 'last_recommendation' in st.session_state:
         st.markdown("---")
+        st.subheader("Syfe AI (Analysis and Allocation)")
+        st.write(st.session_state.last_recommendation)
+        st.success("Recommendation generated based on Syfe's product suite.")
+
+        # --- Add to Analysis Button ---
+        st.markdown("---")
+        
+        # Display status message from previous add action if exists
+        if 'add_status_msg' in st.session_state:
+            msg_type, msg_text = st.session_state.add_status_msg
+            if msg_type == 'success':
+                st.success(msg_text)
+            elif msg_type == 'warning':
+                st.warning(msg_text)
+            # Clear message after showing
+            del st.session_state.add_status_msg
+
         if st.button("Add to Portfolio Analysis", type="secondary"):
             from utils.llm_helper import parse_recommendation_table
             
-            new_allocations = parse_recommendation_table(st.session_state.last_recommendation)
+            new_allocations, failed_items = parse_recommendation_table(st.session_state.last_recommendation)
             
             if new_allocations:
                 # Create new portfolio entry
@@ -1226,7 +1239,17 @@ with tab_recommender:
                 st.session_state.portfolios.append(new_port)
                 st.session_state.refresh_counter += 1
                 
-                st.success(f"Added '{new_port_name}' to Portfolio Analysis tab! (Scroll to bottom of Analysis tab)")
+                # Construct detailed message
+                added_str = ", ".join([f"{t} ({w:.1%})" for t, w in new_allocations.items()])
+                msg = f"Added '{new_port_name}' with: {added_str}."
+                
+                if failed_items:
+                    failed_str = ", ".join([f"{p} ({w:.1%})" for p, w in failed_items])
+                    msg += f"\n\n⚠️ Could not map these products (please add manually): {failed_str}"
+                    st.session_state.add_status_msg = ('warning', msg)
+                else:
+                    st.session_state.add_status_msg = ('success', msg)
+                
                 st.rerun()
             else:
                 st.warning("Could not extract valid allocations from the recommendation.")
