@@ -1230,5 +1230,4 @@ with tab_recommender:
                 st.rerun()
             else:
                 st.warning("Could not extract valid allocations from the recommendation.")
-        else:
-            st.warning("No allocations found in the recommendation text.")
+
