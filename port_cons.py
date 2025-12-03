@@ -885,6 +885,11 @@ def factor_regression(portfolio_returns, factors_data, threshold_in=0.05, start_
     factors = forward_regression(factors_data.loc[start_index:end_index][col_factors], data.loc[start_index:end_index]['excess_ret'], threshold_in=threshold_in)
     
     data.rename(columns={'Mkt-RF': 'Mkt'}, inplace=True)
+    
+    # Handle empty factors (if no factor meets threshold)
+    if not factors:
+        factors = ['Mkt'] # Default to Market factor
+        
     formula = 'excess_ret ~ ' + ' + '.join(factors)
     # print(formula)
     five_factor_model = smf.ols(formula=formula, data=data).fit()

@@ -1,0 +1,1603 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import timedelta
+from utils.optimiser import optimize_portfolio, create_constraints, calc_port_perf
+from utils.performance import get_performance_summary, calculate_relative_metrics
+from utils.exposure import get_exposure_charts
+from utils.plotting import (
+    plot_cumulative_returns, plot_drawdowns, plot_correlation_heatmap, 
+    plot_scatter_risk_return, plot_allocation_pie, apply_syfe_layout, plot_bar_chart, 
+    plot_rolling_volatility, plot_monthly_heatmap
+)
+from utils.data_loader import download_data
+import port_cons as pc
+from styles.syfe_colors import PALETTE
+import os
+from utils.llm_helper import get_gemini_recommendation, parse_recommendation_table
+import requests
+import zipfile
+import io
+
+def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="upload"):
+    st.header("1. Client Data Upload")
+    uploaded_file = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key=f"{key_prefix}_file_uploader")
+
+    if uploaded_file:
+        try:
+            df_client = pd.read_csv(uploaded_file)
+        
+            # Filter for ACTIVE portfolios
+            if 'status' in df_client.columns:
+                df_client = df_client[df_client['status'] == 'ACTIVE']
+        
+            # Mapping logic
+            CLIENT_PORTFOLIO_MAPPING = {
+                'GLOBAL_EQUITY_100': 'Core Equity100',
+                'INCOME_ENHANCE': 'Income Enhance',
+                'INCOME_PRESERVE': 'Income Preserve',
+                'REIT': 'REIT 100',
+                'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
+                'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
+                'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
+                'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
+                'SRS_GLOBAL_EQUITY_100': 'SRS Equity100',
+                'SRS_INCOME_ENHANCED': 'SRS Income Enhance', # Handle potential typo
+            }
+
+            # Objective Mapping
+            OBJECTIVE_MAPPING = {
+                'Core Equity100': 'Wealth Growth',
+                'SRS Equity100': 'Wealth Growth',
+                'REIT 100': 'Income Generation',
+                'Income Enhance': 'Income Generation',
+                'SRS Income Enhance': 'Income Generation',
+                'Income Preserve': 'Capital Preservation',
+                'SRS Income Preserve': 'Capital Preservation',
+                'Cash SGD guaranteed': 'Capital Preservation',
+                'Cash SGD flexi': 'Capital Preservation',
+                'Cash USD flexi': 'Capital Preservation'
+            }
+        
+            # Process data to get ticker weights
+            client_holdings = {}
+            total_nav = 0.0
+        
+            for index, row in df_client.iterrows():
+                p_type = row['type']
+                currency = row['currency'] if 'currency' in row else 'SGD'
+                nav_str = str(row['nav_in_sgd']).replace(',', '')
+                try:
+                    nav = float(nav_str)
+                except:
+                    nav = 0.0
+            
+                if nav < 50: # Ignore small balances
+                    continue
+                
+                ticker = None
+            
+                # Special handling for CASH_PLUS
+                if p_type == 'CASH_PLUS':
+                    if currency == 'USD':
+                        ticker = 'Cash USD flexi'
+                    else:
+                        ticker = 'Cash SGD flexi'
+                elif p_type in CLIENT_PORTFOLIO_MAPPING:
+                    ticker = CLIENT_PORTFOLIO_MAPPING[p_type]
+            
+                if ticker:
+                    client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
+                    total_nav += nav
+        
+            if total_nav > 0:
+                # Calculate weights
+                client_weights = {k: v/total_nav for k, v in client_holdings.items()}
+            
+                # Calculate Asset Allocation
+                asset_allocation = {}
+                for ticker, weight in client_weights.items():
+                    if ticker in df_asset_class.columns:
+                        # Get asset breakdown for this ticker
+                        ticker_assets = df_asset_class[ticker]
+                        for asset, asset_weight in ticker_assets.items():
+                            if asset_weight > 0:
+                                asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (asset_weight * weight)
+                    else:
+                        # Fallback for unknown tickers (e.g. assume Cash or Unclassified)
+                        asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
+
+                # Calculate Objective Allocation
+                objective_allocation = {}
+                for ticker, weight in client_weights.items():
+                    obj = OBJECTIVE_MAPPING.get(ticker, 'Unclassified')
+                    objective_allocation[obj] = objective_allocation.get(obj, 0.0) + weight
+
+                # --- NEW: Tabs for Allocation vs Exposures ---
+                tab_alloc, tab_exposures = st.tabs(["Client Portfolio Allocation", "Client Exposures"])
+
+                with tab_alloc:
+                    col_p1, col_p2, col_p3 = st.columns(3)
+                
+                    with col_p1:
+                        st.markdown("**By Portfolio Type**")
+                        fig_client = px.pie(
+                            values=list(client_weights.values()),
+                            names=list(client_weights.keys()),
+                            title=f"Total NAV: ${total_nav:,.2f}"
+                        )
+                        st.plotly_chart(fig_client, use_container_width=True, key=f"{key_prefix}_pie_client")
+                
+                    with col_p2:
+                        st.markdown("**By Asset Class**")
+                        # Filter out small values for cleaner chart and group into Others
+                        threshold = 0.01 # 1% threshold
+                        final_asset_alloc = {}
+                        others_val = 0.0
+                        
+                        for k, v in asset_allocation.items():
+                            if v >= threshold:
+                                final_asset_alloc[k] = v
+                            else:
+                                others_val += v
+                        
+                        if others_val > 0:
+                            final_asset_alloc['Others'] = others_val
+                            
+                        fig_asset = px.pie(
+                            values=list(final_asset_alloc.values()),
+                            names=list(final_asset_alloc.keys()),
+                            title="Asset Allocation"
+                        )
+                        st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset")
+
+                    with col_p3:
+                        st.markdown("**By Objective**")
+                        fig_obj = px.pie(
+                            values=list(objective_allocation.values()),
+                            names=list(objective_allocation.keys()),
+                            title="Objective Allocation",
+                            color_discrete_map={
+                                'Wealth Growth': '#0052CC',
+                                'Income Generation': '#36B37E', 
+                                'Capital Preservation': '#FFAB00',
+                                'Unclassified': '#C1C7D0'
+                            }
+                        )
+                        st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
+
+                with tab_exposures:
+                    # --- Filtering Controls ---
+                    st.markdown("#### Filter Exposures")
+                    
+                    # Filter Mode Selection
+                    filter_mode = st.radio(
+                        "Filter Mode", 
+                        ["Show All", "By Objective", "By Asset Class", "By Portfolio Type"], 
+                        horizontal=True,
+                        key=f"{key_prefix}_filt_mode"
+                    )
+                    
+                    filtered_weights = {}
+                    
+                    if filter_mode == "Show All":
+                        # Use all weights directly (with _wgt suffix)
+                        filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
+                        
+                    elif filter_mode == "By Objective":
+                        all_objectives = sorted(list(set(OBJECTIVE_MAPPING.values())))
+                        sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
+                        
+                        for ticker, weight in client_weights.items():
+                            obj = OBJECTIVE_MAPPING.get(ticker, 'Unclassified')
+                            if obj in sel_objectives:
+                                filtered_weights[f"{ticker}_wgt"] = weight
+                                
+                    elif filter_mode == "By Asset Class":
+                        all_assets = sorted(df_asset_class.index.tolist())
+                        sel_assets = st.multiselect("Select Asset Class(es)", all_assets, default=all_assets, key=f"{key_prefix}_filt_asset")
+                        
+                        for ticker, weight in client_weights.items():
+                            if ticker in df_asset_class.columns:
+                                asset_breakdown = df_asset_class[ticker]
+                                valid_assets = [a for a in sel_assets if a in asset_breakdown.index]
+                                scaling_factor = asset_breakdown[valid_assets].sum()
+                            else:
+                                scaling_factor = 1.0 # Default behavior
+                            
+                            final_weight = weight * scaling_factor
+                            if final_weight > 0:
+                                filtered_weights[f"{ticker}_wgt"] = final_weight
+                                
+                    elif filter_mode == "By Portfolio Type":
+                        all_port_types = sorted(list(client_weights.keys()))
+                        sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
+                        
+                        for ticker, weight in client_weights.items():
+                            if ticker in sel_port_types:
+                                filtered_weights[f"{ticker}_wgt"] = weight
+
+                    # Calculate exposures using filtered weights
+                    weights_series = pd.Series(filtered_weights)
+                    
+                    if not weights_series.empty:
+                        charts = get_exposure_charts(weights_series, df_sector, df_country)
+                        
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.subheader("Sector Exposure")
+                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_sec_pie")
+                            st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                        
+                        with c2:
+                            st.subheader("Country Exposure")
+                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_cou_pie")
+                            st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                    else:
+                        st.warning("No data matches the selected filters.")
+
+                # Load into Portfolio 1 Button
+                c_load1, c_load_new = st.columns(2)
+                
+                with c_load1:
+                    if st.button("Load into Portfolio 1", key=f"{key_prefix}_load_p1"):
+                        # Update underlying data
+                        st.session_state.portfolios[0]['name'] = "Client Portfolio"
+                        st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
+                        st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
+                        st.session_state.portfolios[0]['fixed_weights'] = client_weights
+                        st.session_state.portfolios[0]['cash_invested'] = total_nav
+                    
+                        # Update dollar amounts and decimal weights dictionaries
+                        st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
+                        st.session_state.portfolios[0]['decimal_weights'] = client_weights
+                    
+                        # Increment refresh counter to force widget update
+                        st.session_state.refresh_counter += 1
+                    
+                        st.success("Loaded client portfolio into Portfolio 1!")
+                        st.rerun()
+                
+                with c_load_new:
+                    if st.button("Load as New Portfolio", key=f"{key_prefix}_load_new"):
+                        new_id = len(st.session_state.portfolios) + 1
+                        new_port = {
+                            'id': new_id,
+                            'name': f"Client Upload {new_id}",
+                            'tickers': list(client_weights.keys()),
+                            'allocation_type': 'Fixed Weight',
+                            'rebal_freq': 'Annually',
+                            'min_weight': 0.0,
+                            'max_weight': 1.0,
+                            'cash_invested': total_nav,
+                            'fixed_weights': client_weights,
+                            'dollar_amounts': client_holdings,
+                            'decimal_weights': client_weights
+                        }
+                        st.session_state.portfolios.append(new_port)
+                        st.session_state.refresh_counter += 1
+                        st.success(f"Created new portfolio 'Client Upload {new_id}'!")
+                        st.rerun()
+            else:
+                st.warning("No valid active portfolios found with NAV >= $50.")
+            
+        except Exception as e:
+            st.error(f"Error processing file: {e}")
+
+def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
+    st.header("Syfe Portfolio Recommender")
+    
+    # --- Inputs Section ---
+    st.subheader("Client Profile")
+    
+    # --- 1. Demographics ---
+    with st.expander("1. Demographics", expanded=True):
+        c1, c2 = st.columns(2)
+        age = c1.number_input("Age", 18, 100, 30, key=f"{key_prefix}_age")
+        marital = c2.selectbox("Marital Status", ["Single", "Married", "Divorced", "Widowed"], key=f"{key_prefix}_marital")
+        dependents = st.number_input("Number of Dependents", 0, 10, 0, key=f"{key_prefix}_dependents")
+
+    # --- 2. Financial Health ---
+    with st.expander("2. Financial Health", expanded=False):
+        income_range = st.selectbox("Annual Income (SGD)", ["< $50k", "$50k - $100k", "$100k - $200k", "$200k - $500k", "> $500k"], index=1, key=f"{key_prefix}_income")
+        income_stability = st.selectbox("Income Stability", ["Stable (Salaried)", "Variable (Bonus/Commissions)", "Unstable (Freelance/Contract)"], key=f"{key_prefix}_stability")
+        net_worth = st.selectbox("Total Net Worth (Est.)", ["< $100k", "$100k - $500k", "$500k - $1m", "$1m - $5m", "> $5m"], key=f"{key_prefix}_nw")
+        monthly_expenses = st.number_input("Monthly Expenses (SGD)", 0, 100000, 3000, step=500, key=f"{key_prefix}_expenses")
+        emergency_fund = st.selectbox("Emergency Fund Status", ["None", "< 3 Months Expenses", "3-6 Months Expenses", "> 6 Months Expenses"], key=f"{key_prefix}_emergency")
+        debts = st.multiselect("Outstanding Debts", ["Mortgage", "Car Loan", "Student Loan", "Credit Card Debt", "Personal Loan"], key=f"{key_prefix}_debts")
+
+    # --- 3. Goal Structuring ---
+    with st.expander("3. Goal Structuring", expanded=False):
+        st.caption("Define specific financial goals.")
+        goal_data = pd.DataFrame([
+            {"Goal Name": "Retirement", "Amount ($)": 2000000, "Lump Sum Investment ($)": 100000, "Horizon (Yrs)": 20, "Priority": "High"},
+            {"Goal Name": "House Downpayment", "Amount ($)": 500000, "Lump Sum Investment ($)": 20000, "Horizon (Yrs)": 5, "Priority": "Medium"}
+        ])
+        goals_df = st.data_editor(goal_data, num_rows="dynamic", use_container_width=True, key=f"{key_prefix}_goals")
+
+    # --- 4. Risk & Behaviour ---
+    with st.expander("4. Risk & Behaviour", expanded=False):
+        risk_aversion = st.select_slider("Self-Rated Risk Aversion", options=["Very Low", "Low", "Medium", "High", "Very High"], value="Medium", key=f"{key_prefix}_risk")
+        drawdown_pain = st.select_slider("Max Drawdown Pain Threshold", options=["-5%", "-10%", "-20%", "-30%", "-40%", "-50%"], value="-20%", key=f"{key_prefix}_dd")
+        bear_reaction = st.selectbox("Past Bear Market Behaviour", ["Sold everything", "Sold some", "Held tight", "Bought more"], key=f"{key_prefix}_bear")
+
+    # --- 5. Human Capital & Experience ---
+    with st.expander("5. Human Capital & Experience", expanded=False):
+        employment_type = st.selectbox("Employment Sector", ["Finance", "Tech", "Government", "Healthcare", "Real Estate", "Manufacturing", "Other"], key=f"{key_prefix}_emp")
+        industry_cyclicality = st.selectbox("Industry Cyclicality", ["Low (Defensive)", "Medium", "High (Cyclical)"], key=f"{key_prefix}_cyc")
+        knowledge_level = st.select_slider("Investment Knowledge", options=["Novice", "Intermediate", "Advanced", "Expert"], value="Intermediate", key=f"{key_prefix}_know")
+        diy_interest = st.radio("Interest in DIY Management", ["Low (Prefer Hands-off)", "Medium", "High (Active Manager)"], key=f"{key_prefix}_diy")
+
+    # --- 6. Currency, Tax & Filters ---
+    with st.expander("6. Currency, Tax & Filters (Under Development)", expanded=False):
+        sgd_liability = st.slider("Future SGD Liability %", 0, 100, 80, help="% of future spending expected to be in SGD", key=f"{key_prefix}_sgd")
+        migration_risk = st.checkbox("Potential Migration Plans?", key=f"{key_prefix}_mig")
+        tax_wrappers = st.multiselect("Tax Wrappers to Use", ["SRS", "CPF OA", "CPF SA"], default=["SRS"], key=f"{key_prefix}_tax")
+        esg_filter = st.checkbox("Prioritize ESG / Ethical Investments", key=f"{key_prefix}_esg")
+        
+    # --- 7. AI Qualification ---
+    with st.expander("7. Accredited Investor (AI) Check", expanded=False):
+        ai_income = st.checkbox("Income > SGD 300k (last 12 months)", key=f"{key_prefix}_ai_inc")
+        ai_assets = st.checkbox("Net Personal Assets > SGD 2m", key=f"{key_prefix}_ai_ass")
+        ai_fin_assets = st.checkbox("Net Financial Assets > SGD 1m", key=f"{key_prefix}_ai_fin")
+        is_ai = ai_income or ai_assets or ai_fin_assets
+        if is_ai:
+            st.success("Qualifies as Accredited Investor")
+        else:
+            st.info("Retail Investor Status")
+
+    # --- 8. Qualitative Factors ---
+    st.subheader("Qualitative Factors")
+    qualitative_factors = st.text_area("Any other qualitative factors we need to consider?", height=100, key=f"{key_prefix}_qual")
+
+
+    st.markdown("---")
+
+    # --- Generate Button ---
+    if st.button("Generate Recommendation", type="primary", key=f"{key_prefix}_gen_rec"):
+        with st.spinner("Analyzing profile and generating recommendations..."):
+            # Construct Client Profile String
+            client_profile = {
+                "Base Settings": {
+                    "Age": age, "Risk Tolerance": risk_aversion, "Investment Horizon": "Not specified in current inputs" # Placeholder, adjust as needed
+                },
+                "Financials": {
+                    "Income": income_range, "Savings": "Not specified in current inputs", # Placeholder
+                    "Investible Assets": net_worth, # Using net_worth as a proxy
+                    "Monthly Surplus": "Not specified in current inputs", # Placeholder
+                    "Market Drop Reaction": drawdown_pain, # Using drawdown_pain as a proxy
+                    "Bear Reaction": bear_reaction
+                },
+                "Human Capital": {
+                    "Sector": employment_type, "Cyclicality": industry_cyclicality
+                },
+                "Preferences": {
+                    "Knowledge": knowledge_level, "DIY Interest": diy_interest,
+                    "SGD Liability": f"{sgd_liability}%", "Migration": migration_risk,
+                    "Tax Wrappers": tax_wrappers, "ESG": esg_filter
+                },
+                "Status": {
+                    "Accredited Investor": is_ai
+                },
+                "Qualitative Factors": qualitative_factors,
+                "Goals": goals_df.to_dict('records')
+            }
+            
+            recommendation = get_gemini_recommendation(GEMINI_API_KEY, client_profile)
+            
+            # Store recommendation in session state to persist across reruns
+            st.session_state.last_recommendation = recommendation
+            # Corrected key to use "Amount ($)"
+            st.session_state.last_goals_data = goals_df.set_index("Goal Name")["Amount ($)"].to_dict()
+            st.session_state.last_goals_full_data = goals_df.to_dict('records')
+            st.rerun() # Force rerun to show results in the persistent block below
+
+    # --- Persistent Results Display ---
+    if 'last_recommendation' in st.session_state:
+        st.markdown("---")
+        st.subheader("Syfe AI (Analysis and Allocation)")
+        st.write(st.session_state.last_recommendation)
+        st.success("Recommendation generated based on Syfe's product suite.")
+
+        # --- Add to Analysis Button ---
+        st.markdown("---")
+        
+        # Display status message from previous add action if exists
+        if 'add_status_msg' in st.session_state:
+            msg_type, msg_text = st.session_state.add_status_msg
+            if msg_type == 'success':
+                st.success(msg_text)
+            elif msg_type == 'warning':
+                st.warning(msg_text)
+            # Clear message after showing
+            del st.session_state.add_status_msg
+
+        if st.button("Add to Portfolio Analysis", type="secondary", key=f"{key_prefix}_add_to_analysis"):
+            
+            portfolios_data, failed_items = parse_recommendation_table(st.session_state.last_recommendation)
+            
+            if portfolios_data:
+                msg_lines = []
+                
+                # Retrieve stored goals data if available
+                goals_amount_map = st.session_state.get('last_goals_data', {})
+                
+                for goal_name, p_data in portfolios_data.items():
+                    new_allocations = p_data['allocations']
+                    objective = p_data['objective']
+                    
+                    # Create new portfolio entry
+                    new_port_id = len(st.session_state.portfolios) + 1
+                    # Use Goal Name as Portfolio Name
+                    new_port_name = goal_name
+                    
+                    # Prepare data structures
+                    tickers = list(new_allocations.keys())
+                    fixed_weights = new_allocations
+                    decimal_weights = new_allocations
+                    
+                    # Calculate dollar amounts based on user input or default
+                    # Try to match goal name (case-insensitive)
+                    target_amount = 100000.0 # Default Target
+                    initial_investment = 10000.0 # Default Initial
+                    
+                    # Exact match
+                    if goal_name in goals_amount_map:
+                        target_amount = float(goals_amount_map[goal_name])
+                        # Try to get lump sum if available in session state
+                        # We need to access the goals_df to get Lump Sum. 
+                        # Since we only stored Amount ($) in last_goals_data, we need to update that storage first.
+                        # For now, let's assume we can get it or fallback.
+                        # Actually, we should update the storage in render_recommender to store the full row or a map of both.
+                        pass 
+                    else:
+                        # Try case-insensitive match
+                        for g_name, amount in goals_amount_map.items():
+                            if g_name.lower() == goal_name.lower():
+                                target_amount = float(amount)
+                                break
+                    
+                    # Retrieve Lump Sum from session state if available
+                    if 'last_goals_full_data' in st.session_state:
+                        full_goals = st.session_state.last_goals_full_data
+                        # Find matching goal
+                        for g in full_goals:
+                            if g.get('Goal Name') == goal_name:
+                                initial_investment = float(g.get('Lump Sum Investment ($)', 0))
+                                if initial_investment == 0:
+                                     initial_investment = target_amount # Fallback if 0
+                                break
+                    else:
+                         initial_investment = target_amount # Fallback if data missing
+
+                    dollar_amounts = {t: w * initial_investment for t, w in new_allocations.items()}
+                    
+                    # Get horizon from parsed data
+                    horizon = p_data.get('horizon', 10)  # Default to 10 if not found
+                    
+                    new_port = {
+                        'id': new_port_id,
+                        'name': new_port_name,
+                        'tickers': tickers,
+                        'allocation_type': 'Fixed Weight',
+                        'rebal_freq': 'Quarterly',
+                        'min_weight': 0.0,
+                        'max_weight': 1.0,
+                        'cash_invested': initial_investment,
+                        'target_amount': target_amount,
+                        'fixed_weights': fixed_weights,
+                        'dollar_amounts': dollar_amounts,
+                        'decimal_weights': decimal_weights,
+                        'objective': objective,
+                        'goal_name': goal_name,
+                        'horizon': horizon
+                    }
+                    
+                    st.session_state.portfolios.append(new_port)
+                    
+                    # Construct detailed message
+                    added_str = ", ".join([f"{t} ({w:.1%})" for t, w in new_allocations.items()])
+                    msg_lines.append(f"Added '{new_port_name}' ({objective}) with: {added_str}.")
+
+                st.session_state.refresh_counter += 1
+                
+                full_msg = "\n\n".join(msg_lines)
+                
+                if failed_items:
+                    failed_str = ", ".join([f"{p} ({w:.1%}) for {g}" for p, w, g in failed_items])
+                    full_msg += f"\n\n⚠️ Could not map these products (please add manually): {failed_str}"
+                    st.session_state.add_status_msg = ('warning', full_msg)
+                else:
+                    st.session_state.add_status_msg = ('success', full_msg)
+                
+                st.rerun()
+            else:
+                st.warning("Could not extract valid allocations from the recommendation.")
+
+def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency, backtest_offset_days, data_path, df_fi_metrics, df_fx, key_prefix="cons"):
+    st.header("2. Portfolio Construction")
+
+    col_add, col_del = st.columns([1, 4])
+    with col_add:
+        if st.button("➕ Add Portfolio", key=f"{key_prefix}_add_port"):
+            new_id = len(st.session_state.portfolios) + 1
+            st.session_state.portfolios.append({
+                'id': new_id,
+                'name': f'Portfolio {new_id}',
+                'tickers': [],
+                'allocation_type': 'Max sharpe',
+                'rebal_freq': 'Annually',
+                'min_weight': 0.0,
+                'max_weight': 1.0,
+                'cash_invested': 0.0,
+                'fixed_weights': {}
+            })
+            st.rerun()
+
+    for i, port in enumerate(st.session_state.portfolios):
+        with st.expander(f"{port['name']}", expanded=True):
+            # Add remove button at top right
+            if len(st.session_state.portfolios) > 1:
+                if st.button(f"🗑️ Remove Portfolio", key=f"{key_prefix}_remove_{i}"):
+                    st.session_state.portfolios.pop(i)
+                    st.rerun()
+        
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.session_state.portfolios[i]['name'] = st.text_input(f"Name", value=port['name'], key=f"{key_prefix}_name_{i}_{st.session_state.refresh_counter}")
+                
+                # Goal Name Input
+                st.session_state.portfolios[i]['goal_name'] = st.text_input(
+                    "Goal Name",
+                    value=port.get('goal_name', ''),
+                    placeholder="e.g. Retirement, House Downpayment",
+                    key=f"{key_prefix}_goal_{i}_{st.session_state.refresh_counter}"
+                )
+                
+                st.session_state.portfolios[i]['tickers'] = st.multiselect(
+                    f"Select Tickers",
+                    options=available_tickers,
+                    default=port['tickers'],
+                    key=f"{key_prefix}_tickers_{i}_{st.session_state.refresh_counter}"
+                )
+                    
+                # Objective Selection
+                valid_objectives = ["Wealth Growth", "Income Generation", "Capital Preservation"]
+                current_objective = port.get('objective', 'Wealth Growth')
+                
+                # Validate and clean the objective if it's invalid
+                if current_objective not in valid_objectives:
+                    # Try to extract a valid objective from combined values
+                    for valid_obj in valid_objectives:
+                        if valid_obj in current_objective:
+                            current_objective = valid_obj
+                            st.session_state.portfolios[i]['objective'] = valid_obj  # Fix it in session state
+                            break
+                    else:
+                        # If still invalid, default to Wealth Growth
+                        current_objective = 'Wealth Growth'
+                        st.session_state.portfolios[i]['objective'] = 'Wealth Growth'
+                
+                st.session_state.portfolios[i]['objective'] = st.selectbox(
+                    "Objective",
+                    valid_objectives,
+                    index=valid_objectives.index(current_objective),
+                    key=f"{key_prefix}_obj_{i}_{st.session_state.refresh_counter}"
+                )
+            with c2:
+                st.session_state.portfolios[i]['allocation_type'] = st.selectbox(
+                    f"Allocation", 
+                    ['Max sharpe', 'Min vol', 'Equal weight', 'Fixed Weight'], 
+                    index=['Max sharpe', 'Min vol', 'Equal weight', 'Fixed Weight'].index(port['allocation_type']) if port['allocation_type'] in ['Max sharpe', 'Min vol', 'Equal weight', 'Fixed Weight'] else 0, 
+                    key=f"{key_prefix}_alloc_{i}_{st.session_state.refresh_counter}"
+                )
+                st.session_state.portfolios[i]['rebal_freq'] = st.selectbox(
+                    f"Rebalance", 
+                    ['Monthly', 'Quarterly', 'Semi-annually', 'Annually'], 
+                    index=['Monthly', 'Quarterly', 'Semi-annually', 'Annually'].index(port['rebal_freq']), 
+                    key=f"{key_prefix}_rebal_{i}_{st.session_state.refresh_counter}"
+                )
+            with c3:
+                st.session_state.portfolios[i]['min_weight'] = st.number_input(f"Min Weight", min_value=0.0, max_value=1.0, value=port['min_weight'], step=0.01, key=f"{key_prefix}_min_{i}_{st.session_state.refresh_counter}")
+                st.session_state.portfolios[i]['max_weight'] = st.number_input(f"Max Weight", min_value=0.0, max_value=1.0, value=port['max_weight'], step=0.01, key=f"{key_prefix}_max_{i}_{st.session_state.refresh_counter}")
+        
+            # Cash Invested and Portfolio Target Input
+            c_cash, c_target = st.columns(2)
+            with c_cash:
+                st.session_state.portfolios[i]['cash_invested'] = st.number_input(
+                    f"Cash Invested ($)", 
+                    min_value=0.0, 
+                    value=float(port.get('cash_invested', 100000.0)), 
+                    step=1000.0, 
+                    key=f"{key_prefix}_cash_{i}_{st.session_state.refresh_counter}"
+                )
+            
+            with c_target:
+                st.session_state.portfolios[i]['target_amount'] = st.number_input(
+                    f"Portfolio Target ($)", 
+                    min_value=0.0, 
+                    value=float(port.get('target_amount', 0.0)), 
+                    step=1000.0, 
+                    key=f"{key_prefix}_target_{i}_{st.session_state.refresh_counter}",
+                    help="Target goal amount for this portfolio. Used in Growth Forecast."
+                )
+            
+            # Delete Button
+            if st.button("🗑️ Delete Portfolio", key=f"{key_prefix}_del_{i}"):
+                del st.session_state.portfolios[i]
+                st.session_state.refresh_counter += 1
+                st.rerun()
+            
+            # Fixed Weight Inputs
+            if st.session_state.portfolios[i]['allocation_type'] == 'Fixed Weight':
+                input_type = st.radio("Input Type", ["Amounts ($)", "Weights (Decimal)"], key=f"{key_prefix}_input_type_{i}_{st.session_state.refresh_counter}", horizontal=True)
+            
+                st.markdown(f"##### Fixed Weights ({input_type})")
+                fixed_cols = st.columns(3)
+                fixed_weights = {}
+            
+                if input_type == "Amounts ($)":
+                    total_amount = 0.0
+                    dollar_amounts = {}
+                
+                    # Initialize dollar amounts if not present
+                    if 'dollar_amounts' not in st.session_state.portfolios[i]:
+                        st.session_state.portfolios[i]['dollar_amounts'] = {}
+
+                    for idx, ticker in enumerate(port['tickers']):
+                        with fixed_cols[idx % 3]:
+                            amount = st.number_input(
+                                f"{ticker} ($)", 
+                                min_value=0.0, 
+                                value=st.session_state.portfolios[i]['dollar_amounts'].get(ticker, 1000.0),
+                                step=100.0,
+                                key=f"{key_prefix}_amt_{i}_{ticker}_{st.session_state.refresh_counter}"
+                            )
+                            dollar_amounts[ticker] = amount
+                            total_amount += amount
+                
+                    st.session_state.portfolios[i]['dollar_amounts'] = dollar_amounts
+                
+                    if total_amount > 0:
+                        st.info(f"Total Portfolio Value: ${total_amount:,.2f}")
+                        # Calculate weights
+                        for ticker, amount in dollar_amounts.items():
+                            fixed_weights[ticker] = amount / total_amount
+                    else:
+                        st.warning("Total amount is 0. Please enter amounts.")
+            
+                else: # Weights (Decimal)
+                    total_weight = 0.0
+                
+                    # Initialize decimal weights if not present
+                    if 'decimal_weights' not in st.session_state.portfolios[i]:
+                        st.session_state.portfolios[i]['decimal_weights'] = {}
+
+                    for idx, ticker in enumerate(port['tickers']):
+                        with fixed_cols[idx % 3]:
+                            wgt = st.number_input(
+                                f"{ticker} (%)", 
+                                min_value=0.0, 
+                                max_value=1.0,
+                                value=st.session_state.portfolios[i]['decimal_weights'].get(ticker, 1.0/len(port['tickers']) if len(port['tickers']) > 0 else 0.0),
+                                step=0.05,
+                                format="%.2f",
+                                key=f"{key_prefix}_wgt_{i}_{ticker}_{st.session_state.refresh_counter}"
+                            )
+                            fixed_weights[ticker] = wgt
+                            total_weight += wgt
+                
+                    st.session_state.portfolios[i]['decimal_weights'] = fixed_weights
+                
+                    if abs(total_weight - 1.0) > 0.001:
+                        st.warning(f"Total Weight: {total_weight:.2%}. It should sum to 100%.")
+                    else:
+                        st.success(f"Total Weight: {total_weight:.2%}")
+            
+                st.session_state.portfolios[i]['fixed_weights'] = fixed_weights
+
+    # Run Optimization Button
+    st.markdown("---")
+    if st.button("🚀 Run Optimization", use_container_width=True, type="primary", key=f"{key_prefix}_run_opt"):
+        st.session_state.run_optimization = True
+    else:
+        st.session_state.run_optimization = False
+
+    # --- Optimization Logic ---
+    if st.session_state.run_optimization:
+        with st.spinner("Optimizing Portfolios..."):
+            # 1. Gather Tickers
+            all_tickers = set(bm_tickers)
+            for p in st.session_state.portfolios:
+                all_tickers.update(p['tickers'])
+            all_tickers = list(all_tickers)
+        
+            if not all_tickers:
+                st.error("No tickers selected.")
+                st.stop()
+            
+            # 2. Download Data
+            ret_all, ret_bm = download_data(data_source, start_date, end_date, all_tickers, bm_tickers, currency, df_sec_list, df_fx, data_path)
+        
+            if ret_all.empty:
+                st.error("No data downloaded.")
+                st.stop()
+            
+            earliest_start_date = ret_all.index.min()
+            start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
+        
+            # 3. Optimize
+            results = {}
+            for p in st.session_state.portfolios:
+                try:
+                    # Filter valid tickers
+                    valid_tickers = [t for t in p['tickers'] if t in ret_all.columns]
+                    if not valid_tickers:
+                        continue
+                    
+                    constraints = create_constraints(p['min_weight'], p['max_weight'])
+                
+                    rebal_map = {'Annually': [1], 'Semi-annually': [1, 7], 'Quarterly': [1, 4, 7, 10], 'Monthly': list(range(1, 13))}
+                    rebal_months = rebal_map.get(p['rebal_freq'], [1])
+                
+                    weights_df = optimize_portfolio(
+                        ret_all[valid_tickers],
+                        start_date=start_opt_date,
+                        end_date=end_date,
+                        constraints_dict=constraints,
+                        method=p['allocation_type'].lower().replace(' ', '_'),
+                        rebal_months=rebal_months,
+                        fixed_weights=p['fixed_weights'] if p['allocation_type'] == 'Fixed Weight' else None,
+                        min_weight=p['min_weight'],
+                        max_weight=p['max_weight']
+                    )
+                
+                    perf_df = calc_port_perf(ret_all[valid_tickers], weights_df, name_prefix=p['name'])
+                
+                    results[p['name']] = {
+                        'weights': weights_df,
+                        'perf': perf_df,
+                        'tickers': valid_tickers
+                    }
+                except Exception as e:
+                    st.error(f"Error optimizing {p['name']}: {e}")
+        
+            st.session_state.optimization_results = {
+                'results': results,
+                'ret_all': ret_all,
+                'ret_bm': ret_bm
+            }
+
+def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal"):
+    if st.session_state.optimization_results:
+        st.header("3. Analysis Results")
+    
+        res_data = st.session_state.optimization_results
+        results = res_data['results']
+        ret_all = res_data['ret_all']
+        ret_bm = res_data['ret_bm']
+    
+        # Calculate start_opt_date for analytics
+        earliest_start_date = ret_all.index.min()
+        start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
+    
+        # Combine Returns
+        all_port_ret = pd.DataFrame()
+        for p_name, p_res in results.items():
+            p_ret = p_res['perf'][[c for c in p_res['perf'].columns if c.endswith('_port_ret')]]
+            p_ret.columns = [p_name]
+            all_port_ret = pd.concat([all_port_ret, p_ret], axis=1)
+    
+        # Align with Benchmark
+        common_idx = all_port_ret.index.intersection(ret_bm.index)
+        all_port_ret = all_port_ret.loc[common_idx]
+        ret_bm = ret_bm.loc[common_idx]
+    
+        # Tabs
+        tabs = st.tabs([
+            "Key Summary", "Calendar Returns", "Monthly Returns", "Cumulative Returns", 
+            "Return/Risk Scatter", "Returns Distribution", "Rolling Volatility", 
+            "Drawdown", "Correlation Heatmap", "Portfolio vs Benchmark"
+        ])
+    
+        with tabs[0]: # Key Summary
+            summary = get_performance_summary(all_port_ret)
+        
+            # Custom formatting
+            format_dict = {col: "{:.2%}" for col in summary.index}
+            # Override for ratios
+            for idx in ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']:
+                if idx in format_dict:
+                    format_dict[idx] = "{:.2f}"
+                
+            st.dataframe(summary.style.format(format_dict), use_container_width=True)
+        
+            st.markdown("---")
+        
+            # --- Historical Weights View ---
+            st.subheader("Historical Weights (Rebalance Dates)")
+        
+            w_select = st.selectbox("Select Portfolio to View Weights", list(results.keys()), key=f"{key_prefix}_w_view_sel")
+        
+            if w_select:
+                w_df = results[w_select]['weights']
+                # Filter for rebalance dates
+                w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
+            
+                # Clean column names
+                w_rebal.columns = [c.replace('_wgt', '') for c in w_rebal.columns]
+            
+                # Format index
+                w_rebal.index = w_rebal.index.strftime('%Y-%m-%d')
+            
+                st.dataframe(w_rebal.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
+
+            st.markdown("---")
+
+            # --- Fixed Income Analytics ---
+            st.subheader("Fixed Income Analytics")
+        
+            # Identify FI tickers
+            try:
+                # Check if 'YTM / est. yield' exists in index
+                if 'YTM / est. yield' in df_fi_metrics.index:
+                    # Get tickers with non-zero YTM
+                    fi_tickers = df_fi_metrics.columns[df_fi_metrics.loc['YTM / est. yield'] != 0].tolist()
+                
+                    if fi_tickers:
+                        port_fi_metrics = pd.DataFrame()
+                        has_fi = False
+                    
+                        for p_name in results.keys():
+                            # Get weights
+                            w_df = results[p_name]['weights']
+                        
+                            # Check if portfolio has any FI tickers
+                            p_tickers = [c.replace('_wgt', '') for c in w_df.columns if c.endswith('_wgt')]
+                            common_fi = list(set(p_tickers).intersection(fi_tickers))
+                        
+                            if common_fi:
+                                has_fi = True
+                                # Calculate metrics
+                                # exposure_analysis_mixed expects weights with _wgt suffix
+                                ytm_duration_df = pc.exposure_analysis_mixed(
+                                    w_df, 
+                                    df_fi_metrics.loc[['Duration', 'YTM / est. yield']].astype(float), 
+                                    fi_tickers, 
+                                    latest_data=True, 
+                                    start_date=start_opt_date, 
+                                    end_date=end_date
+                                )
+                                ytm_duration_df.columns = [p_name]
+                            
+                                # Credit Rating
+                                try:
+                                    cr = pc.calc_avg_credit_rating(
+                                        w_df, 
+                                        df_fi_metrics.loc[['Credit rating']], 
+                                        latest_data=True,
+                                        start_date=start_opt_date, 
+                                        end_date=end_date
+                                    )
+                                    ytm_duration_df.loc['Credit rating'] = cr
+                                except Exception as e:
+                                    ytm_duration_df.loc['Credit rating'] = 'N/A'
+                                
+                                port_fi_metrics = pd.concat([port_fi_metrics, ytm_duration_df], axis=1)
+                    
+                        # Add Benchmark FI Metrics if available
+                        bm_fi_cols = [t for t in bm_tickers if t in fi_tickers]
+                        if bm_fi_cols:
+                             bm_metrics = df_fi_metrics.loc[['Duration', 'YTM / est. yield', 'Credit rating']][bm_fi_cols]
+                             # If multiple benchmarks, maybe average or show all? 
+                             # For simplicity, just show them as columns
+                             port_fi_metrics = pd.concat([port_fi_metrics, bm_metrics], axis=1)
+
+                        if has_fi and not port_fi_metrics.empty:
+                            # Format
+                            st.dataframe(port_fi_metrics.style.format("{:.2f}", subset=pd.IndexSlice[['Duration', 'YTM / est. yield'], :]), use_container_width=True)
+                        elif not has_fi:
+                            st.info("No Fixed Income assets detected in portfolios.")
+                    else:
+                        st.info("No Fixed Income data available.")
+                else:
+                    st.info("Fixed Income metrics data missing.")
+            except Exception as e:
+                st.error(f"Error calculating FI metrics: {e}")
+        
+        with tabs[1]: # Calendar Returns
+            # Simple resampling for now
+            yearly_ret = all_port_ret.resample('Y').apply(lambda x: (1+x).prod()-1)
+            yearly_ret.index = yearly_ret.index.year
+            st.dataframe(yearly_ret.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
+        
+        with tabs[2]: # Monthly Returns
+            # Show heatmap for first portfolio or selector
+            p_select = st.selectbox("Select Portfolio", all_port_ret.columns, key=f"{key_prefix}_monthly_sel")
+            fig = plot_monthly_heatmap(all_port_ret[[p_select]])
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_monthly_heatmap")
+        
+        with tabs[3]: # Cumulative Returns
+            cum_ret = (1 + all_port_ret).cumprod()
+            # Pass benchmark returns for comparison
+            fig = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_cum_ret")
+        
+        with tabs[4]: # Return/Risk Scatter
+            fig = plot_scatter_risk_return(all_port_ret, benchmark_ret=ret_bm)
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_risk_ret")
+        
+        with tabs[5]: # Returns Distribution
+            # Simple histogram
+            import plotly.figure_factory as ff
+            hist_data = [all_port_ret[c].dropna() for c in all_port_ret.columns]
+            group_labels = all_port_ret.columns
+        
+            try:
+                fig = ff.create_distplot(hist_data, group_labels, show_hist=False, show_rug=False, colors=PALETTE[:len(group_labels)])
+            except np.linalg.LinAlgError:
+                # Fallback for singular matrix (low variance/constant data)
+                fig = go.Figure()
+                for i, col in enumerate(all_port_ret.columns):
+                    fig.add_trace(go.Histogram(x=all_port_ret[col], name=col, marker_color=PALETTE[i % len(PALETTE)], opacity=0.7))
+                fig.update_layout(barmode='overlay')
+            
+            fig.update_layout(title_text='Returns Distribution', plot_bgcolor='white')
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_dist")
+        
+        with tabs[6]: # Rolling Volatility
+            fig = plot_rolling_volatility(all_port_ret)
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_roll_vol")
+        
+        with tabs[7]: # Drawdown
+            fig = plot_drawdowns(all_port_ret)
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_dd")
+        
+        with tabs[8]: # Correlation Heatmap
+            fig = plot_correlation_heatmap(all_port_ret)
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_corr")
+            
+        with tabs[9]: # Portfolio vs Benchmark
+            p_select_bm = st.selectbox("Select Portfolio", all_port_ret.columns, key=f"{key_prefix}_bm_sel")
+        
+            # Calculate Relative Metrics
+            rel_metrics, roll_excess = calculate_relative_metrics(all_port_ret[p_select_bm], ret_bm.iloc[:, 0])
+        
+            st.markdown("#### Relative Performance Metrics")
+            st.dataframe(rel_metrics.to_frame().T.style.format("{:.2%}"), use_container_width=True)
+        
+            st.markdown("#### Rolling 12M Excess Return")
+            fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # Reuse plot function
+            st.plotly_chart(fig_roll, use_container_width=True, key=f"{key_prefix}_roll_excess")
+
+    # --- Exposure Analysis ---
+    if st.session_state.optimization_results:
+        st.header("4. Exposure Analysis")
+        
+        res_data = st.session_state.optimization_results
+        results = res_data['results']
+        
+        # --- Advanced Exposure Filtering ---
+        st.markdown("#### Filter Exposures (Aggregated by Cash Invested)")
+        
+        # Filter Mode Selection
+        filter_mode = st.radio(
+            "Filter Mode", 
+            ["Show All", "By Objective", "By Goal", "By Asset Class", "By Portfolio Type"], 
+            horizontal=True,
+            key=f"{key_prefix}_exp_filt_mode"
+        )
+        
+        # Gather Metadata
+        port_meta = {}
+        for p in st.session_state.portfolios:
+            port_meta[p['name']] = {
+                'objective': p.get('objective', 'Unclassified'),
+                'goal_name': p.get('goal_name', 'Unclassified'),
+                'cash_invested': p.get('cash_invested', 100000.0)
+            }
+            if port_meta[p['name']]['cash_invested'] == 0:
+                port_meta[p['name']]['cash_invested'] = 100000.0
+
+        # Filter Selection Logic
+        filtered_portfolios = []
+        scaling_factors = {}
+
+        if filter_mode == "Show All":
+            filtered_portfolios = list(results.keys())
+            
+        elif filter_mode == "By Objective":
+            all_objs = sorted(list(set([m['objective'] for m in port_meta.values()])))
+            sel_objs = st.multiselect("Select Objective(s)", all_objs, default=all_objs, key=f"{key_prefix}_exp_filt_obj")
+            filtered_portfolios = [p for p in results.keys() if port_meta[p]['objective'] in sel_objs]
+            
+        elif filter_mode == "By Goal":
+            all_goals = sorted(list(set([m['goal_name'] for m in port_meta.values()])))
+            sel_goals = st.multiselect("Select Goal(s)", all_goals, default=all_goals, key=f"{key_prefix}_exp_filt_goal")
+            filtered_portfolios = [p for p in results.keys() if port_meta[p]['goal_name'] in sel_goals]
+            
+        elif filter_mode == "By Portfolio Type":
+            all_types = sorted(list(results.keys()))
+            sel_types = st.multiselect("Select Portfolio(s)", all_types, default=all_types, key=f"{key_prefix}_exp_filt_type")
+            filtered_portfolios = sel_types
+            
+        elif filter_mode == "By Asset Class":
+            all_assets = sorted(df_asset_class.index.tolist()) if df_asset_class is not None else []
+            sel_assets = st.multiselect("Select Asset Class(es)", all_assets, default=all_assets, key=f"{key_prefix}_exp_filt_asset")
+            filtered_portfolios = list(results.keys())
+            
+            # Pre-calculate scaling factors
+            for p_name in filtered_portfolios:
+                w_df = results[p_name]['weights']
+                w_row = w_df.iloc[-1]
+                
+                p_asset_weight = 0.0
+                for ticker_wgt, weight in w_row.items():
+                    ticker = ticker_wgt.replace('_wgt', '')
+                    if ticker in df_asset_class.columns:
+                        asset_breakdown = df_asset_class[ticker]
+                        valid_assets = [a for a in sel_assets if a in asset_breakdown.index]
+                        ticker_asset_contrib = asset_breakdown[valid_assets].sum()
+                        p_asset_weight += weight * ticker_asset_contrib
+                
+                scaling_factors[p_name] = p_asset_weight
+
+        # --- Aggregation Logic ---
+        global_ticker_values = {}
+        total_agg_value = 0.0
+        
+        for p_name in filtered_portfolios:
+            w_df = results[p_name]['weights']
+            w_row = w_df.iloc[-1]
+            cash = port_meta[p_name]['cash_invested']
+            scale = scaling_factors.get(p_name, 1.0)
+            effective_cash = cash * scale
+            
+            if effective_cash > 0:
+                for ticker_wgt, weight in w_row.items():
+                    val = weight * effective_cash
+                    if val > 0:
+                        if ticker_wgt in global_ticker_values:
+                            global_ticker_values[ticker_wgt] += val
+                        else:
+                            global_ticker_values[ticker_wgt] = val
+                        total_agg_value += val
+        
+        # Convert back to weights
+        if total_agg_value > 0:
+            agg_weights = pd.Series({k: v / total_agg_value for k, v in global_ticker_values.items()})
+            charts = get_exposure_charts(agg_weights, df_sector, df_country)
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Sector Exposure")
+                st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_exp_sec_pie")
+                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+            
+            with c2:
+                st.subheader("Country Exposure")
+                st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_exp_cou_pie")
+                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+        else:
+            st.warning("No exposure data found for the selected filters.")
+
+    # --- Factor Exposures ---
+    if st.session_state.optimization_results:
+        st.header("5. Factor Exposures")
+    
+        st.markdown("""
+        **Fama-French 5-Factor Model** exposure coefficients:
+        - **Mkt**: Market risk premium (excess return of market over risk-free rate)
+        - **SMB**: Size (Small Minus Big) - smaller firms tend to outperform larger firms
+        - **HML**: Value (High Minus Low) - high book-to-market (value) vs low book-to-market (growth)
+        - **RMW**: Profitability (Robust Minus Weak) - robust profitability vs weak profitability
+        - **CMA**: Investment (Conservative Minus Aggressive) - conservative vs aggressive investment
+        """)
+    
+        try:
+            # Try to load from file first
+            ff_file_path = os.path.join(os.getcwd(), 'F-F_Research_Data_5_Factors_2x3_daily.csv')
+        
+            try:
+                df_ff_factor = pd.read_csv(ff_file_path, skiprows=3, index_col=0)
+                # Filter out non-numeric rows (like copyright notice)
+                df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
+                df_ff_factor = df_ff_factor.astype(float) / 100
+                df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
+            except FileNotFoundError:
+                with st.spinner("Downloading Fama-French data..."):
+                    ff_link = 'https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip'
+                    response = requests.get(ff_link, verify=False)
+                
+                    if response.status_code == 200:
+                        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                            with zf.open('F-F_Research_Data_5_Factors_2x3_daily.CSV') as file:
+                                df_ff_factor = pd.read_csv(file, skiprows=3, index_col=0)
+                                # Filter out non-numeric rows
+                                df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
+                                df_ff_factor = df_ff_factor.astype(float) / 100
+                                df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
+                    else:
+                        st.error("Failed to download Fama-French data.")
+                        st.stop()
+        
+            # Align data
+            common_index = ret_all.index.intersection(df_ff_factor.index)
+        
+            if len(common_index) == 0:
+                st.warning("No overlapping dates between portfolio data and Fama-French data.")
+            else:
+                # Calculate ticker factor exposures
+                all_tickers_list = list(set([t for p in results.values() for t in p['tickers']]))
+            
+                st.subheader("Individual Ticker Factor Exposures")
+                with st.spinner("Calculating ticker factor exposures..."):
+                    ticker_factors = pc.factor_exposure_coefficient(
+                        ret_all.loc[common_index], 
+                        df_ff_factor.loc[common_index], 
+                        all_tickers_list
+                    )
+                    st.dataframe(
+                        ticker_factors.style.background_gradient(cmap='Blues', axis=None),
+                        use_container_width=True
+                    )
+            
+                # Calculate portfolio factor exposures
+                common_index_2 = all_port_ret.index.intersection(df_ff_factor.index)
+            
+                if len(common_index_2) > 0:
+                    st.subheader("Portfolio Factor Exposures")
+                    with st.spinner("Calculating portfolio factor exposures..."):
+                        # Calculate portfolio factors
+                        port_factors = pc.factor_exposure_coefficient(
+                            all_port_ret.loc[common_index_2], 
+                            df_ff_factor.loc[common_index_2], 
+                            list(results.keys())
+                        )
+                    
+                        # Benchmark selection
+                        st.markdown("**Benchmark Selection for Comparison**")
+                        available_benchmarks = ret_bm.columns.tolist()
+                    
+                        if len(available_benchmarks) > 1:
+                            selected_benchmarks = st.multiselect(
+                                "Select Benchmark(s) for Factor Comparison",
+                                options=available_benchmarks,
+                                default=available_benchmarks,
+                                key=f"{key_prefix}_factor_bm_select"
+                            )
+                        else:
+                            selected_benchmarks = available_benchmarks
+                    
+                        # Calculate benchmark factors
+                        common_index_bm = ret_bm.index.intersection(df_ff_factor.index)
+                        if len(common_index_bm) > 0 and selected_benchmarks:
+                            bm_factors = pc.factor_exposure_coefficient(
+                                ret_bm[selected_benchmarks].loc[common_index_bm],
+                                df_ff_factor.loc[common_index_bm],
+                                selected_benchmarks
+                            )
+                        
+                            # Combine for visualization
+                            all_factors = pd.concat([port_factors, bm_factors])
+                        
+                            # Convert to numeric for plotting
+                            all_factors_numeric = all_factors.apply(lambda x: pd.to_numeric(x, errors='coerce'))
+                        
+                            # Create grouped bar chart
+                            fig = go.Figure()
+                        
+                            for factor in all_factors_numeric.columns:
+                                fig.add_trace(go.Bar(
+                                    name=factor,
+                                    x=all_factors_numeric.index,
+                                    y=all_factors_numeric[factor],
+                                    text=all_factors[factor],
+                                    textposition='auto'
+                                ))
+                        
+                            fig.update_layout(
+                                barmode='group',
+                                title={'text': '<b>Factor Exposures Comparison</b>', 'font': {'size': 20, 'color': '#172B4D'}},
+                                xaxis_title="Portfolio / Benchmark",
+                                yaxis_title="Factor Coefficient",
+                                font={'family': 'Helvetica Neue, Arial', 'color': '#172B4D'},
+                                plot_bgcolor='white',
+                                paper_bgcolor='white',
+                                height=500,
+                                xaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
+                                yaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
+                                legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'xanchor': 'right', 'x': 1}
+                            )
+                        
+                            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_factor_chart")
+                        
+                            # Display combined table
+                            st.dataframe(
+                                all_factors.style.background_gradient(cmap='Blues', axis=None),
+                                use_container_width=True
+                            )
+                        else:
+                            # Just portfolios, no benchmark comparison
+                            st.dataframe(
+                                port_factors.style.background_gradient(cmap='Blues', axis=None),
+                                use_container_width=True
+                            )
+                else:
+                    st.warning("No overlapping dates for portfolio factor analysis.")
+                
+        except Exception as e:
+            st.error(f"Error calculating factor exposures: {e}")
+            st.exception(e)
+
+    # --- Cash Flow Analysis ---
+    if st.session_state.optimization_results:
+        # Check if any portfolio has cash invested
+        portfolios_with_cash = {
+            p_name: p for p_name, p in enumerate(st.session_state.portfolios) 
+            if p.get('cash_invested', 0.0) > 0
+        }
+    
+        if portfolios_with_cash:
+            st.header("6. Cash Flow Analysis")
+            st.markdown("**Projected monthly cash flows based on portfolio yields and cash invested.**")
+        
+            # Portfolio selection
+            all_portfolio_names = [p['name'] for idx, p in portfolios_with_cash.items()]
+            selected_portfolios = st.multiselect(
+                "Select Portfolio(s) to Display",
+                options=all_portfolio_names,
+                default=all_portfolio_names,
+                key=f"{key_prefix}_cashflow_portfolio_select"
+            )
+        
+            if not selected_portfolios:
+                st.warning("Please select at least one portfolio to display cash flows.")
+                st.stop()
+        
+            # Filter portfolios based on selection
+            filtered_portfolios = {
+                idx: p for idx, p in portfolios_with_cash.items() 
+                if p['name'] in selected_portfolios
+            }
+        
+            # Helper function to determine payment frequency
+            def get_payment_frequency(ticker):
+                """Returns 'monthly' or 'quarterly' based on ticker type."""
+                # Check if ticker contains REIT indicators
+                if 'REIT' in ticker.upper() or 'VNQ' in ticker or 'VNQI' in ticker:
+                    return 'quarterly'
+                # Default to monthly for bonds and other income assets
+                return 'monthly'
+        
+            # Calculate cash flows
+            monthly_cash_flows = pd.DataFrame(0.0, 
+                                             index=[p['name'] for idx, p in filtered_portfolios.items()],
+                                             columns=list(range(1, 13)))
+        
+            ticker_cash_flows = {}  # Track by ticker for stacked chart
+        
+            for idx, port in filtered_portfolios.items():
+                p_name = port['name']
+                cash_invested = port['cash_invested']
+            
+                # Get portfolio weights from optimization results
+                if p_name in results:
+                    weights_df = results[p_name]['weights']
+                    latest_weights = weights_df.iloc[-1]
+                
+                    for ticker in port['tickers']:
+                        weight_col = f"{ticker}_wgt"
+                        if weight_col in latest_weights.index:
+                            weight = latest_weights[weight_col]
+                            invested_in_ticker = cash_invested * weight
+                        
+                            # Get yield
+                            annual_yield = 0.0
+                            if ticker in df_fi_metrics.columns:
+                                if 'YTM / est. yield' in df_fi_metrics.index:
+                                    yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
+                                    if pd.notna(yield_val) and yield_val != 0:
+                                        # Convert from percentage to decimal (e.g., 5.0 -> 0.05)
+                                        annual_yield = float(yield_val) / 100
+                        
+                            if annual_yield > 0 and invested_in_ticker > 0:
+                                payment_freq = get_payment_frequency(ticker)
+                            
+                                # Store ticker-level cash flows for stacked chart
+                                ticker_key = f"{p_name} - {ticker}"
+                                if ticker_key not in ticker_cash_flows:
+                                    ticker_cash_flows[ticker_key] = np.zeros(12)
+                            
+                                if payment_freq == 'monthly':
+                                    monthly_payment = (invested_in_ticker * annual_yield) / 12
+                                    for month in range(12):
+                                        monthly_cash_flows.loc[p_name, month + 1] += monthly_payment
+                                        ticker_cash_flows[ticker_key][month] += monthly_payment
+                                else:  # quarterly
+                                    quarterly_payment = (invested_in_ticker * annual_yield) / 4
+                                    for quarter in range(4):
+                                        month = (quarter * 3) + 2  # Months 3, 6, 9, 12 (index 2, 5, 8, 11)
+                                        monthly_cash_flows.loc[p_name, month + 1] += quarterly_payment
+                                        ticker_cash_flows[ticker_key][month] += quarterly_payment
+        
+            # Create stacked bar chart
+            fig = go.Figure()
+        
+            # Use distinct colors for each ticker
+            colors_list = PALETTE * 10  # Repeat palette if needed
+        
+            for i, (ticker_key, cash_flow_array) in enumerate(ticker_cash_flows.items()):
+                fig.add_trace(go.Bar(
+                    name=ticker_key,
+                    x=list(range(1, 13)),
+                    y=cash_flow_array,
+                    marker_color=colors_list[i % len(colors_list)]
+                ))
+        
+            fig.update_layout(
+                barmode='stack',
+                title={'text': '<b>Monthly Cash Flow Projections</b>', 'font': {'size': 20, 'color': '#172B4D'}},
+                xaxis_title="Month",
+                yaxis_title="Cash Flow ($)",
+                xaxis={'tickmode': 'linear', 'tick0': 1, 'dtick': 1},
+                yaxis={'tickformat': '$,.0f'},
+                font={'family': 'Helvetica Neue, Arial', 'color': '#172B4D'},
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                height=500,
+                xaxis_showgrid=True,
+                yaxis_showgrid=True,
+                legend={'orientation': 'v', 'yanchor': 'top', 'y': 1, 'xanchor': 'left', 'x': 1.02}
+            )
+        
+            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_cashflow_chart")
+        
+            # Summary table
+            st.subheader("Monthly Cash Flow Summary by Portfolio")
+            monthly_cash_flows.columns = [f"Month {m}" for m in range(1, 13)]
+            monthly_cash_flows['Total Annual'] = monthly_cash_flows.sum(axis=1)
+        
+            st.dataframe(
+                monthly_cash_flows.style.format("${:,.2f}").background_gradient(cmap='Greens', axis=None),
+                use_container_width=True
+            )
+        
+            # Total across all portfolios
+            total_monthly = monthly_cash_flows.drop(columns=['Total Annual']).sum()
+            total_annual = total_monthly.sum()
+        
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Annual Cash Flow", f"${total_annual:,.2f}")
+            with col2:
+                st.metric("Average Monthly Cash Flow", f"${total_annual/12:,.2f}")
+        
+        # --- Growth Forecast Calculator ---
+        st.markdown("---")
+        st.header("Growth Forecast Calculator")
+        st.caption("Project future portfolio value based on historical returns")
+        
+        if st.session_state.portfolios:
+            # Portfolio selector
+            portfolio_names = [p['name'] for p in st.session_state.portfolios]
+            selected_portfolio_name = st.selectbox(
+                "Select Portfolio", 
+                portfolio_names,
+                key=f"{key_prefix}_forecast_portfolio"
+            )
+            
+            # Find selected portfolio
+            selected_portfolio = next((p for p in st.session_state.portfolios if p['name'] == selected_portfolio_name), None)
+            
+            if selected_portfolio and 'tickers' in selected_portfolio and selected_portfolio['tickers']:
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    # Auto-populate target goal from portfolio if available and non-zero
+                    default_target = float(selected_portfolio.get('target_amount', 0.0))
+                    if default_target == 0:
+                        default_target = float(selected_portfolio.get('cash_invested', 1000000.0))
+                        
+                    target_goal = st.number_input(
+                        "Target Goal Value ($)", 
+                        min_value=0.0, 
+                        value=default_target, 
+                        step=10000.0,
+                        key=f"{key_prefix}_target_goal_{selected_portfolio['id']}"
+                    )
+                
+                with col2:
+                    lookback_period = st.selectbox(
+                        "Return Assumption (Historical)", 
+                        ["1 Year", "3 Years", "5 Years"],
+                        key=f"{key_prefix}_lookback_{selected_portfolio['id']}"
+                    )
+                
+                with col3:
+                    # Auto-populate from portfolio horizon if available
+                    default_horizon = selected_portfolio.get('horizon', 10)
+                    time_horizon = st.slider(
+                        "Time Horizon (Years)", 
+                        min_value=1, 
+                        max_value=30, 
+                        value=int(default_horizon),
+                        key=f"{key_prefix}_horizon_{selected_portfolio['id']}"
+                    )
+                
+                col4, col5 = st.columns(2)
+                
+                with col4:
+                    solve_for_payment = st.checkbox(
+                        "Solve for monthly payment required to meet goal?",
+                        key=f"{key_prefix}_solve_payment"
+                    )
+                    
+                    if not solve_for_payment:
+                        monthly_contribution = st.number_input(
+                            "Monthly Contribution ($)", 
+                            min_value=0.0, 
+                            value=0.0, 
+                            step=100.0,
+                            key=f"{key_prefix}_monthly_contrib"
+                        )
+                    else:
+                        monthly_contribution = None  # Will be calculated
+                
+                with col5:
+                    initial_value = selected_portfolio.get('cash_invested', 100000.0)
+                    st.metric("Current Portfolio Value", f"${initial_value:,.2f}")
+                
+                if st.button("Calculate Projection", type="primary", key=f"{key_prefix}_calc_forecast"):
+                    with st.spinner("Calculating future value projection..."):
+                        # Calculate expected return
+                        lookback_years = int(lookback_period.split()[0])
+                        
+                        # Get weights
+                        if 'fixed_weights' in selected_portfolio:
+                            weights = selected_portfolio['fixed_weights']
+                        elif 'decimal_weights' in selected_portfolio:
+                            weights = selected_portfolio['decimal_weights']
+                        else:
+                            st.error("Portfolio weights not found")
+                            return
+                        
+                        # Calculate weighted average historical return
+                        try:
+                            # Get historical data if optimization was run
+                            if 'optimization_results' in st.session_state and st.session_state.optimization_results:
+                                ret_all = st.session_state.optimization_results.get('ret_all')
+                                
+                                if ret_all is not None:
+                                    # Filter to lookback period
+                                    end_date = ret_all.index.max()
+                                    start_date = end_date - pd.DateOffset(years=lookback_years)
+                                    
+                                    ret_filtered = ret_all.loc[start_date:end_date]
+                                    
+                                    # Calculate portfolio daily returns
+                                    # R_p = sum(w_i * r_i) for each day
+                                    portfolio_daily_ret = pd.Series(0.0, index=ret_filtered.index)
+                                    valid_tickers = []
+                                    
+                                    for ticker, weight in weights.items():
+                                        if ticker in ret_filtered.columns:
+                                            portfolio_daily_ret += ret_filtered[ticker] * weight
+                                            valid_tickers.append(ticker)
+                                    
+                                    # Calculate annualized return (CAGR) of the portfolio
+                                    if not portfolio_daily_ret.empty:
+                                        cumulative_return = (1 + portfolio_daily_ret).prod() - 1
+                                        num_years = len(portfolio_daily_ret) / 252
+                                        expected_return = (1 + cumulative_return) ** (1 / num_years) - 1 if num_years > 0 else 0
+                                    else:
+                                        expected_return = 0.07
+                                else:
+                                    # Fallback if no historical data
+                                    expected_return = 0.07  # 7% default
+                            else:
+                                # Fallback if optimization not run
+                                expected_return = 0.07  # 7% default
+                            
+                            # If solving for monthly payment, calculate required contribution
+                            if solve_for_payment:
+                                # Solve for PMT given FV, PV, r, n
+                                # FV = PV(1+r)^n + PMT * [((1+r)^n - 1) / r] * (1+r)
+                                # PMT = (FV - PV(1+r)^n) / ([((1+r)^n - 1) / r] * (1+r))
+                                
+                                future_value_of_initial = initial_value * ((1 + expected_return) ** time_horizon)
+                                gap = target_goal - future_value_of_initial
+                                
+                                if expected_return > 0:
+                                    # Annuity factor for monthly contributions
+                                    annuity_factor = (((1 + expected_return) ** time_horizon - 1) / expected_return) * (1 + expected_return)
+                                    required_monthly = (gap / annuity_factor) / 12 if annuity_factor > 0 else 0
+                                else:
+                                    required_monthly = gap / (time_horizon * 12) if time_horizon > 0 else 0
+                                
+                                monthly_contribution = max(0, required_monthly)  # Don't allow negative
+                                st.info(f"💡 Required monthly contribution to meet goal: **${monthly_contribution:,.2f}**")
+                            
+                            # Project future values
+                            years_array = np.arange(0, time_horizon + 1)
+                            projected_values = []
+                            
+                            current_value = initial_value
+                            for year in years_array:
+                                if year == 0:
+                                    projected_values.append(current_value)
+                                else:
+                                    # Add monthly contributions for the year
+                                    annual_contributions = monthly_contribution * 12 if monthly_contribution else 0
+                                    # Future value formula: FV = PV(1+r)^t + PMT * [((1+r)^t - 1) / r]
+                                    current_value = current_value * (1 + expected_return) + annual_contributions * (1 + expected_return)
+                                    projected_values.append(current_value)
+                            
+                            # Create visualization
+                            fig = go.Figure()
+                            
+                            # Projected value line
+                            fig.add_trace(go.Scatter(
+                                x=years_array,
+                                y=projected_values,
+                                mode='lines+markers',
+                                name='Projected Portfolio Value',
+                                line=dict(color='green', width=3)
+                            ))
+                            
+                            # Target goal line
+                            fig.add_trace(go.Scatter(
+                                x=years_array,
+                                y=[target_goal] * len(years_array),
+                                mode='lines',
+                                name='Target Goal',
+                                line=dict(color='red', dash='dash', width=2)
+                            ))
+                            
+                            fig.update_layout(
+                                title=f"Portfolio Growth Projection - {selected_portfolio_name}",
+                                xaxis_title="Years",
+                                yaxis_title="Portfolio Value ($)",
+                                hovermode='x unified',
+                                yaxis=dict(tickformat='$,.0f')
+                            )
+                            
+                            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_forecast_chart")
+                            
+                            # Summary metrics
+                            final_value = projected_values[-1]
+                            total_contributions = monthly_contribution * 12 * time_horizon
+                            investment_growth = final_value - initial_value - total_contributions
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.metric("Expected Annual Return", f"{expected_return*100:.2f}%")
+                            
+                            with col2:
+                                st.metric("Projected Final Value", f"${final_value:,.2f}")
+                            
+                            with col3:
+                                gap = final_value - target_goal
+                                gap_pct = (gap / target_goal * 100) if target_goal > 0 else 0
+                                st.metric("Gap to Goal", f"${gap:,.2f}", f"{gap_pct:+.1f}%")
+                            
+                            with col4:
+                                st.metric("Investment Growth", f"${investment_growth:,.2f}")
+                            
+                            # Recommendations
+                            if gap < 0:
+                                st.warning(f"⚠️ Your projected value falls short of the target by ${abs(gap):,.2f}. Consider increasing contributions or extending the time horizon.")
+                            else:
+                                st.success(f"✅ You're on track to exceed your goal by ${gap:,.2f}!")
+                                
+                        except Exception as e:
+                            st.error(f"Error calculating projection: {str(e)}")
+                            # Show fallback with default return
+                            st.info("Using default 7% annual return assumption")
+            else:
+                st.info("Please construct a portfolio first to use the Growth Forecast Calculator")
+        else:
+            st.info("No portfolios available. Please add portfolios in the Portfolio Construction section above.")

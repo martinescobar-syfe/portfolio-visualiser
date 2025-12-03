@@ -65,46 +65,40 @@ def get_gemini_recommendation(api_key, client_profile):
         profile_str = json.dumps(client_profile, indent=2)
         
         prompt = f"""
-        You are an expert financial advisor at Syfe. 
-        Use the following **Syfe Product Context** to recommend a portfolio allocation for the client based on their detailed profile.
-        
-        {SYFE_CONTEXT}
-        
-        **Client Profile**:
-        ```json
-        {profile_str}
-        ```
-        
-        **Instructions**:
-        1.  **Analyze the Client**:
-            -   Assess Risk Capacity, Human Capital, Goal Feasibility, and Tax/Currency needs.
-            -   **Check Accredited Investor (AI) Status**: If "Yes" (Income > $300k or Assets > $2M), they qualify for **Private Wealth Products**.
-            
-        2.  **Recommend Syfe Portfolios**:
-            -   Map each Goal to a suitable Syfe Product.
-            -   **For Accredited Investors**: You **MUST** consider recommending **Private Credit Funds** or **Fixed Maturity Bond Portfolios** (from Private Wealth) for goals requiring stable yield or diversification, as these are premium products unavailable to retail.
-            -   **Core Portfolio**: Select based on overall risk profile.
-            -   **Satellite/Add-ons**: REIT+, Income+, Thematics.
-            -   Ensure allocations are rounded to the nearest 5%.
-            
-        3.  **Output Format**:
-            -   **Section 1: Executive Summary**
-                -   Provide a concise summary (max 2 sentences per goal) explaining the recommendation rationale.
-            
-            -   **Section 2: Asset Allocation Strategy**
-                -   **Strictly** provide a Markdown Table with the following columns:
-                    -   `Goal Bucket`
-                    -   `Goal Name(s)`
-                    -   `Horizon`
-                    -   `Syfe Product`
-                    -   `Allocation Rec. (%)`
-                    -   `Rationale` (1 sentence)
-                -   Do not include any introductory text before or after the table.
-            
-        4.  **Tone & Formatting**: 
-            -   Professional, direct, and deterministic.
-            -   **NO LaTeX**: Do not use LaTeX formatting (e.g., no $ symbols for math). Use plain text (e.g., "$5M", not "$5M$").
-        """
+    You are a highly experienced Wealth Management Investment Counsellor at Syfe.
+    Your task is to analyze the client's profile and recommend a portfolio allocation using Syfe's specific product suite.
+
+    **Client Profile:**
+    {client_profile}
+    
+    **Client Goals & Priorities:**
+    {client_profile.get('Goals', 'No specific goals provided.')}
+
+    **Instructions:**
+    1.  **Executive Summary**: Briefly analyze the client's profile, focusing on their risk tolerance, financial situation, and **specifically addressing each of their stated goals and priorities**. Explain how the recommended strategy aligns with these goals.
+    
+    2.  **Portfolio Recommendation**:
+        *   For EACH goal listed in the "Client Goals & Priorities", create a specific portfolio recommendation.
+        *   If no specific goals are listed, create a general "Wealth Accumulation" portfolio.
+        *   **CRITICAL**: You must output the recommendation in a markdown table format.
+        *   The table MUST have the following columns: `Objective`, `Goal Name`, `Horizon (Yrs)`, `Product`, `Allocation (%)`, `Dollar Amount ($)`, `Rationale`.
+        *   `Objective`: One of: "Wealth Growth", "Income Generation", or "Capital Preservation".
+        *   `Goal Name`: Use the EXACT name provided in the client's goals (e.g., "Retirement", "House Downpayment").
+        *   `Horizon (Yrs)`: The time horizon from the goal's "Horizon (Yrs)" field.
+        *   `Product`: Must be one of the valid Syfe products listed in the context below.
+        *   `Allocation (%)`: The percentage of that specific goal's portfolio allocated to the product.
+        *   `Dollar Amount ($)`: Calculate this by multiplying the Allocation (%) by the "Lump Sum Investment ($)" specified for that goal. If "Lump Sum Investment ($)" is not provided or 0, use the "Amount ($)" (Target Amount) as a fallback. Format as a dollar amount (e.g., "$50,000").
+        *   `Rationale`: A brief 1-sentence explanation for this allocation.
+        *   The allocations for EACH goal must sum up to 100%.
+    
+    **Product Constraints:**
+    *   **AI Products**: Only recommend "Private Credit" or "Fixed Maturity Bond" if "Accredited Investor" is True.
+    *   **30% Limit**: "Private Credit" and "Fixed Maturity Bond" combined must NOT exceed 30% of any single goal's portfolio.
+    *   **Valid Products**: Use ONLY the product names listed in the context (e.g., "Core Equity100", "REIT+ 100% REITs", "Income+ Enhance", "Cash+ Flexi", "Cash+ Guaranteed", "Private Credit", "Fixed Maturity Bond").
+    
+    **Context:**
+    {SYFE_CONTEXT}
+    """
 
         # List of models to try in order of preference (Gemini 3 Pro Preview first!)
         models_to_try = [
@@ -153,29 +147,56 @@ def parse_recommendation_table(recommendation_text):
         "China Growth": "China Growth",
         "Cash+ Flexi (SGD)": "Cash SGD flexi",
         "Cash+ Flexi (USD)": "Cash USD flexi",
+        "Cash+ Flexi": "Cash SGD flexi", # Generic fallback
         "Cash+ Guaranteed": "Cash SGD guaranteed", # Proxy
         # Add more mappings as needed
     }
     
-    allocations = {}
+    portfolios = {}
     failed_items = []
     
     try:
         lines = recommendation_text.split('\n')
         for line in lines:
-            # Look for table rows: | Goal | ... | Product | Allocation | ... |
-            if '|' in line and '---' not in line and 'Goal Bucket' not in line:
+            # Look for table rows with new format: | Objective | Goal Name | Horizon | Product | Allocation (%) | Dollar Amount ($) | Rationale |
+            if '|' in line and '---' not in line and 'Objective' not in line and 'Goal Name' not in line:
                 parts = [p.strip() for p in line.split('|') if p.strip()]
-                if len(parts) >= 5:
-                    # Expected: Goal Bucket | Goal Name | Horizon | Syfe Product | Alloc % | Rationale
-                    product_name = parts[3]
+                if len(parts) >= 5:  # At minimum need Objective, Goal Name, Horizon, Product, Allocation
+                    # New format: 0=Objective, 1=Goal Name, 2=Horizon, 3=Product, 4=Allocation %, 5=Dollar Amount (optional), 6=Rationale (optional)
+                    
+                    objective_raw = parts[0].strip()
+                    goal_name = parts[1].strip()
+                    horizon_str = parts[2].strip()
+                    product_name = parts[3].strip()
                     alloc_str = parts[4].replace('%', '').strip()
+                    
+                    # Validate objective
+                    valid_objectives = ["Wealth Growth", "Income Generation", "Capital Preservation"]
+                    objective = None
+                    
+                    if objective_raw in valid_objectives:
+                        objective = objective_raw
+                    else:
+                        # Try partial match
+                        for valid_obj in valid_objectives:
+                            if valid_obj in objective_raw:
+                                objective = valid_obj
+                                break
+                    
+                    # Fallback if no objective found
+                    if objective is None:
+                        objective = "Wealth Growth" # Default
+                    
+                    # Extract horizon as integer
+                    try:
+                        horizon = int(horizon_str.replace('yrs', '').replace('years', '').replace('yr', '').strip())
+                    except:
+                        horizon = 10  # Default
                     
                     try:
                         weight = float(alloc_str) / 100.0
                         
                         # Map product name to ticker
-                        # Try exact match first, then partial
                         ticker = product_map.get(product_name)
                         if not ticker:
                             # Fuzzy matching or fallback
@@ -185,14 +206,23 @@ def parse_recommendation_table(recommendation_text):
                                     break
                         
                         if ticker and weight > 0:
-                            if ticker in allocations:
-                                allocations[ticker] += weight
+                            # Initialize goal group if not exists
+                            if goal_name not in portfolios:
+                                portfolios[goal_name] = {
+                                    'objective': objective,
+                                    'horizon': horizon,
+                                    'allocations': {}
+                                }
+                            
+                            # Add to allocations
+                            if ticker in portfolios[goal_name]['allocations']:
+                                portfolios[goal_name]['allocations'][ticker] += weight
                             else:
-                                allocations[ticker] = weight
+                                portfolios[goal_name]['allocations'][ticker] = weight
                         else:
                             # Failed to map or weight is 0
                             if weight > 0:
-                                failed_items.append((product_name, weight))
+                                failed_items.append((product_name, weight, goal_name))
                                 
                     except ValueError:
                         continue # Skip if weight isn't a number
@@ -201,4 +231,4 @@ def parse_recommendation_table(recommendation_text):
         print(f"Error parsing table: {e}")
         return {}, []
         
-    return allocations, failed_items
+    return portfolios, failed_items
