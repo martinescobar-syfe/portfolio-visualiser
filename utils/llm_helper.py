@@ -78,18 +78,21 @@ def get_gemini_recommendation(api_key, client_profile):
     1.  **Executive Summary**: Briefly analyze the client's profile, focusing on their risk tolerance, financial situation, and **specifically addressing each of their stated goals and priorities**. Explain how the recommended strategy aligns with these goals.
     
     2.  **Portfolio Recommendation**:
+        *   Structure this section by Goal.
         *   For EACH goal listed in the "Client Goals & Priorities", create a specific portfolio recommendation.
-        *   If no specific goals are listed, create a general "Wealth Accumulation" portfolio.
-        *   **CRITICAL**: You must output the recommendation in a markdown table format.
+        *   **Format**:
+            *   **Header**: "Goal X: [Goal Name] ($[Lump Sum] Lump Sum, [Horizon] Year Horizon)"
+            *   **Table**: Immediately follow the header with a markdown table for that goal.
         *   The table MUST have the following columns: `Objective`, `Goal Name`, `Horizon (Yrs)`, `Product`, `Allocation (%)`, `Dollar Amount ($)`, `Rationale`.
         *   `Objective`: One of: "Wealth Growth", "Income Generation", or "Capital Preservation".
-        *   `Goal Name`: Use the EXACT name provided in the client's goals (e.g., "Retirement", "House Downpayment").
+        *   `Goal Name`: Use the EXACT name provided in the client's goals.
         *   `Horizon (Yrs)`: The time horizon from the goal's "Horizon (Yrs)" field.
         *   `Product`: Must be one of the valid Syfe products listed in the context below.
         *   `Allocation (%)`: The percentage of that specific goal's portfolio allocated to the product.
-        *   `Dollar Amount ($)`: Calculate this by multiplying the Allocation (%) by the "Lump Sum Investment ($)" specified for that goal. If "Lump Sum Investment ($)" is not provided or 0, use the "Amount ($)" (Target Amount) as a fallback. Format as a dollar amount (e.g., "$50,000").
+        *   `Dollar Amount ($)`: Calculate this by multiplying the Allocation (%) by the "Lump Sum Investment ($)" specified for that goal. Format as a dollar amount (e.g., "$50,000").
         *   `Rationale`: A brief 1-sentence explanation for this allocation.
         *   The allocations for EACH goal must sum up to 100%.
+        *   **NO LATEX**: Do NOT use LaTeX formatting (e.g., do not use `$` for math blocks). Use standard text only.
     
     **Product Constraints:**
     *   **AI Products**: Only recommend "Private Credit" or "Fixed Maturity Bond" if "Accredited Investor" is True.
