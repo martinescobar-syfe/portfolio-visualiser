@@ -21,6 +21,26 @@ import requests
 import zipfile
 import io
 
+def get_portfolio_objective(portfolio_name):
+    """Determine objective based on portfolio name keywords."""
+    name_lower = portfolio_name.lower()
+    
+    # Wealth Growth (Thematics + Equity)
+    if any(keyword in name_lower for keyword in ['china', 'disruptive', 'esg', 'clean', 'healthcare', 'equity', 'growth']):
+        return 'Wealth Growth'
+    
+    # Income Generation (includes AI investments like BlackRock, Monroe)
+    if any(keyword in name_lower for keyword in ['income', 'enhance', 'reit', 'blackrock', 'monroe']):
+        return 'Income Generation'
+    
+    # Capital Preservation
+    if any(keyword in name_lower for keyword in ['preserve', 'cash', 'guaranteed']):
+        return 'Capital Preservation'
+    
+    # Default to Wealth Growth for unclassified
+    return 'Wealth Growth'
+
+
 def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="upload"):
     st.header("1. Client Data Upload")
     uploaded_file = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key=f"{key_prefix}_file_uploader")
@@ -36,10 +56,14 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
             # Mapping logic
             CLIENT_PORTFOLIO_MAPPING = {
                 'GLOBAL_EQUITY_100': 'Core Equity100',
+                'CHINA_GROWTH': 'China Growth',
                 'INCOME_ENHANCE': 'Income Enhance',
                 'INCOME_PRESERVE': 'Income Preserve',
                 'REIT': 'REIT 100',
+                'BLACKROCK': 'BlackRock Private Credit Fund',
                 'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
+                'CASH_PLUS_USD': 'Cash USD flexi',
+                'CASH_PLUS': 'Cash SGD flexi',  # Default SGD
                 'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
                 'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
                 'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
@@ -51,9 +75,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
             OBJECTIVE_MAPPING = {
                 'Core Equity100': 'Wealth Growth',
                 'SRS Equity100': 'Wealth Growth',
+                'China Growth': 'Wealth Growth',
                 'REIT 100': 'Income Generation',
                 'Income Enhance': 'Income Generation',
                 'SRS Income Enhance': 'Income Generation',
+                'BlackRock PCF': 'Income Generation',
                 'Income Preserve': 'Capital Preservation',
                 'SRS Income Preserve': 'Capital Preservation',
                 'Cash SGD guaranteed': 'Capital Preservation',
@@ -106,13 +132,17 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                             if asset_weight > 0:
                                 asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (asset_weight * weight)
                     else:
-                        # Fallback for unknown tickers (e.g. assume Cash or Unclassified)
-                        asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
+                        # Check if it's an AI investment (BlackRock, Monroe)
+                        if 'blackrock' in ticker.lower() or 'monroe' in ticker.lower():
+                            asset_allocation['Alternative Investments'] = asset_allocation.get('Alternative Investments', 0.0) + weight
+                        else:
+                            # Fallback for other unknown tickers
+                            asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
 
                 # Calculate Objective Allocation
                 objective_allocation = {}
                 for ticker, weight in client_weights.items():
-                    obj = OBJECTIVE_MAPPING.get(ticker, 'Unclassified')
+                    obj = get_portfolio_objective(ticker)
                     objective_allocation[obj] = objective_allocation.get(obj, 0.0) + weight
 
                 # --- NEW: Tabs for Allocation vs Exposures ---
@@ -187,11 +217,12 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                         filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
                         
                     elif filter_mode == "By Objective":
-                        all_objectives = sorted(list(set(OBJECTIVE_MAPPING.values())))
+                        # Get all unique objectives from client portfolios
+                        all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
                         sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
                         
                         for ticker, weight in client_weights.items():
-                            obj = OBJECTIVE_MAPPING.get(ticker, 'Unclassified')
+                            obj = get_portfolio_objective(ticker)
                             if obj in sel_objectives:
                                 filtered_weights[f"{ticker}_wgt"] = weight
                                 
@@ -976,7 +1007,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         # Filter Controls
         filter_mode = st.radio(
             "Filter Mode", 
-            ["Show All", "By Objective", "By Portfolio Type"], 
+            ["Show All", "By Objective", "By Portfolio"], 
             horizontal=True,
             key=f"{key_prefix}_exp_filt_mode"
         )
@@ -1005,10 +1036,24 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             sel_objs = st.multiselect("Select Objective(s)", all_objs, default=all_objs, key=f"{key_prefix}_exp_filt_obj")
             filtered_portfolios = [p for p in results.keys() if port_meta[p]['objective'] in sel_objs]
             
-        elif filter_mode == "By Portfolio Type":
-            all_types = sorted(list(results.keys()))
-            sel_types = st.multiselect("Select Portfolio(s)", all_types, default=all_types, key=f"{key_prefix}_exp_filt_type")
-            filtered_portfolios = sel_types
+        elif filter_mode == "By Portfolio":
+            # Gather all unique tickers from all portfolios
+            all_tickers = set()
+            for p_name in results.keys():
+                w_df = results[p_name]['weights']
+                w_row = w_df.iloc[-1]
+                for ticker_wgt in w_row.index:
+                    if ticker_wgt.endswith('_wgt'):
+                        ticker = ticker_wgt.replace('_wgt', '')
+                        all_tickers.add(ticker)
+            
+            all_tickers = sorted(list(all_tickers))
+            sel_tickers = st.multiselect("Select Underlying Portfolio(s)", all_tickers, default=all_tickers, key=f"{key_prefix}_exp_filt_ticker")
+            
+            # Filter to include all portfolios, but only selected tickers within each
+            filtered_portfolios = list(results.keys())
+            # Store which tickers to include for filtering weights later
+            selected_ticker_wgts = set([f"{t}_wgt" for t in sel_tickers])
             
         # Level 2 Filter: By Goal (Applied on top of Level 1)
         # Only show goal filter if we have portfolios selected
@@ -1034,6 +1079,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             if effective_cash > 0:
                 for ticker_wgt, weight in w_row.items():
+                    # If "By Portfolio" mode, only include selected tickers
+                    if filter_mode == "By Portfolio" and ticker_wgt not in selected_ticker_wgts:
+                        continue
+                    
                     val = weight * effective_cash
                     if val > 0:
                         if ticker_wgt in global_ticker_values:
@@ -1482,12 +1531,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                             valid_tickers.append(ticker)
                                     
                                     # Calculate annualized return (CAGR) of the portfolio
-                                    if not portfolio_daily_ret.empty:
+                                    if not portfolio_daily_ret.empty and len(valid_tickers) > 0:
                                         cumulative_return = (1 + portfolio_daily_ret).prod() - 1
                                         num_years = len(portfolio_daily_ret) / 252
                                         expected_return = (1 + cumulative_return) ** (1 / num_years) - 1 if num_years > 0 else 0
                                     else:
-                                        expected_return = 0.07
+                                        expected_return = 0.07  # Default when no valid historical data
                                 else:
                                     # Fallback if no historical data
                                     expected_return = 0.07  # 7% default
@@ -1582,10 +1631,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 st.metric("Investment Growth", f"${investment_growth:,.2f}")
                             
                             # Recommendations
-                            if gap < 0:
+                            if gap < -1:
                                 st.warning(f"⚠️ Your projected value falls short of the target by ${abs(gap):,.2f}. Consider increasing contributions or extending the time horizon.")
-                            else:
+                            elif gap > 1:
                                 st.success(f"✅ You're on track to exceed your goal by ${gap:,.2f}!")
+                            else:
+                                st.success(f"✅ You are on track to meet your goal exactly!")
                                 
                         except Exception as e:
                             st.error(f"Error calculating projection: {str(e)}")

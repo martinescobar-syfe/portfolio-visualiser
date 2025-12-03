@@ -149,7 +149,7 @@ available_tickers = sorted(df_sec_list['Ticker'].tolist())
 bm_tickers = ['SPY', 'ACWI', 'URTH'] # Default value, can be updated by user in Base Settings if needed
 
 with st.container():
-    st.markdown("## (Revised) Portfolio Visualiser")
+    st.markdown("## Portfolio Visualiser")
     
     # --- Client Type Selection ---
     client_type = st.radio(
