@@ -61,9 +61,9 @@ def group_tail(series, top_n=9):
     
     return pd.concat([top, others])
 
-def get_exposure_charts(weights, df_sector, df_country):
+def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None):
     """
-    Returns a dictionary of charts and tables for Sector and Country exposure.
+    Returns a dictionary of charts and tables for Sector, Country, and optionally Asset Class exposure.
     """
     charts = {}
     
@@ -82,5 +82,14 @@ def get_exposure_charts(weights, df_sector, df_country):
     charts['country_table'] = country_exp.to_frame(name='Weight')
     charts['country_bar'] = plot_bar_chart(country_exp.to_frame(name='Weight').T, title="Country Exposure", barmode='relative')
     charts['country_pie'] = plot_allocation_pie(country_exp, title="Country Allocation")
+    
+    # Asset Class Exposure (if df_asset_class provided)
+    if df_asset_class is not None:
+        asset_exp = calculate_exposure(weights, df_asset_class)
+        asset_exp = group_tail(asset_exp, top_n=9)
+        
+        charts['asset_table'] = asset_exp.to_frame(name='Weight')
+        charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative')
+        charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation")
     
     return charts

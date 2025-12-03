@@ -175,7 +175,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                     # Filter Mode Selection
                     filter_mode = st.radio(
                         "Filter Mode", 
-                        ["Show All", "By Objective", "By Asset Class", "By Portfolio Type"], 
+                        ["Show All", "By Objective", "By Portfolio Type"], 
                         horizontal=True,
                         key=f"{key_prefix}_filt_mode"
                     )
@@ -195,22 +195,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                             if obj in sel_objectives:
                                 filtered_weights[f"{ticker}_wgt"] = weight
                                 
-                    elif filter_mode == "By Asset Class":
-                        all_assets = sorted(df_asset_class.index.tolist())
-                        sel_assets = st.multiselect("Select Asset Class(es)", all_assets, default=all_assets, key=f"{key_prefix}_filt_asset")
-                        
-                        for ticker, weight in client_weights.items():
-                            if ticker in df_asset_class.columns:
-                                asset_breakdown = df_asset_class[ticker]
-                                valid_assets = [a for a in sel_assets if a in asset_breakdown.index]
-                                scaling_factor = asset_breakdown[valid_assets].sum()
-                            else:
-                                scaling_factor = 1.0 # Default behavior
-                            
-                            final_weight = weight * scaling_factor
-                            if final_weight > 0:
-                                filtered_weights[f"{ticker}_wgt"] = final_weight
-                                
                     elif filter_mode == "By Portfolio Type":
                         all_port_types = sorted(list(client_weights.keys()))
                         sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
@@ -223,15 +207,22 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                     weights_series = pd.Series(filtered_weights)
                     
                     if not weights_series.empty:
-                        charts = get_exposure_charts(weights_series, df_sector, df_country)
+                        # Pass df_asset_class to get asset charts too
+                        charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class)
                         
-                        c1, c2 = st.columns(2)
+                        c1, c2, c3 = st.columns(3)
+                        
                         with c1:
+                            st.subheader("Asset Class Exposure")
+                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_ass_pie")
+                            st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+
+                        with c2:
                             st.subheader("Sector Exposure")
                             st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_sec_pie")
                             st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
                         
-                        with c2:
+                        with c3:
                             st.subheader("Country Exposure")
                             st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_cou_pie")
                             st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
@@ -982,10 +973,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         # --- Advanced Exposure Filtering ---
         st.markdown("#### Filter Exposures (Aggregated by Cash Invested)")
         
-        # Filter Mode Selection
+        # Filter Controls
         filter_mode = st.radio(
             "Filter Mode", 
-            ["Show All", "By Objective", "By Goal", "By Asset Class", "By Portfolio Type"], 
+            ["Show All", "By Objective", "By Portfolio Type"], 
             horizontal=True,
             key=f"{key_prefix}_exp_filt_mode"
         )
@@ -1005,6 +996,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         filtered_portfolios = []
         scaling_factors = {}
 
+        # Level 1 Filter
         if filter_mode == "Show All":
             filtered_portfolios = list(results.keys())
             
@@ -1013,36 +1005,21 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             sel_objs = st.multiselect("Select Objective(s)", all_objs, default=all_objs, key=f"{key_prefix}_exp_filt_obj")
             filtered_portfolios = [p for p in results.keys() if port_meta[p]['objective'] in sel_objs]
             
-        elif filter_mode == "By Goal":
-            all_goals = sorted(list(set([m['goal_name'] for m in port_meta.values()])))
-            sel_goals = st.multiselect("Select Goal(s)", all_goals, default=all_goals, key=f"{key_prefix}_exp_filt_goal")
-            filtered_portfolios = [p for p in results.keys() if port_meta[p]['goal_name'] in sel_goals]
-            
         elif filter_mode == "By Portfolio Type":
             all_types = sorted(list(results.keys()))
             sel_types = st.multiselect("Select Portfolio(s)", all_types, default=all_types, key=f"{key_prefix}_exp_filt_type")
             filtered_portfolios = sel_types
             
-        elif filter_mode == "By Asset Class":
-            all_assets = sorted(df_asset_class.index.tolist()) if df_asset_class is not None else []
-            sel_assets = st.multiselect("Select Asset Class(es)", all_assets, default=all_assets, key=f"{key_prefix}_exp_filt_asset")
-            filtered_portfolios = list(results.keys())
-            
-            # Pre-calculate scaling factors
-            for p_name in filtered_portfolios:
-                w_df = results[p_name]['weights']
-                w_row = w_df.iloc[-1]
-                
-                p_asset_weight = 0.0
-                for ticker_wgt, weight in w_row.items():
-                    ticker = ticker_wgt.replace('_wgt', '')
-                    if ticker in df_asset_class.columns:
-                        asset_breakdown = df_asset_class[ticker]
-                        valid_assets = [a for a in sel_assets if a in asset_breakdown.index]
-                        ticker_asset_contrib = asset_breakdown[valid_assets].sum()
-                        p_asset_weight += weight * ticker_asset_contrib
-                
-                scaling_factors[p_name] = p_asset_weight
+        # Level 2 Filter: By Goal (Applied on top of Level 1)
+        # Only show goal filter if we have portfolios selected
+        if filtered_portfolios:
+            # Get goals present in the currently filtered portfolios
+            available_goals = sorted(list(set([port_meta[p]['goal_name'] for p in filtered_portfolios])))
+            # If there are goals to filter by
+            if available_goals:
+                sel_goals = st.multiselect("Filter by Goal (Optional)", available_goals, default=available_goals, key=f"{key_prefix}_exp_filt_goal")
+                # Refine filtered_portfolios
+                filtered_portfolios = [p for p in filtered_portfolios if port_meta[p]['goal_name'] in sel_goals]
 
         # --- Aggregation Logic ---
         global_ticker_values = {}
@@ -1068,15 +1045,23 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         # Convert back to weights
         if total_agg_value > 0:
             agg_weights = pd.Series({k: v / total_agg_value for k, v in global_ticker_values.items()})
-            charts = get_exposure_charts(agg_weights, df_sector, df_country)
             
-            c1, c2 = st.columns(2)
+            # Pass df_asset_class to get asset charts too
+            charts = get_exposure_charts(agg_weights, df_sector, df_country, df_asset_class)
+            
+            c1, c2, c3 = st.columns(3)
+            
             with c1:
+                st.subheader("Asset Class Exposure")
+                st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_exp_ass_pie")
+                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+
+            with c2:
                 st.subheader("Sector Exposure")
                 st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_exp_sec_pie")
                 st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
             
-            with c2:
+            with c3:
                 st.subheader("Country Exposure")
                 st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_exp_cou_pie")
                 st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
@@ -1357,13 +1342,22 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             # Summary table
             st.subheader("Monthly Cash Flow Summary by Portfolio")
-            monthly_cash_flows.columns = [f"Month {m}" for m in range(1, 13)]
-            monthly_cash_flows['Total Annual'] = monthly_cash_flows.sum(axis=1)
-        
-            st.dataframe(
-                monthly_cash_flows.style.format("${:,.2f}").background_gradient(cmap='Greens', axis=None),
-                use_container_width=True
-            )
+            
+            if not monthly_cash_flows.empty:
+                monthly_cash_flows.columns = [f"Month {m}" for m in range(1, 13)]
+                monthly_cash_flows['Total Annual'] = monthly_cash_flows.sum(axis=1)
+            
+                # Reset index to avoid duplicate index errors if portfolio names are same
+                display_df = monthly_cash_flows.reset_index().rename(columns={'index': 'Portfolio'})
+                
+                st.dataframe(
+                    display_df.style.format("${:,.2f}", subset=display_df.columns.drop('Portfolio'))
+                    .background_gradient(cmap='Greens', axis=None, subset=display_df.columns.drop(['Portfolio', 'Total Annual'])),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No portfolios selected or no cash flows generated.")
         
             # Total across all portfolios
             total_monthly = monthly_cash_flows.drop(columns=['Total Annual']).sum()
