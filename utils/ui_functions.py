@@ -646,11 +646,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     help="Target goal amount for this portfolio. Used in Growth Forecast."
                 )
             
-            # Delete Button
-            if st.button("🗑️ Delete Portfolio", key=f"{key_prefix}_del_{i}"):
-                del st.session_state.portfolios[i]
-                st.session_state.refresh_counter += 1
-                st.rerun()
+
             
             # Fixed Weight Inputs
             if st.session_state.portfolios[i]['allocation_type'] == 'Fixed Weight':
