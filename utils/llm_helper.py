@@ -85,14 +85,15 @@ def get_gemini_recommendation(api_key, client_profile):
             *   **Table**: Immediately follow the header with a markdown table for that goal.
         *   The table MUST have the following columns: `Objective`, `Goal Name`, `Horizon (Yrs)`, `Product`, `Allocation (%)`, `Dollar Amount ($)`, `Rationale`.
         *   `Objective`: One of: "Wealth Growth", "Income Generation", or "Capital Preservation".
-        *   `Goal Name`: Use the EXACT name provided in the client's goals.
-        *   `Horizon (Yrs)`: The time horizon from the goal's "Horizon (Yrs)" field.
+        *   `Goal Name`: Use the EXACT name provided in the client's goals. MUST be filled for EVERY row.
+        *   `Horizon (Yrs)`: The time horizon from the goal's "Horizon (Yrs)" field. MUST be filled for EVERY row.
         *   `Product`: Must be one of the valid Syfe products listed in the context below.
         *   `Allocation (%)`: The percentage of that specific goal's portfolio allocated to the product.
         *   `Dollar Amount ($)`: Calculate this by multiplying the Allocation (%) by the "Lump Sum Investment ($)" specified for that goal. Format as a dollar amount (e.g., "$50,000").
         *   `Rationale`: A brief 1-sentence explanation for this allocation.
         *   The allocations for EACH goal must sum up to 100%.
         *   **NO LATEX**: Do NOT use LaTeX formatting (e.g., do not use `$` for math blocks). Use standard text only.
+        *   **CRITICAL**: You MUST fill in the 'Goal Name' and 'Horizon (Yrs)' for EVERY row. Do NOT leave them blank, do NOT use ditto marks, and do NOT merge cells. Every row must be complete.
     
     **Product Constraints:**
     *   **AI Products**: Only recommend "Private Credit" or "Fixed Maturity Bond" if "Accredited Investor" is True.
