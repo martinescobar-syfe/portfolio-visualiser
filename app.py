@@ -105,7 +105,7 @@ st.markdown("""
 
 # --- Initialization ---
 data_path = get_data_path()
-df_sec_list, df_asset_class, df_sector, df_country, df_fi_metrics, df_fx = load_static_data(data_path)
+df_sec_list, df_asset_class, df_sector, df_country, df_fi_metrics, df_fx, df_daily_ret, df_risk_rating, df_underlying = load_static_data(data_path)
 
 if df_sec_list is None:
     st.stop()
@@ -187,7 +187,7 @@ with st.container():
     if client_type == "Existing Client":
         # Client Data Upload
         render_client_upload(
-            df_asset_class, df_sector, df_country, 
+            df_asset_class, df_sector, df_country, df_underlying,
             key_prefix="exist_upload"
         )
     
@@ -197,12 +197,12 @@ with st.container():
     # --- Portfolio Construction Section (Always visible) ---
     render_portfolio_construction(
         df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency,
-        backtest_offset_days, data_path, df_fi_metrics, df_fx, key_prefix="exist_cons"
+        backtest_offset_days, data_path, df_fi_metrics, df_fx, df_daily_ret, key_prefix="exist_cons"
     )
     
     # --- Analysis Section (Always visible) ---
     # --- Analysis Section (Always visible) ---
     render_analysis(
-        df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, data_path, bm_tickers, 
+        df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, 
         backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="exist_analysis"
     )

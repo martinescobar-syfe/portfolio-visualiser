@@ -61,9 +61,132 @@ def group_tail(series, top_n=9):
     
     return pd.concat([top, others])
 
-def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None):
+def clean_holding_name(name):
     """
-    Returns a dictionary of charts and tables for Sector, Country, and optionally Asset Class exposure.
+    Cleans holding name to unify share classes (e.g. GOOG vs GOOGL).
+    This is a heuristic approach.
+    """
+    if not isinstance(name, str):
+        return str(name)
+        
+    name_upper = name.upper()
+    
+    # Common suffixes to remove/ignore for aggregation
+    starts_with_to_keep = name_upper
+    
+    # Dict of common mappings manually if needed, or algorithmic
+    # For now, let's strip common suffixes
+    suffixes = [' CLASS A', ' CLASS B', ' CLASS C', ' CL A', ' CL B', ' CL C', 
+                ' INC', ' CORP', ' LTD', ' PLC', ' NV', ' AG', ' SA', ' SE', 
+                ' CO', ' HLDG', ' HOLDINGS', ' GROUP', ' GRP']
+    
+    for suffix in suffixes:
+        if name_upper.endswith(suffix):
+            name_upper = name_upper[:-len(suffix)].strip()
+            
+    return name_upper
+
+def get_concentration_exposure(weights, df_underlying, top_n=10):
+    """
+    Calculates weighted underlying exposure.
+    Unifies share classes.
+    Handles 'Wide' format df_underlying: {Ticker} Holdings, {Ticker} Holding Weights
+    """
+    aggregated_holdings = {}
+    
+    # 1. Iterate through portfolio tickers
+    # Weights index is like 'CSPX_wgt'
+    for col_name in weights.index:
+        if not col_name.endswith('_wgt'):
+            continue
+            
+        ticker = col_name.replace('_wgt', '')
+        weight_in_port = weights[col_name]
+        
+        if weight_in_port == 0:
+            continue
+            
+        # Ticker Matching Logic
+        # User upload might have "SPY US", "SPY Equity" etc.
+        # underlying sheet has "SPY Holdings"
+        
+        candidates = [ticker]
+        # remove common suffixes
+        clean_t = ticker.replace(" US", "").replace(" Equity", "").strip()
+        if clean_t != ticker:
+            candidates.append(clean_t)
+            
+        found_cols = False
+        name_col = ""
+        w_col = ""
+        use_fallback_weights = False
+        
+        for cand in candidates:
+            n_c = f"{cand} Holdings"
+            w_c = f"{cand} Holding Weights"
+            if n_c in df_underlying.columns and w_c in df_underlying.columns:
+                name_col = n_c
+                w_col = w_c
+                found_cols = True
+                break
+            # Fallback: If Holdings exists but Weights doesn't, use 100% weight
+            elif n_c in df_underlying.columns:
+                name_col = n_c
+                w_col = None
+                found_cols = True
+                use_fallback_weights = True
+                break
+        
+        if not found_cols:
+            # Try fuzzy or logging
+            # print(f"[DEBUG] Missing underlying data for {ticker}. Tried: {[f'{c} Holdings' for c in candidates]}")
+            continue
+            
+        # Extract data
+        # Drop entry rows (NaN names)
+        # Note: df_underlying might be jagged
+        if use_fallback_weights:
+            # Only holdings column, no weights - assume 100% to single holding
+            sub_df = df_underlying[[name_col]].dropna(subset=[name_col])
+            for _, row in sub_df.iterrows():
+                h_name = row[name_col]
+                clean_name = clean_holding_name(h_name)
+                # Assume 100% of the portfolio weight goes to this holding
+                contribution = weight_in_port
+                aggregated_holdings[clean_name] = aggregated_holdings.get(clean_name, 0.0) + contribution
+        else:
+            sub_df = df_underlying[[name_col, w_col]].dropna(subset=[name_col])
+            # Process
+            for _, row in sub_df.iterrows():
+                h_name = row[name_col]
+                h_val = row[w_col]
+                
+                # Clean name
+                clean_name = clean_holding_name(h_name)
+                
+                # Calculate net weight
+                # Underlying weights might be in % (0-100) or decimal (0-1).
+                # If 7.5 -> 7.5%, then (7.5/100) * port_weight
+                # BUT we need to be careful if data is already decimal.
+                # Usually vendors provide %. Let's assume % for now as per previous observation (Nvidia 7.63).
+                contribution = (h_val / 100.0) * weight_in_port
+                
+                aggregated_holdings[clean_name] = aggregated_holdings.get(clean_name, 0.0) + contribution
+
+    if not aggregated_holdings:
+        return pd.Series()
+    
+    # Convert to Series
+    grouped_exposure = pd.Series(aggregated_holdings)
+    
+    # 3. Sort descending
+    grouped_exposure = grouped_exposure.sort_values(ascending=False)
+    
+    return grouped_exposure
+
+def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None, df_underlying=None, concentration_top_n=10):
+    """
+    Returns a dictionary of charts and tables for Sector, Country, Asset Class, AND Concentration.
     """
     charts = {}
     
@@ -91,5 +214,18 @@ def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None):
         charts['asset_table'] = asset_exp.to_frame(name='Weight')
         charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative')
         charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation")
-    
+
+    # Concentration Exposure (if df_underlying provided)
+    if df_underlying is not None:
+        conc_exp = get_concentration_exposure(weights, df_underlying, top_n=concentration_top_n)
+        # For concentration, we usually just show the Top N, and maybe 'Others' if requested, 
+        # but typically Top N table is the key requirement.
+        
+        # Taking top N for display
+        conc_top = group_tail(conc_exp, top_n=concentration_top_n)
+        
+        charts['concentration_table'] = conc_top.to_frame(name='Weight')
+        # Maybe a bar chart for concentration too?
+        charts['concentration_bar'] = plot_bar_chart(conc_top.to_frame(name='Weight').T, title=f"Top {concentration_top_n} Holdings", barmode='relative')
+        
     return charts

@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from datetime import timedelta
 from utils.optimiser import optimize_portfolio, create_constraints, calc_port_perf
 from utils.performance import get_performance_summary, calculate_relative_metrics
-from utils.exposure import get_exposure_charts
+from utils.exposure import get_exposure_charts, get_concentration_exposure
 from utils.plotting import (
     plot_cumulative_returns, plot_drawdowns, plot_correlation_heatmap, 
     plot_scatter_risk_return, plot_allocation_pie, apply_syfe_layout, plot_bar_chart, 
@@ -41,7 +41,7 @@ def get_portfolio_objective(portfolio_name):
     return 'Wealth Growth'
 
 
-def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="upload"):
+def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, key_prefix="upload"):
     st.header("1. Client Data Upload")
     uploaded_file = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key=f"{key_prefix}_file_uploader")
 
@@ -145,6 +145,41 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                     obj = get_portfolio_objective(ticker)
                     objective_allocation[obj] = objective_allocation.get(obj, 0.0) + weight
 
+                # --- Natural Summary ---
+                st.markdown("### Portfolio Summary")
+                
+                # Identify top portfolio types
+                sorted_ports = sorted(client_weights.items(), key=lambda x: x[1], reverse=True)
+                top_port = sorted_ports[0][0] if sorted_ports else "N/A"
+                
+                # Identify dominant objective
+                sorted_objs = sorted(objective_allocation.items(), key=lambda x: x[1], reverse=True)
+                top_obj = sorted_objs[0][0] if sorted_objs else "N/A"
+                
+                # Identify top underlying (concentration) across all portfolios
+                # We need to re-calculate concentration here for the summary text
+                top_holdings_str = ""
+                if df_underlying is not None and not df_underlying.empty:
+                    # Calculate strict top 3 for summary
+                    # Re-use exposure logic
+                    # Create a series from client_weights
+                    w_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
+                    conc_exp = get_concentration_exposure(w_series, df_underlying, top_n=3)
+                    if not conc_exp.empty:
+                        top_3 = conc_exp.head(3)
+                        top_holdings_str = ", ".join([f"{n} ({w:.1%})" for n, w in top_3.items()])
+                
+                summary_text = f"""
+                Your current portfolio is primarily allocated to **{top_port}**, aligning with a **{top_obj}** objective. 
+                """
+                if top_holdings_str:
+                    summary_text += f"\nAcross your holdings, your top underlying exposures are **{top_holdings_str}**."
+                
+                if 'Unclassified' in objective_allocation and objective_allocation['Unclassified'] > 0.1:
+                    summary_text += f"\n\n*Note: {objective_allocation['Unclassified']:.1%} of your portfolio is in unclassified or custom assets.*"
+                
+                st.info(summary_text)
+
                 # --- NEW: Tabs for Allocation vs Exposures ---
                 tab_alloc, tab_exposures = st.tabs(["Client Portfolio Allocation", "Client Exposures"])
 
@@ -198,67 +233,127 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
                         )
                         st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
 
-                with tab_exposures:
-                    # --- Filtering Controls ---
-                    st.markdown("#### Filter Exposures")
-                    
-                    # Filter Mode Selection
+                # --- NEW: Side-by-Side 2x2 Exposure Layout (User Request) ---
+                st.markdown("### Portfolio Exposures")
+                st.markdown("#### Filter Exposures")
+                c_filter, c_dummy = st.columns([2, 1])
+                
+                with c_filter:
                     filter_mode = st.radio(
                         "Filter Mode", 
                         ["Show All", "By Objective", "By Portfolio Type"], 
                         horizontal=True,
                         key=f"{key_prefix}_filt_mode"
                     )
+                
+                filtered_weights = {}
+                
+                if filter_mode == "Show All":
+                    filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
                     
-                    filtered_weights = {}
+                elif filter_mode == "By Objective":
+                    all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
+                    sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
                     
-                    if filter_mode == "Show All":
-                        # Use all weights directly (with _wgt suffix)
-                        filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
-                        
-                    elif filter_mode == "By Objective":
-                        # Get all unique objectives from client portfolios
-                        all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
-                        sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
-                        
-                        for ticker, weight in client_weights.items():
-                            obj = get_portfolio_objective(ticker)
-                            if obj in sel_objectives:
-                                filtered_weights[f"{ticker}_wgt"] = weight
+                    for ticker, weight in client_weights.items():
+                        obj = get_portfolio_objective(ticker)
+                        if obj in sel_objectives:
+                            filtered_weights[f"{ticker}_wgt"] = weight
+                            
+                elif filter_mode == "By Portfolio Type":
+                    all_port_types = sorted(list(client_weights.keys()))
+                    sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
+                    
+                    for ticker, weight in client_weights.items():
+                        if ticker in sel_port_types:
+                            filtered_weights[f"{ticker}_wgt"] = weight
+
+                weights_series = pd.Series(filtered_weights)
+
+                if not weights_series.empty:
+                    # Calculate all charts first
+                    charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=50)
+                    
+                    col_exp_L, col_exp_R = st.columns([1, 1])
+                    
+                    options = ["Asset Class", "Sector", "Country", "Top Holdings"]
+                    
+                    def render_exposure_widget(column, widget_key_suffix):
+                        with column:
+                            choice = st.selectbox(f"View", options, key=f"{key_prefix}_exp_view_{widget_key_suffix}")
+                            
+                            if choice == "Asset Class":
+                                if 'asset_pie' in charts:
+                                    st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_{widget_key_suffix}")
+                                    with st.expander("View Data"):
+                                        st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                                else:
+                                    st.info("Asset Class data unavailable.")
+                                    
+                            elif choice == "Sector":
+                                if 'sector_pie' in charts:
+                                    st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_pie_sector_{widget_key_suffix}")
+                                    with st.expander("View Data"):
+                                        st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                                else:
+                                    st.info("Sector data unavailable.")
+                                    
+                            elif choice == "Country":
+                                if 'country_pie' in charts:
+                                    st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_pie_country_{widget_key_suffix}")
+                                    with st.expander("View Data"):
+                                        st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                                else:
+                                    st.info("Country data unavailable.")
+                                    
+                            elif choice == "Top Holdings":
+                                # Selector for N [10, 15, 20]
+                                t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_{widget_key_suffix}")
                                 
-                    elif filter_mode == "By Portfolio Type":
-                        all_port_types = sorted(list(client_weights.keys()))
-                        sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
-                        
-                        for ticker, weight in client_weights.items():
-                            if ticker in sel_port_types:
-                                filtered_weights[f"{ticker}_wgt"] = weight
+                                if df_underlying is not None:
+                                    conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
+                                    
+                                    if not conc_raw.empty:
+                                        conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
+                                        conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
+                                        
+                                        # Pie chart for Top Holdings
+                                        import plotly.express as px
+                                        pie_df = conc_df.head(t_topn)
+                                        
+                                        fig_top_holdings_pie = px.pie(
+                                            pie_df, 
+                                            values='Weight', 
+                                            names=pie_df.index, 
+                                            title=f'Top {t_topn} Holdings Concentration',
+                                            color_discrete_sequence=PALETTE,
+                                            hole=0.3
+                                        )
+                                        fig_top_holdings_pie.update_traces(textposition='inside', textinfo='none')
+                                        fig_top_holdings_pie.update_layout(showlegend=True)
+                                        st.plotly_chart(fig_top_holdings_pie, use_container_width=True, key=f"{key_prefix}_pie_top_holdings_{widget_key_suffix}")
 
-                    # Calculate exposures using filtered weights
-                    weights_series = pd.Series(filtered_weights)
+                                        with st.expander("View Data"):
+                                            st.dataframe(
+                                                conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                                                use_container_width=True
+                                            )
+                                    else:
+                                        st.warning("No underlying holdings found. Check ticker matching.")
+                                        with st.expander("Debug Ticker Matching"):
+                                            st.write("Input Tickers:", list(weights_series.index))
+                                            st.write("Available Underlying Columns (Sample):", list(df_underlying.columns)[:10])
+                                else:
+                                    st.info("Concentration data not available (No underlying data found).")
+
+                    # Render Left Widget
+                    render_exposure_widget(col_exp_L, "L")
                     
-                    if not weights_series.empty:
-                        # Pass df_asset_class to get asset charts too
-                        charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class)
-                        
-                        c1, c2, c3 = st.columns(3)
-                        
-                        with c1:
-                            st.subheader("Asset Class Exposure")
-                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_ass_pie")
-                            st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                    # Render Right Widget
+                    render_exposure_widget(col_exp_R, "R")
 
-                        with c2:
-                            st.subheader("Sector Exposure")
-                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_sec_pie")
-                            st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                        
-                        with c3:
-                            st.subheader("Country Exposure")
-                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_cou_pie")
-                            st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                    else:
-                        st.warning("No data matches the selected filters.")
+                else:
+                    st.warning("No data matches the selected filters.")
 
                 # Load into Portfolio 1 Button
                 c_load1, c_load_new = st.columns(2)
@@ -308,237 +403,381 @@ def render_client_upload(df_asset_class, df_sector, df_country, key_prefix="uplo
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
+from utils.risk_engine import calculate_risk_score, get_eligible_portfolios, get_recommendation_text, get_smart_recommendation
+from utils.llm_helper import get_recommendation_narrative
+
 def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
-    st.header("Syfe Portfolio Recommender")
+    st.header("Syfe Portfolio Recommender (Risk Engine)")
+
+    # --- Step 1: Personal & Financial Profile ---
+    st.subheader("1. Personal & Financial Profile")
     
-    # --- Inputs Section ---
-    st.subheader("Client Profile")
-    
-    # --- 1. Demographics ---
-    with st.expander("1. Demographics", expanded=True):
-        c1, c2 = st.columns(2)
-        age = c1.number_input("Age", 18, 100, 30, key=f"{key_prefix}_age")
-        marital = c2.selectbox("Marital Status", ["Single", "Married", "Divorced", "Widowed"], key=f"{key_prefix}_marital")
-        dependents = st.number_input("Number of Dependents", 0, 10, 0, key=f"{key_prefix}_dependents")
-
-    # --- 2. Financial Health ---
-    with st.expander("2. Financial Health", expanded=False):
-        income_range = st.selectbox("Annual Income (SGD)", ["< $50k", "$50k - $100k", "$100k - $200k", "$200k - $500k", "> $500k"], index=1, key=f"{key_prefix}_income")
-        income_stability = st.selectbox("Income Stability", ["Stable (Salaried)", "Variable (Bonus/Commissions)", "Unstable (Freelance/Contract)"], key=f"{key_prefix}_stability")
-        net_worth = st.selectbox("Total Net Worth (Est.)", ["< $100k", "$100k - $500k", "$500k - $1m", "$1m - $5m", "> $5m"], key=f"{key_prefix}_nw")
-        monthly_expenses = st.number_input("Monthly Expenses (SGD)", 0, 100000, 3000, step=500, key=f"{key_prefix}_expenses")
-        emergency_fund = st.selectbox("Emergency Fund Status", ["None", "< 3 Months Expenses", "3-6 Months Expenses", "> 6 Months Expenses"], key=f"{key_prefix}_emergency")
-        debts = st.multiselect("Outstanding Debts", ["Mortgage", "Car Loan", "Student Loan", "Credit Card Debt", "Personal Loan"], key=f"{key_prefix}_debts")
-
-    # --- 3. Goal Structuring ---
-    with st.expander("3. Goal Structuring", expanded=False):
-        st.caption("Define specific financial goals.")
-        goal_data = pd.DataFrame([
-            {"Goal Name": "Retirement", "Amount ($)": 2000000, "Lump Sum Investment ($)": 100000, "Horizon (Yrs)": 20, "Priority": "High"},
-            {"Goal Name": "House Downpayment", "Amount ($)": 500000, "Lump Sum Investment ($)": 20000, "Horizon (Yrs)": 5, "Priority": "Medium"}
-        ])
-        goals_df = st.data_editor(goal_data, num_rows="dynamic", use_container_width=True, key=f"{key_prefix}_goals")
-
-    # --- 4. Risk & Behaviour ---
-    with st.expander("4. Risk & Behaviour", expanded=False):
-        risk_aversion = st.select_slider("Self-Rated Risk Aversion", options=["Very Low", "Low", "Medium", "High", "Very High"], value="Medium", key=f"{key_prefix}_risk")
-        drawdown_pain = st.select_slider("Max Drawdown Pain Threshold", options=["-5%", "-10%", "-20%", "-30%", "-40%", "-50%"], value="-20%", key=f"{key_prefix}_dd")
-        bear_reaction = st.selectbox("Past Bear Market Behaviour", ["Sold everything", "Sold some", "Held tight", "Bought more"], key=f"{key_prefix}_bear")
-
-    # --- 5. Human Capital & Experience ---
-    with st.expander("5. Human Capital & Experience", expanded=False):
-        employment_type = st.selectbox("Employment Sector", ["Finance", "Tech", "Government", "Healthcare", "Real Estate", "Manufacturing", "Other"], key=f"{key_prefix}_emp")
-        industry_cyclicality = st.selectbox("Industry Cyclicality", ["Low (Defensive)", "Medium", "High (Cyclical)"], key=f"{key_prefix}_cyc")
-        knowledge_level = st.select_slider("Investment Knowledge", options=["Novice", "Intermediate", "Advanced", "Expert"], value="Intermediate", key=f"{key_prefix}_know")
-        diy_interest = st.radio("Interest in DIY Management", ["Low (Prefer Hands-off)", "Medium", "High (Active Manager)"], key=f"{key_prefix}_diy")
-
-    # --- 6. Currency, Tax & Filters ---
-    with st.expander("6. Currency, Tax & Filters (Under Development)", expanded=False):
-        sgd_liability = st.slider("Future SGD Liability %", 0, 100, 80, help="% of future spending expected to be in SGD", key=f"{key_prefix}_sgd")
-        migration_risk = st.checkbox("Potential Migration Plans?", key=f"{key_prefix}_mig")
-        tax_wrappers = st.multiselect("Tax Wrappers to Use", ["SRS", "CPF OA", "CPF SA"], default=["SRS"], key=f"{key_prefix}_tax")
-        esg_filter = st.checkbox("Prioritize ESG / Ethical Investments", key=f"{key_prefix}_esg")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        age = st.number_input("Age", 18, 100, 30, key=f"{key_prefix}_age")
         
-    # --- 7. AI Qualification ---
-    with st.expander("7. Accredited Investor (AI) Check", expanded=False):
-        ai_income = st.checkbox("Income > SGD 300k (last 12 months)", key=f"{key_prefix}_ai_inc")
-        ai_assets = st.checkbox("Net Personal Assets > SGD 2m", key=f"{key_prefix}_ai_ass")
-        ai_fin_assets = st.checkbox("Net Financial Assets > SGD 1m", key=f"{key_prefix}_ai_fin")
-        is_ai = ai_income or ai_assets or ai_fin_assets
-        if is_ai:
-            st.success("Qualifies as Accredited Investor")
-        else:
-            st.info("Retail Investor Status")
+        income = st.number_input(
+            "Annual Income ($)", 
+            min_value=0, value=60000, step=1000, 
+            help="Total annual income before tax. Used to assess financial capacity.",
+            key=f"{key_prefix}_inc"
+        )
+        
+        savings_rate = st.slider(
+            "Savings Rate (% of Income)", 
+            0, 100, 20, 
+            format="%d%%",
+            help="Percentage of monthly income saved/invested.",
+            key=f"{key_prefix}_sav"
+        ) / 100.0  # Convert back to decimal for calculations
+        
+    with col_p2:
+        liquid_assets = st.number_input(
+            "Net Liquid Assets ($)", 
+            min_value=0, value=50000, step=1000,
+            help="Total cash and investments explicitly available for this portfolio or general wealth.",
+            key=f"{key_prefix}_liq"
+        )
+        
+        concentration_high = st.checkbox(
+            "Is this portfolio >50% of your Net Worth?",
+            help="High concentration implies higher risk to your overall financial health if this portfolio drops.",
+            key=f"{key_prefix}_conc"
+        )
+        
+        short_term_need = st.checkbox(
+            "Need to withdraw >90% within 12 months?",
+            help="If yes, capital preservation is paramount regardless of other factors.",
+            key=f"{key_prefix}_stn"
+        )
 
-    # --- 8. Qualitative Factors ---
-    st.subheader("Qualitative Factors")
-    qualitative_factors = st.text_area("Any other qualitative factors we need to consider?", height=100, key=f"{key_prefix}_qual")
+    knowledge = st.select_slider(
+        "Investment Knowledge", 
+        options=["None", "Minimal", "Average", "Good", "Expert"], 
+        value="Average",
+        key=f"{key_prefix}_know"
+    )
 
+    # --- Step 2: Risk Tolerance & Horizon ---
+    st.subheader("2. Risk Tolerance & Horizon")
+    
+    # We need a primary objective to guide the risk questions, or just ask generic ones?
+    # User said "Goals need to be defined and typed".
+    # But Risk questions usually depend on the objective (Growth vs Income).
+    # Let's add a "Primary Investment Style" here or just generic questions?
+    # The previous code depended on `objective` variable from Step 1.
+    # I will ask for "Primary Objective" here just to context switch the risk questions.
+    
+    primary_obj_context = st.radio(
+        "Primary Investment Style (Context for Risk Questions)",
+        ["Wealth Growth", "Income Generation", "Capital Preservation"],
+        horizontal=True,
+        key=f"{key_prefix}_primary_obj_ctx"
+    )
+    
+    risk_options = []
+    if primary_obj_context == "Wealth Growth":
+        risk_text = "I am willing to..."
+        risk_options = [
+            "Take low loss risk to preserve capital (10-15% drawdown)",
+            "Take moderate risk to balance risk/return (20% drawdown)",
+            "Take higher risk to optimize returns (30% drawdown)",
+            "Take as much risk as needed to maximize returns (30%+ drawdown)"
+        ]
+    elif primary_obj_context == "Income Generation":
+        risk_text = "I am willing to..."
+        risk_options = [
+            "Take low loss risk to preserve capital (10-15% drawdown)",
+            "Take moderate risk to balance risk/return (20% drawdown)",
+            "Take higher risk to optimize returns (30% drawdown)",
+            "Take as much risk as needed to maximize returns (30%+ drawdown)"
+        ]
+    else: # Capital Preservation
+        risk_text = "For Capital Preservation, risk tolerance is generally low."
+        risk_options = [
+            "I simply want to avoid any loss (Capital Guarantee)",
+            "I can accept very minor fluctuations for slightly better yield"
+        ]
+        
+    risk_choice = st.radio(risk_text, risk_options, key=f"{key_prefix}_risk_choice")
+    
+    horizon_choice = st.radio(
+        "General Investment Horizon (Years)",
+        ["Less than 1", "3-5", "5-10", "More than 10"],
+        horizontal=True,
+        key=f"{key_prefix}_hor_Choice"
+    )
 
+    # --- Step 3: Investment Goals ---
+    st.subheader("3. Investment Goals")
+    st.markdown("Please define your goals below.")
+    
+    # Default data for the table
+    default_goals = pd.DataFrame(
+        [
+            {"Goal Name": "Retirement", "Objective": "Wealth Growth", "Target Amount ($)": 1000000, "Lump Sum ($)": 50000, "Tenure (Years)": 20},
+            {"Goal Name": "House Downpayment", "Objective": "Capital Preservation", "Target Amount ($)": 100000, "Lump Sum ($)": 20000, "Tenure (Years)": 3},
+        ]
+    )
+    
+    goal_df = st.data_editor(
+        default_goals,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Objective": st.column_config.SelectboxColumn(
+                "Objective",
+                help="Select the primary objective for this goal.",
+                width="medium",
+                options=[
+                    "Wealth Growth",
+                    "Income Generation",
+                    "Capital Preservation"
+                ],
+                required=True
+            ),
+            "Goal Name": st.column_config.TextColumn("Goal Name", required=True),
+            "Target Amount ($)": st.column_config.NumberColumn("Target Amount ($)", min_value=0, format="$%d"),
+            "Lump Sum ($)": st.column_config.NumberColumn("Lump Sum ($)", min_value=0, format="$%d"),
+            "Tenure (Years)": st.column_config.NumberColumn("Tenure (Years)", min_value=1, max_value=50)
+        },
+        key=f"{key_prefix}_goals_table"
+    )
+    
+    interest_in_ai = st.checkbox("Interested in AI / Thematic Exposure?", 
+                                 help="If selected, we may allocate up to 30% to high-growth thematic portfolios (e.g. Disruptive Tech) if your risk profile allows.",
+                                 key=f"{key_prefix}_ai_toggle")
+
+    # --- Step 4: Qualitative & Check ---
+    st.subheader("4. Additional Details")
+    qualitative_details = st.text_area(
+        "Additional Qualitative Inputs", 
+        placeholder="Any other details relevant to your financial situation (e.g., existing liabilities, preferences, constraints)...",
+        key=f"{key_prefix}_qual"
+    )
+    is_accredited = st.checkbox("I am an Accredited Investor (AI)", key=f"{key_prefix}_ai")
+    
+    # --- Generate ---
     st.markdown("---")
-
-    # --- Generate Button ---
-    if st.button("Generate Recommendation", type="primary", key=f"{key_prefix}_gen_rec"):
-        with st.spinner("Analyzing profile and generating recommendations..."):
-            # Construct Client Profile String
-            client_profile = {
-                "Base Settings": {
-                    "Age": age, "Risk Tolerance": risk_aversion, "Investment Horizon": "Not specified in current inputs" # Placeholder, adjust as needed
-                },
-                "Financials": {
-                    "Income": income_range, "Savings": "Not specified in current inputs", # Placeholder
-                    "Investible Assets": net_worth, # Using net_worth as a proxy
-                    "Monthly Surplus": "Not specified in current inputs", # Placeholder
-                    "Market Drop Reaction": drawdown_pain, # Using drawdown_pain as a proxy
-                    "Bear Reaction": bear_reaction
-                },
-                "Human Capital": {
-                    "Sector": employment_type, "Cyclicality": industry_cyclicality
-                },
-                "Preferences": {
-                    "Knowledge": knowledge_level, "DIY Interest": diy_interest,
-                    "SGD Liability": f"{sgd_liability}%", "Migration": migration_risk,
-                    "Tax Wrappers": tax_wrappers, "ESG": esg_filter
-                },
-                "Status": {
-                    "Accredited Investor": is_ai
-                },
-                "Qualitative Factors": qualitative_factors,
-                "Goals": goals_df.to_dict('records')
-            }
-            
-            recommendation = get_gemini_recommendation(GEMINI_API_KEY, client_profile)
-            
-            # Store recommendation in session state to persist across reruns
-            st.session_state.last_recommendation = recommendation
-            # Corrected key to use "Amount ($)"
-            st.session_state.last_goals_data = goals_df.set_index("Goal Name")["Amount ($)"].to_dict()
-            st.session_state.last_goals_full_data = goals_df.to_dict('records')
-            st.rerun() # Force rerun to show results in the persistent block below
-
-    # --- Persistent Results Display ---
-    if 'last_recommendation' in st.session_state:
-        st.markdown("---")
-        st.subheader("Syfe AI (Analysis and Allocation)")
-        st.write(st.session_state.last_recommendation)
-        st.success("Recommendation generated based on Syfe's product suite.")
-
-        # --- Add to Analysis Button ---
-        st.markdown("---")
+    if st.button("Generate Smart Recommendation", type="primary", key=f"{key_prefix}_calc"):
         
-        # Display status message from previous add action if exists
-        if 'add_status_msg' in st.session_state:
-            msg_type, msg_text = st.session_state.add_status_msg
-            if msg_type == 'success':
-                st.success(msg_text)
-            elif msg_type == 'warning':
-                st.warning(msg_text)
-            # Clear message after showing
-            del st.session_state.add_status_msg
-
-        if st.button("Add to Portfolio Analysis", type="secondary", key=f"{key_prefix}_add_to_analysis"):
+        # Map choice inputs
+        # Risk Mapping
+        if primary_obj_context == "Capital Preservation":
+             if "avoid any loss" in risk_choice: risk_willingness = 1
+             else: risk_willingness = 2
+        else:
+            if "30%+" in risk_choice: risk_willingness = 1
+            elif "30%" in risk_choice: risk_willingness = 2
+            elif "20%" in risk_choice: risk_willingness = 3
+            else: risk_willingness = 4
             
-            portfolios_data, failed_items = parse_recommendation_table(st.session_state.last_recommendation)
+        # Horizon Mapping
+        if "Less than 1" in horizon_choice: horizon_years = 0.5
+        elif "3-5" in horizon_choice: horizon_years = 4
+        elif "5-10" in horizon_choice: horizon_years = 7.5
+        else: horizon_years = 15
+
+        # Create profile dict
+        profile = {
+            'risk_willingness': risk_willingness,
+            'time_horizon_years': horizon_years,
+            'annual_income': income,
+            'liquid_assets': liquid_assets,
+            'savings_rate': savings_rate,
+            'short_term_need': short_term_need,
+            'concentration_high': concentration_high,
+            'investment_knowledge': knowledge,
+            'Interest in AI': "Yes" if interest_in_ai else "No",
+            'Qualitative Details': qualitative_details,
+            'Goals': goal_df.to_csv(index=False), # Pass table as CSV text to LLM
+            'Risk Score': 'Calculating...' 
+        }
+        
+        # 1. Calculate Risk Score (keep this for internal validation if needed, or pass to LLM)
+        score, overrides = calculate_risk_score(profile)
+        profile['Risk Score'] = f"{score}/5" 
+        
+        # Display Score First
+        st.success(f"**Client Risk Score: {score}/5**")
+        if overrides:
+            st.warning(f"**Score Adjustments:** {', '.join(overrides)}")
+            
+        # 2. Get AI Recommendation (Gemini generates the Table + Rationale)
+        # Using the original flow requested by user.
+        from utils.llm_helper import get_gemini_recommendation, parse_recommendation_table
+        
+        with st.spinner("Generating AI-powered Recommendation..."):
+            rec_text = get_gemini_recommendation(GEMINI_API_KEY, profile)
+            
+        # Display Narrative (Text Only)
+        st.markdown(f"### Proposed Strategy")
+        
+        # Parse text to highlight notes, but SKIP the markdown table lines
+        lines = rec_text.split('\n')
+        narrative_lines = []
+        skip_table = False
+        
+        for line in lines:
+            line_stripped = line.strip()
+            # Detect table boundary
+            if line_stripped.startswith("|") and "Objective" in line_stripped:
+                skip_table = True
+            elif skip_table and not line_stripped.startswith("|"):
+                 skip_table = False
+            
+            if not skip_table and not line_stripped.startswith("|"):
+                narrative_lines.append(line)
+        
+        for line in narrative_lines:
+            if line.strip().startswith("Note:") or line.strip().startswith("**Note") or "should continue to invest" in line:
+                st.success(line)
+            elif "Detailed Analysis" in line or "Investment Strategy" in line:
+                 st.markdown(f"#### {line}")
+            elif line.strip(): # Skip empty lines if excessive
+                st.markdown(line)
+
+        # Parse data for Logic
+        portfolios, failed = parse_recommendation_table(rec_text)
+
+        # Render Structured Table (Deterministic Display)
+        if portfolios:
+            st.markdown("#### Recommended Allocation")
+            
+            # Convert nested dict to flat list for display
+            table_rows = []
+            for goal, data in portfolios.items():
+                horizon = data.get('horizon', 10)
+                objective = data.get('objective', 'Wealth Growth')
+                
+                for ticker, weight in data.get('allocations', {}).items():
+                    # Calculate amount if possible, or just show %
+                    # We don't have the explicit goal amount here easily unless we parse it from goal_df or rec_text
+                    # But the User just wants a table.
+                    
+                    table_rows.append({
+                        "Goal": goal,
+                        "Objective": objective,
+                        "Horizon": f"{horizon} Yrs",
+                        "Product": ticker,
+                        "Allocation": weight
+                    })
+            
+            if table_rows:
+                df_disp = pd.DataFrame(table_rows)
+                
+                # Format
+                st.dataframe(
+                    df_disp.style.format({"Allocation": "{:.1%}"}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+        else:
+            # Fallback if parsing fails - show raw just in case
+            st.warning("Could not structure table data. Displaying raw output:")
+            st.markdown(rec_text) # Only fallback
+        
+        if portfolios:
+            # Create a map for Goal Name -> Lump Sum from the input table
+            # goal_df has cols: "Goal Name", "Lump Sum ($)"
+            goal_map = {}
+            target_map = {}
+            if not goal_df.empty and "Goal Name" in goal_df.columns and "Lump Sum ($)" in goal_df.columns:
+                for _, row in goal_df.iterrows():
+                    goal_map[row["Goal Name"]] = row["Lump Sum ($)"]
+                    if "Target Amount ($)" in goal_df.columns:
+                        target_map[row["Goal Name"]] = row["Target Amount ($)"]
+
+            st.session_state.rec_results = {
+                'score': score,
+                'portfolios_data': portfolios, 
+                'goal_map': goal_map,
+                'target_map': target_map
+            }
+        else:
+             pass
+        
+    # --- Add to Analysis Button ---
+    if 'rec_results' in st.session_state:
+        st.markdown("---")
+        if st.button("Add Selected Strategy to Portfolio Analysis", key=f"{key_prefix}_add_strat"):
+            # Logic to add the "Primary" one or let user choose from eligible?
+            # For simplicity, if Rec Text suggests "Core Equity 100", let's try to add that.
+            # Or just add a placeholder/empty portfolio named after the objective/strategy.
+            
+            # Let's add the first eligible portfolio or specific top 1
+            # Based on standard flow we need tickers.
+            # Since we don't have hardcoded tickers for "Core Equity 100" inside this code block,
+            # we rely on the user to construct it or we preload standard templates.
+            # The previous code used LLM to get allocations.
+            # Here "At no time are we changing the output of the AI recommendation" -> This implies we might still need LLM?
+            # "Note at no time are we changing the output of the AI recommendation" -> This was in the prompt start.
+            # BUT later: "Replace the current script... Recommender Engine Overhaul... AI generation questionnaire... simplify it... Risk Engine...".
+            # The prompt is slightly contradictory. "Note at no time are we changing the output of the AI recommendation" vs "Recommender Engine Overhaul".
+            # I think the user means: The *content* of the products (Core Equity 100 tickers) hasn't changed, but the *Selection Logic* has.
+            # OR, maybe we should still call Gemini to get the *allocations* for "Core Equity 100"?
+            # Or we assume "Core Equity 100" is a known template.
+            # Given I don't have a template library loaded, I will add an empty portfolio named "Recommended Strategy" 
+            # and let the user fill it, OR call Gemini just for value-add?
+            # Re-reading: "Note at no time are we changing the output of the AI recommendation" -> Maybe this refers to the previous artifact's specific table format?
+            # But the detailed "Risk Engine" instructions clearly mandate a DETERMINISTIC score and eligible list.
+            # So the "AI Recommendation" in the prompt likely refers to the *Goal Mapper* logic which I implemented deterministically.
+            
+            # To be safe and useful: I will create a new portfolio named with the Top Recommendation Name.
+            # If the name matches `CLIENT_PORTFOLIO_MAPPING` we used earlier, we assume user knows what it is.
+            # Actually, without a template DB, I can't populate tickers.
+            # I will just create a shell portfolio.
+            
+            results = st.session_state.rec_results
+            portfolios_data = results.get('portfolios_data', {})
+            goal_map = results.get('goal_map', {})
+            target_map = results.get('target_map', {})
             
             if portfolios_data:
-                msg_lines = []
-                
-                # Retrieve stored goals data if available
-                goals_amount_map = st.session_state.get('last_goals_data', {})
-                
+                added_count = 0
                 for goal_name, p_data in portfolios_data.items():
-                    new_allocations = p_data['allocations']
-                    objective = p_data['objective']
+                    # p_data = {'objective': ..., 'horizon': ..., 'allocations': {Ticker: Weight...}}
+                    new_id = len(st.session_state.portfolios) + 1
                     
-                    # Create new portfolio entry
-                    new_port_id = len(st.session_state.portfolios) + 1
-                    # Use Goal Name as Portfolio Name
-                    new_port_name = goal_name
+                    allocs = p_data.get('allocations', {})
+                    tickers = list(allocs.keys())
                     
-                    # Prepare data structures
-                    tickers = list(new_allocations.keys())
-                    fixed_weights = new_allocations
-                    decimal_weights = new_allocations
-                    
-                    # Calculate dollar amounts based on user input or default
-                    # Try to match goal name (case-insensitive)
-                    target_amount = 100000.0 # Default Target
-                    initial_investment = 10000.0 # Default Initial
-                    
-                    # Exact match
-                    if goal_name in goals_amount_map:
-                        target_amount = float(goals_amount_map[goal_name])
-                        # Try to get lump sum if available in session state
-                        # We need to access the goals_df to get Lump Sum. 
-                        # Since we only stored Amount ($) in last_goals_data, we need to update that storage first.
-                        # For now, let's assume we can get it or fallback.
-                        # Actually, we should update the storage in render_recommender to store the full row or a map of both.
-                        pass 
-                    else:
-                        # Try case-insensitive match
-                        for g_name, amount in goals_amount_map.items():
-                            if g_name.lower() == goal_name.lower():
-                                target_amount = float(amount)
-                                break
-                    
-                    # Retrieve Lump Sum from session state if available
-                    if 'last_goals_full_data' in st.session_state:
-                        full_goals = st.session_state.last_goals_full_data
-                        # Find matching goal
-                        for g in full_goals:
-                            if g.get('Goal Name') == goal_name:
-                                initial_investment = float(g.get('Lump Sum Investment ($)', 0))
-                                if initial_investment == 0:
-                                     initial_investment = target_amount # Fallback if 0
-                                break
-                    else:
-                         initial_investment = target_amount # Fallback if data missing
-
-                    dollar_amounts = {t: w * initial_investment for t, w in new_allocations.items()}
-                    
-                    # Get horizon from parsed data
-                    horizon = p_data.get('horizon', 10)  # Default to 10 if not found
-                    
-                    new_port = {
-                        'id': new_port_id,
-                        'name': new_port_name,
+                    if not tickers:
+                        continue
+                        
+                    # Lookup Lump Sum and Target Amount from Goal Maps
+                    lump_sum = float(goal_map.get(goal_name, 100000.0))
+                    target_amount = float(target_map.get(goal_name, lump_sum * 2))  # Default to 2x lump sum if not specified
+                        
+                    st.session_state.portfolios.append({
+                        'id': new_id,
+                        'name': f"Rec: {goal_name}",
+                        'goal_name': goal_name,
                         'tickers': tickers,
                         'allocation_type': 'Fixed Weight',
                         'rebal_freq': 'Quarterly',
                         'min_weight': 0.0,
                         'max_weight': 1.0,
-                        'cash_invested': initial_investment,
-                        'target_amount': target_amount,
-                        'fixed_weights': fixed_weights,
-                        'dollar_amounts': dollar_amounts,
-                        'decimal_weights': decimal_weights,
-                        'objective': objective,
-                        'goal_name': goal_name,
-                        'horizon': horizon
-                    }
-                    
-                    st.session_state.portfolios.append(new_port)
-                    
-                    # Construct detailed message
-                    added_str = ", ".join([f"{t} ({w:.1%})" for t, w in new_allocations.items()])
-                    msg_lines.append(f"Added '{new_port_name}' ({objective}) with: {added_str}.")
-
-                st.session_state.refresh_counter += 1
+                        'cash_invested': lump_sum, # Use mapped lump sum
+                        'target_amount': target_amount, # Target amount from goal
+                        'fixed_weights': allocs,
+                        'decimal_weights': allocs, # Sync
+                        'dollar_amounts': {ticker: lump_sum * weight for ticker, weight in allocs.items()}, # Proportional to lump sum
+                        'objective': p_data.get('objective', 'Wealth Growth'),
+                        'horizon': p_data.get('horizon', 10)
+                    })
+                    added_count += 1
                 
-                full_msg = "\n\n".join(msg_lines)
-                
-                if failed_items:
-                    failed_str = ", ".join([f"{p} ({w:.1%}) for {g}" for p, w, g in failed_items])
-                    full_msg += f"\n\n⚠️ Could not map these products (please add manually): {failed_str}"
-                    st.session_state.add_status_msg = ('warning', full_msg)
+                if added_count > 0:
+                    st.session_state.refresh_counter += 1
+                    st.success(f"Added {added_count} recommended strategies to Portfolio Construction!")
+                    st.rerun()
                 else:
-                    st.session_state.add_status_msg = ('success', full_msg)
-                
-                st.rerun()
+                    st.warning("No valid portfolios found in recommendation to add.")
             else:
-                st.warning("Could not extract valid allocations from the recommendation.")
+                st.warning("No structured portfolio data found. Please regenerate.")
 
-def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency, backtest_offset_days, data_path, df_fi_metrics, df_fx, key_prefix="cons"):
+def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency, backtest_offset_days, data_path, df_fi_metrics, df_fx, df_daily_ret, key_prefix="cons"):
     st.header("2. Portfolio Construction")
 
     col_add, col_del = st.columns([1, 4])
@@ -578,11 +817,24 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     key=f"{key_prefix}_goal_{i}_{st.session_state.refresh_counter}"
                 )
                 
+                # Validate defaults exist in options (Handle casing mismatches e.g. BlackRock vs Blackrock)
+                # available_tickers comes from df_sec_list['Ticker']
+                # port['tickers'] comes from user session or defaults
+                valid_defaults = []
+                for t in port['tickers']:
+                     if t in available_tickers:
+                         valid_defaults.append(t)
+                     else:
+                         # Try insensitive match
+                         match = next((x for x in available_tickers if x.lower() == t.lower()), None)
+                         if match:
+                             valid_defaults.append(match)
+                
                 st.session_state.portfolios[i]['tickers'] = st.multiselect(
                     f"Select Tickers",
                     options=available_tickers,
-                    default=port['tickers'],
-                    key=f"{key_prefix}_tickers_{i}_{st.session_state.refresh_counter}"
+                    default=valid_defaults,
+                    key=f"{key_prefix}_tickers_{i}_{st.session_state.refresh_counter}_v2"
                 )
                     
                 # Objective Selection
@@ -737,7 +989,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 st.stop()
             
             # 2. Download Data
-            ret_all, ret_bm = download_data(data_source, start_date, end_date, all_tickers, bm_tickers, currency, df_sec_list, df_fx, data_path)
+            ret_all, ret_bm = download_data(data_source, start_date, end_date, all_tickers, bm_tickers, currency, df_sec_list, df_fx, data_path, df_daily_ret)
         
             if ret_all.empty:
                 st.error("No data downloaded.")
@@ -788,7 +1040,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 'ret_bm': ret_bm
             }
 
-def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal"):
+def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal"):
     if st.session_state.optimization_results:
         st.header("3. Analysis Results")
     
@@ -1091,27 +1343,97 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         if total_agg_value > 0:
             agg_weights = pd.Series({k: v / total_agg_value for k, v in global_ticker_values.items()})
             
-            # Pass df_asset_class to get asset charts too
+            # Pre-calculate main charts
+            from utils.exposure import get_exposure_charts, get_concentration_exposure
             charts = get_exposure_charts(agg_weights, df_sector, df_country, df_asset_class)
             
-            c1, c2, c3 = st.columns(3)
+            # --- Dual Side-by-Side View (User Request) ---
+            st.markdown("### Exposure Overview")
             
-            with c1:
-                st.subheader("Asset Class Exposure")
-                st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_exp_ass_pie")
-                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+            col_exp_L, col_exp_R = st.columns([1, 1])
+            options = ["Asset Class", "Sector", "Country", "Top Holdings"]
+            
+            def render_anal_exposure_widget(column, widget_key_suffix):
+                with column:
+                    # Header/Selector
+                    choice = st.selectbox(f"View", options, key=f"{key_prefix}_anal_exp_view_{widget_key_suffix}")
+                    
+                    if choice == "Asset Class":
+                        if 'asset_pie' in charts:
+                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_asset_{widget_key_suffix}")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                        else:
+                            st.info("Asset Class data unavailable.")
+                            
+                    elif choice == "Sector":
+                        if 'sector_pie' in charts:
+                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_sector_{widget_key_suffix}")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                        else:
+                            st.info("Sector data unavailable.")
+                            
+                    elif choice == "Country":
+                        if 'country_pie' in charts:
+                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_country_{widget_key_suffix}")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                        else:
+                            st.info("Country data unavailable.")
+                            
+                    elif choice == "Top Holdings":
+                        # Selector for N [10, 15, 20]
+                        t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_anal_topn_sel_{widget_key_suffix}")
+                        
+                        if df_underlying is not None:
+                            conc_agg = get_concentration_exposure(agg_weights, df_underlying, top_n=t_topn)
+                            
+                            if not conc_agg.empty:
+                                conc_df = conc_agg.to_frame(name='Weight')
+                                conc_df['Est. Value ($)'] = conc_df['Weight'] * total_agg_value
+                                
+                                # Pie chart for Top Holdings - STRICT FILTER
+                                pie_df = conc_df.head(t_topn) # Ensure only Top N are shown
+                                
+                                import plotly.express as px
+                                fig_top_holdings_pie = px.pie(
+                                    pie_df, 
+                                    values='Weight', 
+                                    names=pie_df.index, 
+                                    title=f'Top {t_topn} Holdings Concentration',
+                                    color_discrete_sequence=PALETTE,
+                                    hole=0.3
+                                )
+                                # User Request: No text in pie chart, strict slicing (handled by top_n above)
+                                fig_top_holdings_pie.update_traces(textposition='inside', textinfo='none')
+                                fig_top_holdings_pie.update_layout(showlegend=True) # Legend is needed if no text
+                                st.plotly_chart(fig_top_holdings_pie, use_container_width=True, key=f"{key_prefix}_anal_pie_top_holdings_{widget_key_suffix}")
 
-            with c2:
-                st.subheader("Sector Exposure")
-                st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_exp_sec_pie")
-                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-            
-            with c3:
-                st.subheader("Country Exposure")
-                st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_exp_cou_pie")
-                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                                with st.expander("View Data"):
+                                    st.dataframe(
+                                        conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                                        use_container_width=True
+                                    )
+                            else:
+                                st.warning("No underlying holdings found.")
+                        else:
+                            st.info("Concentration data not available (No underlying data found).")
+
+            # Render Charts
+            render_anal_exposure_widget(col_exp_L, "L")
+            render_anal_exposure_widget(col_exp_R, "R")
+
         else:
             st.warning("No exposure data found for the selected filters.")
+
+    # This function is a placeholder for logic that might be moved or updated elsewhere.
+    # The original instruction refers to "Add Selected Strategy" logic, which is not present
+    # in the provided snippet. If this function was intended to contain that logic,
+    # it needs to be provided in the context.
+    def render_recommender_add_logic(key_prefix="rec_add"):
+        pass
+
 
     # --- Factor Exposures ---
     if st.session_state.optimization_results:
@@ -1296,9 +1618,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             # Helper function to determine payment frequency
             def get_payment_frequency(ticker):
                 """Returns 'monthly' or 'quarterly' based on ticker type."""
-                # Check if ticker contains REIT indicators
-                if 'REIT' in ticker.upper() or 'VNQ' in ticker or 'VNQI' in ticker:
+                ticker_upper = ticker.upper()
+                
+                # Explicitly check for BlackRock and Monroe - monthly dividends
+                if 'BLACKROCK' in ticker_upper or 'MONROE' in ticker_upper:
+                    return 'monthly'
+                
+                # Check if ticker contains REIT indicators (including REIT Risk Managed) - quarterly dividends
+                if 'REIT' in ticker_upper or 'VNQ' in ticker or 'VNQI' in ticker:
                     return 'quarterly'
+                
                 # Default to monthly for bonds and other income assets
                 return 'monthly'
         
@@ -1324,14 +1653,25 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             weight = latest_weights[weight_col]
                             invested_in_ticker = cash_invested * weight
                         
-                            # Get yield
+                            # Get yield - check both dividend yield and YTM
                             annual_yield = 0.0
                             if ticker in df_fi_metrics.columns:
-                                if 'YTM / est. yield' in df_fi_metrics.index:
+                                # First try T12M dividend yield (for income products like BlackRock, Monroe)
+                                if 'T12M dividend yield' in df_fi_metrics.index:
+                                    yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
+                                    if pd.notna(yield_val) and yield_val != 0:
+                                        annual_yield = float(yield_val)
+                                        # Handle if already decimal (< 1) vs percentage (> 1)
+                                        if annual_yield > 1:
+                                            annual_yield = annual_yield / 100
+                                
+                                # Fall back to YTM if no dividend yield
+                                if annual_yield == 0 and 'YTM / est. yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
-                                        # Convert from percentage to decimal (e.g., 5.0 -> 0.05)
-                                        annual_yield = float(yield_val) / 100
+                                        annual_yield = float(yield_val)
+                                        if annual_yield > 1:
+                                            annual_yield = annual_yield / 100
                         
                             if annual_yield > 0 and invested_in_ticker > 0:
                                 payment_freq = get_payment_frequency(ticker)

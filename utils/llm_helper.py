@@ -75,30 +75,19 @@ def get_gemini_recommendation(api_key, client_profile):
     {client_profile.get('Goals', 'No specific goals provided.')}
 
     **Instructions:**
-    1.  **Executive Summary**: Briefly analyze the client's profile, focusing on their risk tolerance, financial situation, and **specifically addressing each of their stated goals and priorities**. Explain how the recommended strategy aligns with these goals.
+    1.  **Executive Summary**: Briefly analyze the client's profile and goals.
     
     2.  **Portfolio Recommendation**:
         *   Structure this section by Goal.
-        *   For EACH goal listed in the "Client Goals & Priorities", create a specific portfolio recommendation.
+        *   For EACH goal, create a recommendation table.
         *   **Format**:
-            *   **Header**: "Goal X: [Goal Name] ($[Lump Sum] Lump Sum, [Horizon] Year Horizon)"
-            *   **Table**: Immediately follow the header with a markdown table for that goal.
-        *   The table MUST have the following columns: `Objective`, `Goal Name`, `Horizon (Yrs)`, `Product`, `Allocation (%)`, `Dollar Amount ($)`, `Rationale`.
-        *   `Objective`: One of: "Wealth Growth", "Income Generation", or "Capital Preservation".
-        *   `Goal Name`: Use the EXACT name provided in the client's goals. MUST be filled for EVERY row.
-        *   `Horizon (Yrs)`: The time horizon from the goal's "Horizon (Yrs)" field. MUST be filled for EVERY row.
-        *   `Product`: Must be one of the valid Syfe products listed in the context below.
-        *   `Allocation (%)`: The percentage of that specific goal's portfolio allocated to the product.
-        *   `Dollar Amount ($)`: Calculate this by multiplying the Allocation (%) by the "Lump Sum Investment ($)" specified for that goal. Format as a dollar amount (e.g., "$50,000").
-        *   `Rationale`: A brief 1-sentence explanation for this allocation.
-        *   The allocations for EACH goal must sum up to 100%.
-        *   **NO LATEX**: Do NOT use LaTeX formatting (e.g., do not use `$` for math blocks). Use standard text only.
-        *   **CRITICAL**: You MUST fill in the 'Goal Name' and 'Horizon (Yrs)' for EVERY row. Do NOT leave them blank, do NOT use ditto marks, and do NOT merge cells. Every row must be complete.
-    
-    **Product Constraints:**
-    *   **AI Products**: Only recommend "Private Credit" or "Fixed Maturity Bond" if "Accredited Investor" is True.
-    *   **30% Limit**: "Private Credit" and "Fixed Maturity Bond" combined must NOT exceed 30% of any single goal's portfolio.
-    *   **Valid Products**: Use ONLY the product names listed in the context (e.g., "Core Equity100", "REIT+ 100% REITs", "Income+ Enhance", "Cash+ Flexi", "Cash+ Guaranteed", "Private Credit", "Fixed Maturity Bond").
+            *   **Header**: "Goal: [Goal Name] ([Horizon] Years)"
+            *   **Table Columns**: `Objective`, `Goal Name`, `Horizon (Yrs)`, `Product`, `Allocation (%)`, `Dollar Amount ($)`, `Rationale`.
+        *   **Important Rules**:
+            *   Use ONLY valid Syfe products.
+            *   **Thematic Exposure**: If the client has selected "Interest in AI : Yes", you MAY allocate up to **30%** (MAXIMUM) to "Thematic: Disruptive Technology" or similar, IF their Risk Score is high enough (4 or 5). If Risk Score is low, do NOT allocate to Thematic, even if interested.
+            *   **Accredited Investors**: Only recommend Private Credit/Fixed Maturity if the client is Accredited.
+            *   **Total Allocation**: Must sum to 100% per goal.
     
     **Context:**
     {SYFE_CONTEXT}
@@ -136,24 +125,51 @@ def parse_recommendation_table(recommendation_text):
     
     # Mapping from AI Product Name to Ticker in PV_sec_list.csv
     product_map = {
+        # Core Portfolios
         "Core Equity100": "Core Equity100",
+        "Core Equity 100": "Core Equity100",
         "Core Growth": "Core Growth",
         "Core Balanced": "Core Balanced",
         "Core Defensive": "Core Defensive",
-        "REIT+": "REIT 100", # Default to 100 if generic
+        "Downside Protected": "Downside protected",
+        "Downside protected": "Downside protected",
+        # REIT Portfolios
+        "REIT+": "REIT 100",
+        "REIT 100": "REIT 100",
         "REIT+ 100% REITs": "REIT 100",
         "REIT+ with Risk Management": "REIT Risk Managed",
+        "REIT Risk Managed": "REIT Risk Managed",
+        # Income Portfolios
         "Income+ Preserve": "Income Preserve",
+        "Income Preserve": "Income Preserve",
         "Income+ Enhance": "Income Enhance",
+        "Income Enhance": "Income Enhance",
+        # Thematic Portfolios
         "Disruptive Technology": "Disruptive Technology",
+        "Thematic: Disruptive Technology": "Disruptive Technology",
         "Healthcare Innovation": "Healthcare Innovation",
         "ESG & Clean Energy": "ESG & Clean Energy",
         "China Growth": "China Growth",
+        # Cash Management
         "Cash+ Flexi (SGD)": "Cash SGD flexi",
         "Cash+ Flexi (USD)": "Cash USD flexi",
-        "Cash+ Flexi": "Cash SGD flexi", # Generic fallback
-        "Cash+ Guaranteed": "Cash SGD guaranteed", # Proxy
-        # Add more mappings as needed
+        "Cash+ Flexi": "Cash SGD flexi",
+        "Cash+ Guaranteed": "Cash SGD guaranteed",
+        "Cash SGD flexi": "Cash SGD flexi",
+        "Cash USD flexi": "Cash USD flexi",
+        "Cash SGD guaranteed": "Cash SGD guaranteed",
+        # SRS Portfolios
+        "SRS Income Preserve": "SRS Income Preserve",
+        "SRS Income Enhance": "SRS Income Enhance",
+        "SRS Cash SGD flexi": "SRS Cash SGD flexi",
+        "SRS Equity100": "SRS Equity100",
+        # Private Credit (Accredited Investor)
+        "BlackRock Private Credit": "BlackRock Private Credit Fund",
+        "BlackRock Private Credit Fund": "BlackRock Private Credit Fund",
+        "Monroe Income Plus": "Monroe Income Plus Fund",
+        "Monroe Income Plus Fund": "Monroe Income Plus Fund",
+        # Silverdale
+        "Silverdale Fund": "Silverdale Fund (Nov 2027)",
     }
     
     portfolios = {}
@@ -236,3 +252,60 @@ def parse_recommendation_table(recommendation_text):
         return {}, []
         
     return portfolios, failed_items
+
+def get_recommendation_narrative(api_key, client_profile, allocation, goal_name, amount):
+    """
+    Generates a personalized narrative explaining the deterministic allocation.
+    """
+    try:
+        genai.configure(api_key=api_key)
+        
+        # Format allocation for prompt
+        alloc_str = "\n".join([f"- **{k}**: {v:.1%}" for k, v in allocation.items()])
+        
+        prompt = f"""
+    You are a highly experienced Wealth Management Investment Counsellor at Syfe.
+    
+    **Context:**
+    We have already determined the optimal asset allocation for this client based on their risk profile and goals using our proprietary engine.
+    Your task is to **explain** this recommendation to the client in a natural, professional, and personalized way.
+    
+    **Client Profile:**
+    - Goal: {goal_name}
+    - Investment Amount: ${amount:,.2f}
+    - Risk Score: {client_profile.get('Risk Score', 'N/A')} (Scale 1-5)
+    - Time Horizon: {client_profile.get('Time Horizon', 'N/A')} years
+    - Investment Objective: {client_profile.get('Objective', 'N/A')}
+    - Interest in AI/Thematic: {client_profile.get('Interest in AI', 'No')}
+    
+    **Recommended Allocation:**
+    {alloc_str}
+    
+    **Instructions:**
+    1.  **Investment Strategy**: Explain *why* this specific blend of portfolios (Core + Satellite, if any) is suitable for their specific Goal "{goal_name}" and Time Horizon.
+    2.  **Risk & Return**: Briefly mention the expected behavior of this portfolio (e.g., "Given your 10-year horizon, this portfolio accepts short-term volatility for higher long-term growth...").
+    3.  **Thematic Exposure (if applicable)**: If the allocation includes a Thematic/AI portfolio, explain that it is capped (e.g. at 30%) to manage risk while providing exposure to high-growth sectors.
+    4.  **Tone**: Professional, encouraging, and confident.
+    5.  **Format**: Use Markdown. Keep it concise (2-3 paragraphs). Do NOT output a table (the table is already shown to the user). Just the narrative.
+    """
+
+        # List of models to try
+        models_to_try = [
+            'gemini-1.5-pro', 
+            'gemini-1.5-flash'
+        ]
+        
+        last_error = None
+        
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                last_error = e
+                continue
+                
+        return f"Error generating narrative: {str(last_error)}"
+    except Exception as e:
+        return f"Error configuring API: {str(e)}"

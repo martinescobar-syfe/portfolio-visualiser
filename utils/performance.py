@@ -65,6 +65,9 @@ def get_performance_summary(all_port_ret, bm_ret=None):
     """
     summary_list = []
     
+    if all_port_ret.empty or len(all_port_ret.columns) == 0:
+        return pd.DataFrame()
+    
     for col in all_port_ret.columns:
         metrics = calculate_metrics(all_port_ret[col])
         summary_list.append(metrics)
