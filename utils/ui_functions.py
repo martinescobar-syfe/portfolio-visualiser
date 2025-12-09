@@ -1654,24 +1654,20 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             invested_in_ticker = cash_invested * weight
                         
                             # Get yield - check both dividend yield and YTM
+                            # All yields in FI Metrics are stored as percentages (e.g., 10.72 = 10.72%)
                             annual_yield = 0.0
                             if ticker in df_fi_metrics.columns:
                                 # First try T12M dividend yield (for income products like BlackRock, Monroe)
                                 if 'T12M dividend yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
-                                        annual_yield = float(yield_val)
-                                        # Handle if already decimal (< 1) vs percentage (> 1)
-                                        if annual_yield > 1:
-                                            annual_yield = annual_yield / 100
+                                        annual_yield = float(yield_val) / 100  # Convert from % to decimal
                                 
                                 # Fall back to YTM if no dividend yield
                                 if annual_yield == 0 and 'YTM / est. yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
-                                        annual_yield = float(yield_val)
-                                        if annual_yield > 1:
-                                            annual_yield = annual_yield / 100
+                                        annual_yield = float(yield_val) / 100  # Convert from % to decimal
                         
                             if annual_yield > 0 and invested_in_ticker > 0:
                                 payment_freq = get_payment_frequency(ticker)
