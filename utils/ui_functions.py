@@ -1450,7 +1450,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
     
         try:
             # Try to load from file first
-            ff_file_path = os.path.join(os.getcwd(), 'F-F_Research_Data_5_Factors_2x3_daily.csv')
+            ff_file_path = os.path.join(os.getcwd(), 'Data', 'F-F_Research_Data_5_Factors_2x3_daily.csv')
         
             try:
                 df_ff_factor = pd.read_csv(ff_file_path, skiprows=3, index_col=0)
