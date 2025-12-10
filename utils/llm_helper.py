@@ -61,15 +61,28 @@ def get_gemini_recommendation(api_key, client_profile):
         genai.configure(api_key=api_key)
         
         # Format the complex client profile into a readable string
+        # Sanitize keys for better LLM readability
+        readable_profile = {}
+        key_map = {
+            "risk_willingness": "Risk Willingness (1-5)",
+            "risk_ability": "Risk Ability (1-5)",
+            "risk_score": "Overall Risk Score (1-5)",
+            "time_horizon": "Time Horizon (Years)",
+        }
+        
+        for k, v in client_profile.items():
+            new_key = key_map.get(k, k.replace('_', ' ').title())
+            readable_profile[new_key] = v
+            
         import json
-        profile_str = json.dumps(client_profile, indent=2)
+        profile_str = json.dumps(readable_profile, indent=2)
         
         prompt = f"""
     You are a highly experienced Wealth Management Investment Counsellor at Syfe.
     Your task is to analyze the client's profile and recommend a portfolio allocation using Syfe's specific product suite.
 
     **Client Profile:**
-    {client_profile}
+    {profile_str}
     
     **Client Goals & Priorities:**
     {client_profile.get('Goals', 'No specific goals provided.')}
@@ -89,16 +102,28 @@ def get_gemini_recommendation(api_key, client_profile):
             *   **Accredited Investors**: Only recommend Private Credit/Fixed Maturity if the client is Accredited.
             *   **Total Allocation**: Must sum to 100% per goal.
     
+    **CRITICAL Formatting Rules (MUST FOLLOW):**
+    - OUTPUT ONLY PLAIN TEXT AND STANDARD MARKDOWN.
+    - NEVER use LaTeX formatting under any circumstances (no $...$ or $$...$$).
+    - Write money as plain text: "$50,000" or "50,000 dollars" - NOT "$50,000$" or "\\$50,000".
+    - Write percentages as plain text: "20%" - NOT "$20\\%$".
+    - Do NOT use any mathematical notation or special formatting.
+    - Do NOT escape dollar signs with backslashes.
+    - Do NOT use internal variable names (e.g. use "Risk Willingness" not "risk_willingness").
+    - Tables should use simple Markdown pipe syntax only.
+    - Output must be clean, professional, plain-text Markdown that renders properly in Streamlit.
+    
     **Context:**
     {SYFE_CONTEXT}
     """
 
-        # List of models to try in order of preference (Gemini 3 Pro Preview first!)
+        # Use Gemini 3 Pro Preview (Verified Available)
         models_to_try = [
-            'gemini-3-pro-preview', 
-            'gemini-2.5-flash-preview-09-2025',
-            'gemini-1.5-pro', 
-            'gemini-1.5-flash'
+            'gemini-3-pro-preview',
+            'gemini-2.0-flash-exp',
+            'gemini-2.0-flash',
+            'gemini-2.5-flash',
+            'gemini-2.5-pro'
         ]
         
         last_error = None
@@ -287,12 +312,15 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
     3.  **Thematic Exposure (if applicable)**: If the allocation includes a Thematic/AI portfolio, explain that it is capped (e.g. at 30%) to manage risk while providing exposure to high-growth sectors.
     4.  **Tone**: Professional, encouraging, and confident.
     5.  **Format**: Use Markdown. Keep it concise (2-3 paragraphs). Do NOT output a table (the table is already shown to the user). Just the narrative.
+    6.  **CRITICAL Formatting Rule**: OUTPUT ONLY PLAIN TEXT. NEVER use LaTeX (no $...$ or $$...$$). Write money as "$50,000" and percentages as "20%" in plain text only. Do NOT escape dollar signs. Do NOT use internal variable names.
     """
 
         # List of models to try
         models_to_try = [
-            'gemini-1.5-pro', 
-            'gemini-1.5-flash'
+            'gemini-2.5-pro',
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-exp'
         ]
         
         last_error = None

@@ -216,7 +216,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                             names=list(final_asset_alloc.keys()),
                             title="Asset Allocation"
                         )
-                        st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset")
+                        st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset_alloc")
 
                     with col_p3:
                         st.markdown("**By Objective**")
@@ -272,85 +272,76 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
 
                 if not weights_series.empty:
                     # Calculate all charts first
-                    charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=50)
+                    charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
                     
-                    col_exp_L, col_exp_R = st.columns([1, 1])
+                    # --- Row 1: Asset Class + Top Holdings ---
+                    col_asset, col_holdings = st.columns([1, 1])
                     
-                    options = ["Asset Class", "Sector", "Country", "Top Holdings"]
+                    with col_asset:
+                        st.markdown("**Asset Class**")
+                        if 'asset_pie' in charts:
+                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_exp")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                        else:
+                            st.info("Asset Class data unavailable.")
                     
-                    def render_exposure_widget(column, widget_key_suffix):
-                        with column:
-                            choice = st.selectbox(f"View", options, key=f"{key_prefix}_exp_view_{widget_key_suffix}")
-                            
-                            if choice == "Asset Class":
-                                if 'asset_pie' in charts:
-                                    st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_{widget_key_suffix}")
-                                    with st.expander("View Data"):
-                                        st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
-                                else:
-                                    st.info("Asset Class data unavailable.")
-                                    
-                            elif choice == "Sector":
-                                if 'sector_pie' in charts:
-                                    st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_pie_sector_{widget_key_suffix}")
-                                    with st.expander("View Data"):
-                                        st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                                else:
-                                    st.info("Sector data unavailable.")
-                                    
-                            elif choice == "Country":
-                                if 'country_pie' in charts:
-                                    st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_pie_country_{widget_key_suffix}")
-                                    with st.expander("View Data"):
-                                        st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                                else:
-                                    st.info("Country data unavailable.")
-                                    
-                            elif choice == "Top Holdings":
-                                # Selector for N [10, 15, 20]
-                                t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_{widget_key_suffix}")
+                    with col_holdings:
+                        # Selector for Top N
+                        t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_client")
+                        
+                        if df_underlying is not None:
+                            conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
+                            if not conc_raw.empty:
+                                conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
+                                conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
+                                total_conc = conc_df['Weight'].sum()
                                 
-                                if df_underlying is not None:
-                                    conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
-                                    
-                                    if not conc_raw.empty:
-                                        conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
-                                        conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
-                                        
-                                        # Pie chart for Top Holdings
-                                        import plotly.express as px
-                                        pie_df = conc_df.head(t_topn)
-                                        
-                                        fig_top_holdings_pie = px.pie(
-                                            pie_df, 
-                                            values='Weight', 
-                                            names=pie_df.index, 
-                                            title=f'Top {t_topn} Holdings Concentration',
-                                            color_discrete_sequence=PALETTE,
-                                            hole=0.3
-                                        )
-                                        fig_top_holdings_pie.update_traces(textposition='inside', textinfo='none')
-                                        fig_top_holdings_pie.update_layout(showlegend=True)
-                                        st.plotly_chart(fig_top_holdings_pie, use_container_width=True, key=f"{key_prefix}_pie_top_holdings_{widget_key_suffix}")
-
-                                        with st.expander("View Data"):
-                                            st.dataframe(
-                                                conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                                use_container_width=True
-                                            )
-                                    else:
-                                        st.warning("No underlying holdings found. Check ticker matching.")
-                                        with st.expander("Debug Ticker Matching"):
-                                            st.write("Input Tickers:", list(weights_series.index))
-                                            st.write("Available Underlying Columns (Sample):", list(df_underlying.columns)[:10])
-                                else:
-                                    st.info("Concentration data not available (No underlying data found).")
-
-                    # Render Left Widget
-                    render_exposure_widget(col_exp_L, "L")
+                                # Bar Chart for Top Holdings
+                                conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # Sort for bar chart (bottom to top)
+                                
+                                fig_top_bar = px.bar(
+                                    conc_df_sorted, 
+                                    x='Weight', 
+                                    y=conc_df_sorted.index, 
+                                    orientation='h',
+                                    title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
+                                    color='Weight',
+                                    color_continuous_scale=PALETTE # Use Syfe Palette
+                                )
+                                fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
+                                st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_bar_top_holdings_client")
+                                
+                                with st.expander("View Data"):
+                                    st.dataframe(
+                                        conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                                        use_container_width=True
+                                    )
+                            else:
+                                st.warning("No underlying holdings found.")
+                        else:
+                            st.info("Concentration data not available.")
                     
-                    # Render Right Widget
-                    render_exposure_widget(col_exp_R, "R")
+                    # --- Row 2: Sector + Country ---
+                    col_sector, col_country = st.columns([1, 1])
+                    
+                    with col_sector:
+                        st.markdown("**Sector**")
+                        if 'sector_pie' in charts:
+                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_pie_sector")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                        else:
+                            st.info("Sector data unavailable.")
+                    
+                    with col_country:
+                        st.markdown("**Country**")
+                        if 'country_pie' in charts:
+                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_pie_country")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                        else:
+                            st.info("Country data unavailable.")
 
                 else:
                     st.warning("No data matches the selected filters.")
@@ -559,6 +550,8 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     
     # --- Generate ---
     st.markdown("---")
+    # --- Generate ---
+    st.markdown("---")
     if st.button("Generate Smart Recommendation", type="primary", key=f"{key_prefix}_calc"):
         
         # Map choice inputs
@@ -598,17 +591,47 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         score, overrides = calculate_risk_score(profile)
         profile['Risk Score'] = f"{score}/5" 
         
-        # Display Score First
-        st.success(f"**Client Risk Score: {score}/5**")
-        if overrides:
-            st.warning(f"**Score Adjustments:** {', '.join(overrides)}")
-            
         # 2. Get AI Recommendation (Gemini generates the Table + Rationale)
-        # Using the original flow requested by user.
         from utils.llm_helper import get_gemini_recommendation, parse_recommendation_table
         
         with st.spinner("Generating AI-powered Recommendation..."):
             rec_text = get_gemini_recommendation(GEMINI_API_KEY, profile)
+            
+        # Parse data for Logic
+        portfolios, failed = parse_recommendation_table(rec_text)
+
+        # Create maps
+        goal_map = {}
+        target_map = {}
+        if not goal_df.empty and "Goal Name" in goal_df.columns and "Lump Sum ($)" in goal_df.columns:
+            for _, row in goal_df.iterrows():
+                goal_map[row["Goal Name"]] = row["Lump Sum ($)"]
+                if "Target Amount ($)" in goal_df.columns:
+                    target_map[row["Goal Name"]] = row["Target Amount ($)"]
+
+        # Store in session state
+        st.session_state.rec_results = {
+            'score': score,
+            'overrides': overrides,
+            'rec_text': rec_text,
+            'portfolios_data': portfolios, 
+            'goal_map': goal_map,
+            'target_map': target_map
+        }
+        st.rerun()
+
+    # --- Display Results (Persistent) ---
+    if 'rec_results' in st.session_state:
+        results = st.session_state.rec_results
+        score = results.get('score', 0)
+        overrides = results.get('overrides', [])
+        rec_text = results.get('rec_text', '')
+        portfolios = results.get('portfolios_data', {})
+        
+        # Display Score First
+        st.success(f"**Client Risk Score: {score}/5**")
+        if overrides:
+            st.warning(f"**Score Adjustments:** {', '.join(overrides)}")
             
         # Display Narrative (Text Only)
         st.markdown(f"### Proposed Strategy")
@@ -637,9 +660,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             elif line.strip(): # Skip empty lines if excessive
                 st.markdown(line)
 
-        # Parse data for Logic
-        portfolios, failed = parse_recommendation_table(rec_text)
-
         # Render Structured Table (Deterministic Display)
         if portfolios:
             st.markdown("#### Recommended Allocation")
@@ -651,10 +671,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 objective = data.get('objective', 'Wealth Growth')
                 
                 for ticker, weight in data.get('allocations', {}).items():
-                    # Calculate amount if possible, or just show %
-                    # We don't have the explicit goal amount here easily unless we parse it from goal_df or rec_text
-                    # But the User just wants a table.
-                    
                     table_rows.append({
                         "Goal": goal,
                         "Objective": objective,
@@ -665,8 +681,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             
             if table_rows:
                 df_disp = pd.DataFrame(table_rows)
-                
-                # Format
                 st.dataframe(
                     df_disp.style.format({"Allocation": "{:.1%}"}),
                     use_container_width=True,
@@ -675,27 +689,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         else:
             # Fallback if parsing fails - show raw just in case
             st.warning("Could not structure table data. Displaying raw output:")
-            st.markdown(rec_text) # Only fallback
-        
-        if portfolios:
-            # Create a map for Goal Name -> Lump Sum from the input table
-            # goal_df has cols: "Goal Name", "Lump Sum ($)"
-            goal_map = {}
-            target_map = {}
-            if not goal_df.empty and "Goal Name" in goal_df.columns and "Lump Sum ($)" in goal_df.columns:
-                for _, row in goal_df.iterrows():
-                    goal_map[row["Goal Name"]] = row["Lump Sum ($)"]
-                    if "Target Amount ($)" in goal_df.columns:
-                        target_map[row["Goal Name"]] = row["Target Amount ($)"]
-
-            st.session_state.rec_results = {
-                'score': score,
-                'portfolios_data': portfolios, 
-                'goal_map': goal_map,
-                'target_map': target_map
-            }
-        else:
-             pass
+            st.markdown(rec_text)
         
     # --- Add to Analysis Button ---
     if 'rec_results' in st.session_state:
@@ -771,7 +765,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 if added_count > 0:
                     st.session_state.refresh_counter += 1
                     st.success(f"Added {added_count} recommended strategies to Portfolio Construction!")
-                    st.rerun()
+                    # Don't rerun - keep recommendation visible
                 else:
                     st.warning("No valid portfolios found in recommendation to add.")
             else:
@@ -1347,82 +1341,75 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             from utils.exposure import get_exposure_charts, get_concentration_exposure
             charts = get_exposure_charts(agg_weights, df_sector, df_country, df_asset_class)
             
-            # --- Dual Side-by-Side View (User Request) ---
-            st.markdown("### Exposure Overview")
+            # --- Row 1: Asset Class + Top Holdings ---
+            col_asset, col_holdings = st.columns([1, 1])
             
-            col_exp_L, col_exp_R = st.columns([1, 1])
-            options = ["Asset Class", "Sector", "Country", "Top Holdings"]
+            with col_asset:
+                st.markdown("**Asset Class**")
+                if 'asset_pie' in charts:
+                    st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_asset")
+                    with st.expander("View Data"):
+                        st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Asset Class data unavailable.")
             
-            def render_anal_exposure_widget(column, widget_key_suffix):
-                with column:
-                    # Header/Selector
-                    choice = st.selectbox(f"View", options, key=f"{key_prefix}_anal_exp_view_{widget_key_suffix}")
-                    
-                    if choice == "Asset Class":
-                        if 'asset_pie' in charts:
-                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_asset_{widget_key_suffix}")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Asset Class data unavailable.")
-                            
-                    elif choice == "Sector":
-                        if 'sector_pie' in charts:
-                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_sector_{widget_key_suffix}")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Sector data unavailable.")
-                            
-                    elif choice == "Country":
-                        if 'country_pie' in charts:
-                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_country_{widget_key_suffix}")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Country data unavailable.")
-                            
-                    elif choice == "Top Holdings":
-                        # Selector for N [10, 15, 20]
-                        t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_anal_topn_sel_{widget_key_suffix}")
+            with col_holdings:
+                # Selector for Top N
+                t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_anal_topn_sel")
+                
+                if df_underlying is not None:
+                    from utils.exposure import get_concentration_exposure
+                    conc_agg = get_concentration_exposure(agg_weights, df_underlying, top_n=t_topn)
+                    if not conc_agg.empty:
+                        conc_df = conc_agg.head(t_topn).to_frame(name='Weight')
+                        conc_df['Est. Value ($)'] = conc_df['Weight'] * total_agg_value
+                        total_conc = conc_df['Weight'].sum()
                         
-                        if df_underlying is not None:
-                            conc_agg = get_concentration_exposure(agg_weights, df_underlying, top_n=t_topn)
-                            
-                            if not conc_agg.empty:
-                                conc_df = conc_agg.to_frame(name='Weight')
-                                conc_df['Est. Value ($)'] = conc_df['Weight'] * total_agg_value
-                                
-                                # Pie chart for Top Holdings - STRICT FILTER
-                                pie_df = conc_df.head(t_topn) # Ensure only Top N are shown
-                                
-                                import plotly.express as px
-                                fig_top_holdings_pie = px.pie(
-                                    pie_df, 
-                                    values='Weight', 
-                                    names=pie_df.index, 
-                                    title=f'Top {t_topn} Holdings Concentration',
-                                    color_discrete_sequence=PALETTE,
-                                    hole=0.3
-                                )
-                                # User Request: No text in pie chart, strict slicing (handled by top_n above)
-                                fig_top_holdings_pie.update_traces(textposition='inside', textinfo='none')
-                                fig_top_holdings_pie.update_layout(showlegend=True) # Legend is needed if no text
-                                st.plotly_chart(fig_top_holdings_pie, use_container_width=True, key=f"{key_prefix}_anal_pie_top_holdings_{widget_key_suffix}")
-
-                                with st.expander("View Data"):
-                                    st.dataframe(
-                                        conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                        use_container_width=True
-                                    )
-                            else:
-                                st.warning("No underlying holdings found.")
-                        else:
-                            st.info("Concentration data not available (No underlying data found).")
-
-            # Render Charts
-            render_anal_exposure_widget(col_exp_L, "L")
-            render_anal_exposure_widget(col_exp_R, "R")
+                        # Bar Chart for Top Holdings
+                        conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # Sort for bar chart (bottom to top)
+                        
+                        fig_top_bar = px.bar(
+                            conc_df_sorted, 
+                            x='Weight', 
+                            y=conc_df_sorted.index, 
+                            orientation='h',
+                            title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
+                            color='Weight',
+                            color_continuous_scale=PALETTE # Use Syfe Palette
+                        )
+                        fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
+                        st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_anal_bar_top_holdings")
+                        
+                        with st.expander("View Data"):
+                            st.dataframe(
+                                conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                                use_container_width=True
+                            )
+                    else:
+                        st.warning("No underlying holdings found.")
+                else:
+                    st.info("Concentration data not available.")
+            
+            # --- Row 2: Sector + Country ---
+            col_sector, col_country = st.columns([1, 1])
+            
+            with col_sector:
+                st.markdown("**Sector**")
+                if 'sector_pie' in charts:
+                    st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_sector")
+                    with st.expander("View Data"):
+                        st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Sector data unavailable.")
+            
+            with col_country:
+                st.markdown("**Country**")
+                if 'country_pie' in charts:
+                    st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_country")
+                    with st.expander("View Data"):
+                        st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Country data unavailable.")
 
         else:
             st.warning("No exposure data found for the selected filters.")
