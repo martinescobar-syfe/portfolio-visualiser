@@ -3,7 +3,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 import numpy as np
-from styles.syfe_colors import PALETTE, HEATMAP_COLORS
+from styles.syfe_colors import (
+    PALETTE, HEATMAP_COLORS, ASSET_CLASS_COLORS, 
+    get_portfolio_color, get_asset_class_color, get_color_map_for_items
+)
 
 def apply_syfe_layout(fig, title="", height=500):
     fig.update_layout(
@@ -128,15 +131,34 @@ def plot_scatter_risk_return(df_ret, annualized=261, benchmark_ret=None):
     fig.update_yaxes(tickformat=".2%", title="Annualized Return")
     return fig
 
-def plot_allocation_pie(weights, title="Portfolio Allocation"):
+def plot_allocation_pie(weights, title="Portfolio Allocation", use_asset_colors=None):
+    """
+    Plot a pie chart for allocations.
+    
+    Args:
+        weights: Series with item names as index and weights as values
+        title: Chart title
+        use_asset_colors: 
+            - None: Use default PALETTE colors
+            - 'asset': Use asset class color mapping
+            - 'portfolio': Use portfolio type color mapping
+    """
     # Filter non-zero weights
     weights = weights[weights > 0.001]
+    
+    # Determine colors based on mode
+    if use_asset_colors == 'asset':
+        colors = [get_asset_class_color(name) for name in weights.index]
+    elif use_asset_colors == 'portfolio':
+        colors = [get_portfolio_color(name) for name in weights.index]
+    else:
+        colors = PALETTE[:len(weights)] if len(weights) <= len(PALETTE) else PALETTE * (len(weights) // len(PALETTE) + 1)
     
     fig = go.Figure(data=[go.Pie(
         labels=weights.index, 
         values=weights.values, 
         hole=.4,
-        marker=dict(colors=PALETTE),
+        marker=dict(colors=colors),
         textinfo='none', # No text on chart
         hoverinfo='label+percent+value'
     )])
@@ -144,14 +166,38 @@ def plot_allocation_pie(weights, title="Portfolio Allocation"):
     fig = apply_syfe_layout(fig, title=title)
     return fig
 
-def plot_bar_chart(df, title="", barmode='group'):
+def plot_bar_chart(df, title="", barmode='group', use_asset_colors=None):
+    """
+    Plot a bar chart.
+    
+    Args:
+        df: DataFrame to plot
+        title: Chart title
+        barmode: 'group' or 'relative'
+        use_asset_colors:
+            - None: Use default PALETTE colors
+            - 'asset': Use asset class color mapping (for index labels)
+            - 'portfolio': Use portfolio type color mapping (for index labels)
+    """
     fig = go.Figure()
     for i, col in enumerate(df.columns):
+        # Determine colors for bars
+        if use_asset_colors and len(df.columns) == 1:
+            # Single column means index labels should be colored
+            if use_asset_colors == 'asset':
+                colors = [get_asset_class_color(name) for name in df.index]
+            elif use_asset_colors == 'portfolio':
+                colors = [get_portfolio_color(name) for name in df.index]
+            else:
+                colors = PALETTE[i % len(PALETTE)]
+        else:
+            colors = PALETTE[i % len(PALETTE)]
+        
         fig.add_trace(go.Bar(
             x=df.index,
             y=df[col],
             name=col,
-            marker_color=PALETTE[i % len(PALETTE)]
+            marker_color=colors
         ))
     
     fig.update_layout(barmode=barmode)

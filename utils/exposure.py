@@ -19,7 +19,12 @@ def calculate_exposure(weights, df_exposure):
     for col in weights.index:
         if col.endswith('_wgt'):
             ticker = col.replace('_wgt', '')
-            ticker_weights[ticker] = weights[col]
+            # Ensure weight is numeric
+            try:
+                w = float(weights[col])
+                ticker_weights[ticker] = w
+            except (ValueError, TypeError):
+                continue
     
     # Convert to Series with clean ticker names
     weights = pd.Series(ticker_weights)
@@ -36,6 +41,9 @@ def calculate_exposure(weights, df_exposure):
     # Filter and align
     weights_aligned = weights[common_tickers]
     exposure_matrix = df_exposure[common_tickers]
+    
+    # Ensure exposure matrix values are numeric
+    exposure_matrix = exposure_matrix.apply(pd.to_numeric, errors='coerce').fillna(0)
     
     # Calculate weighted exposure: (Categories x Tickers) @ (Tickers x 1) -> (Categories x 1)
     # We use dot product
@@ -101,7 +109,12 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
             continue
             
         ticker = col_name.replace('_wgt', '')
-        weight_in_port = weights[col_name]
+        
+        # Safely convert weight to float
+        try:
+            weight_in_port = float(weights[col_name])
+        except (ValueError, TypeError):
+            continue
         
         if weight_in_port == 0:
             continue
@@ -161,6 +174,12 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
                 h_name = row[name_col]
                 h_val = row[w_col]
                 
+                # Safely convert holding weight to float
+                try:
+                    h_val_float = float(h_val) if not pd.isna(h_val) else 0.0
+                except (ValueError, TypeError):
+                    continue
+                
                 # Clean name
                 clean_name = clean_holding_name(h_name)
                 
@@ -169,7 +188,7 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
                 # If 7.5 -> 7.5%, then (7.5/100) * port_weight
                 # BUT we need to be careful if data is already decimal.
                 # Usually vendors provide %. Let's assume % for now as per previous observation (Nvidia 7.63).
-                contribution = (h_val / 100.0) * weight_in_port
+                contribution = (h_val_float / 100.0) * weight_in_port
                 
                 aggregated_holdings[clean_name] = aggregated_holdings.get(clean_name, 0.0) + contribution
 
@@ -212,8 +231,8 @@ def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None, df_
         asset_exp = group_tail(asset_exp, top_n=9)
         
         charts['asset_table'] = asset_exp.to_frame(name='Weight')
-        charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative')
-        charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation")
+        charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative', use_asset_colors='asset')
+        charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation", use_asset_colors='asset')
 
     # Concentration Exposure (if df_underlying provided)
     if df_underlying is not None:

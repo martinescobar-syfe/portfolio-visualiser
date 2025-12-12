@@ -6,6 +6,11 @@ from utils.plotting import plot_cumulative_returns, plot_rolling_volatility, plo
 def calculate_metrics(df_ret, annualized=261):
     """
     Calculates performance metrics for a return series.
+    Returns metrics as decimals (e.g., 0.0785 for 7.85%).
+    
+    Metrics returned:
+    - Cumulative Return, Annualized Return, Annualized Volatility, Max Drawdown: decimals (multiply by 100 for %)
+    - Sharpe Ratio, Sortino Ratio: ratios (no conversion needed)
     """
     metrics = {}
     
@@ -34,6 +39,32 @@ def calculate_metrics(df_ret, annualized=261):
     metrics['Max Drawdown'] = drawdown.min()
     
     return pd.Series(metrics)
+
+# Define which metrics are percentages vs ratios for formatting
+PERCENTAGE_METRICS = ['Cumulative Return', 'Annualized Return', 'Annualized Volatility', 'Max Drawdown', 'Tracking Error']
+RATIO_METRICS = ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']
+
+def format_metric_value(value, metric_name):
+    """
+    Format a metric value for display.
+    
+    Args:
+        value: The numeric value
+        metric_name: Name of the metric to determine formatting
+        
+    Returns:
+        Formatted string
+    """
+    if pd.isna(value):
+        return "N/A"
+    
+    if metric_name in PERCENTAGE_METRICS:
+        return f"{value:.2%}"  # e.g., 0.0785 -> "7.85%"
+    elif metric_name in RATIO_METRICS:
+        return f"{value:.2f}"  # e.g., 1.234 -> "1.23"
+    else:
+        # Default to 2 decimal places
+        return f"{value:.2f}"
 
 def calculate_relative_metrics(port_ret, bm_ret, annualized=261):
     """

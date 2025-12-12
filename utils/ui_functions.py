@@ -53,23 +53,73 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             if 'status' in df_client.columns:
                 df_client = df_client[df_client['status'] == 'ACTIVE']
         
-            # Mapping logic
+            # Mapping logic - handles various naming conventions from CSV exports
+            # Keys are normalized (uppercase, underscores, no _ACTIVE suffix)
             CLIENT_PORTFOLIO_MAPPING = {
+                # Core Portfolios
                 'GLOBAL_EQUITY_100': 'Core Equity100',
+                'GLOBAL_EQUITY': 'Core Equity100',
+                'CORE_EQUITY100': 'Core Equity100',
+                'CORE_EQUITY_100': 'Core Equity100',
+                'EQUITY100': 'Core Equity100',
+                'CORE_GROWTH': 'Core Growth',
+                'CORE_BALANCED': 'Core Balanced',
+                'CORE_DEFENSIVE': 'Core Defensive',
+                'DOWNSIDE_PROTECTED': 'Downside protected',
+                # Thematic Portfolios
                 'CHINA_GROWTH': 'China Growth',
+                'DISRUPTIVE_TECHNOLOGY': 'Disruptive Technology',
+                'DISRUPTIVE_TECH': 'Disruptive Technology',
+                'ESG_AND_CLEAN_ENERGY': 'ESG & Clean Energy',
+                'ESG_CLEAN_ENERGY': 'ESG & Clean Energy',
+                'HEALTHCARE_INNOVATION': 'Healthcare Innovation',
+                # Income Portfolios
                 'INCOME_ENHANCE': 'Income Enhance',
+                'INCOME_ENHANCED': 'Income Enhance',
                 'INCOME_PRESERVE': 'Income Preserve',
+                # REIT Portfolios
                 'REIT': 'REIT 100',
+                'REIT_100': 'REIT 100',
+                'REIT_RISK_MANAGED': 'REIT Risk Managed',
+                'REIT_RM': 'REIT Risk Managed',
+                # Private Credit / AI Products
                 'BLACKROCK': 'BlackRock Private Credit Fund',
+                'BLACKROCK_PRIVATE_CREDIT': 'BlackRock Private Credit Fund',
+                'BLACKROCK_PCF': 'BlackRock Private Credit Fund',
+                'MONROE': 'Monroe Income Plus Fund',
+                'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
+                'SILVERDALE': 'Silverdale Fund (Nov 2027)',
+                # Cash Management
                 'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
+                'CASH_PLUS_GUARANTEED': 'Cash SGD guaranteed',
+                'CASH_GUARANTEED': 'Cash SGD guaranteed',
                 'CASH_PLUS_USD': 'Cash USD flexi',
-                'CASH_PLUS': 'Cash SGD flexi',  # Default SGD
+                'CASH_USD': 'Cash USD flexi',
+                'CASH_PLUS': 'Cash SGD flexi',
+                'CASH_SGD': 'Cash SGD flexi',
+                'CASH_PLUS_SGD': 'Cash SGD flexi',
+                # SRS Portfolios
                 'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
+                'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
                 'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
                 'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
+                'SRS_CASH': 'SRS Cash SGD flexi',
                 'SRS_GLOBAL_EQUITY_100': 'SRS Equity100',
-                'SRS_INCOME_ENHANCED': 'SRS Income Enhance', # Handle potential typo
+                'SRS_EQUITY100': 'SRS Equity100',
+                'SRS_EQUITY_100': 'SRS Equity100',
             }
+            
+            def normalize_portfolio_type(p_type):
+                """Normalize portfolio type string for mapping."""
+                if not isinstance(p_type, str):
+                    return None
+                # Uppercase, remove _ACTIVE suffix, strip whitespace
+                normalized = p_type.upper().strip()
+                # Remove common suffixes
+                for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED', '_PENDING']:
+                    if normalized.endswith(suffix):
+                        normalized = normalized[:-len(suffix)]
+                return normalized
 
             # Objective Mapping
             OBJECTIVE_MAPPING = {
@@ -90,29 +140,42 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             # Process data to get ticker weights
             client_holdings = {}
             total_nav = 0.0
+            
+            # Helper function to safely convert to float
+            def safe_float(val, default=0.0):
+                if pd.isna(val):
+                    return default
+                try:
+                    return float(str(val).replace(',', ''))
+                except (ValueError, TypeError):
+                    return default
         
             for index, row in df_client.iterrows():
-                p_type = row['type']
-                currency = row['currency'] if 'currency' in row else 'SGD'
-                nav_str = str(row['nav_in_sgd']).replace(',', '')
-                try:
-                    nav = float(nav_str)
-                except:
-                    nav = 0.0
+                p_type = row.get('type', None)
+                currency = str(row.get('currency', 'SGD'))
+                nav = safe_float(row.get('nav_in_sgd', 0))
             
                 if nav < 50: # Ignore small balances
                     continue
                 
                 ticker = None
+                
+                # Normalize the portfolio type
+                normalized_type = normalize_portfolio_type(p_type)
+                
+                if normalized_type is None:
+                    continue
             
-                # Special handling for CASH_PLUS
-                if p_type == 'CASH_PLUS':
-                    if currency == 'USD':
+                # Special handling for CASH_PLUS variants
+                if 'CASH' in normalized_type and 'PLUS' in normalized_type:
+                    if currency == 'USD' or 'USD' in normalized_type:
                         ticker = 'Cash USD flexi'
+                    elif 'GUARANTEED' in normalized_type:
+                        ticker = 'Cash SGD guaranteed'
                     else:
                         ticker = 'Cash SGD flexi'
-                elif p_type in CLIENT_PORTFOLIO_MAPPING:
-                    ticker = CLIENT_PORTFOLIO_MAPPING[p_type]
+                elif normalized_type in CLIENT_PORTFOLIO_MAPPING:
+                    ticker = CLIENT_PORTFOLIO_MAPPING[normalized_type]
             
                 if ticker:
                     client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
@@ -129,8 +192,13 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         # Get asset breakdown for this ticker
                         ticker_assets = df_asset_class[ticker]
                         for asset, asset_weight in ticker_assets.items():
-                            if asset_weight > 0:
-                                asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (asset_weight * weight)
+                            # Safely convert asset_weight to float
+                            try:
+                                aw = float(asset_weight) if not pd.isna(asset_weight) else 0.0
+                            except (ValueError, TypeError):
+                                aw = 0.0
+                            if aw > 0:
+                                asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
                     else:
                         # Check if it's an AI investment (BlackRock, Monroe)
                         if 'blackrock' in ticker.lower() or 'monroe' in ticker.lower():
@@ -188,10 +256,15 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 
                     with col_p1:
                         st.markdown("**By Portfolio Type**")
+                        # Use consistent colors based on portfolio's asset class
+                        from styles.syfe_colors import get_portfolio_color
+                        portfolio_colors = {name: get_portfolio_color(name) for name in client_weights.keys()}
                         fig_client = px.pie(
                             values=list(client_weights.values()),
                             names=list(client_weights.keys()),
-                            title=f"Total NAV: ${total_nav:,.2f}"
+                            title=f"Total NAV: ${total_nav:,.2f}",
+                            color=list(client_weights.keys()),
+                            color_discrete_map=portfolio_colors
                         )
                         st.plotly_chart(fig_client, use_container_width=True, key=f"{key_prefix}_pie_client")
                 
@@ -210,11 +283,16 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         
                         if others_val > 0:
                             final_asset_alloc['Others'] = others_val
-                            
+                        
+                        # Use consistent asset class colors
+                        from styles.syfe_colors import get_asset_class_color
+                        asset_colors = {name: get_asset_class_color(name) for name in final_asset_alloc.keys()}
                         fig_asset = px.pie(
                             values=list(final_asset_alloc.values()),
                             names=list(final_asset_alloc.keys()),
-                            title="Asset Allocation"
+                            title="Asset Allocation",
+                            color=list(final_asset_alloc.keys()),
+                            color_discrete_map=asset_colors
                         )
                         st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset_alloc")
 
@@ -1069,14 +1147,26 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         with tabs[0]: # Key Summary
             summary = get_performance_summary(all_port_ret)
         
-            # Custom formatting
-            format_dict = {col: "{:.2%}" for col in summary.index}
-            # Override for ratios
-            for idx in ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']:
-                if idx in format_dict:
-                    format_dict[idx] = "{:.2f}"
+            # Format the summary DataFrame properly
+            # Metrics are in rows (index), portfolios are in columns
+            # We need to format by row, so we'll create a formatted copy
+            def format_summary_value(val, metric_name):
+                if pd.isna(val):
+                    return "N/A"
+                # Ratios should be displayed as decimals
+                if metric_name in ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']:
+                    return f"{val:.2f}"
+                # Everything else (returns, volatility, drawdown) should be percentages
+                else:
+                    return f"{val:.2%}"
+            
+            # Create formatted DataFrame
+            summary_formatted = summary.copy()
+            for idx in summary.index:
+                for col in summary.columns:
+                    summary_formatted.loc[idx, col] = format_summary_value(summary.loc[idx, col], idx)
                 
-            st.dataframe(summary.style.format(format_dict), use_container_width=True)
+            st.dataframe(summary_formatted, use_container_width=True)
         
             st.markdown("---")
         
@@ -1230,7 +1320,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             rel_metrics, roll_excess = calculate_relative_metrics(all_port_ret[p_select_bm], ret_bm.iloc[:, 0])
         
             st.markdown("#### Relative Performance Metrics")
-            st.dataframe(rel_metrics.to_frame().T.style.format("{:.2%}"), use_container_width=True)
+            # Format: Tracking Error as %, Information Ratio as decimal
+            rel_df = rel_metrics.to_frame().T
+            rel_format = {}
+            for col in rel_df.columns:
+                if 'Ratio' in col:
+                    rel_format[col] = "{:.2f}"
+                else:
+                    rel_format[col] = "{:.2%}"
+            st.dataframe(rel_df.style.format(rel_format), use_container_width=True)
         
             st.markdown("#### Rolling 12M Excess Return")
             fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # Reuse plot function
