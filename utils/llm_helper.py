@@ -88,7 +88,7 @@ def get_gemini_recommendation(api_key, client_profile):
     {client_profile.get('Goals', 'No specific goals provided.')}
 
     **Instructions:**
-    1.  **Executive Summary**: Briefly analyze the client's profile and goals.
+    1.  **Executive Summary**: Briefly analyze the client's profile and goals in 2-3 sentences.
     
     2.  **Portfolio Recommendation**:
         *   Structure this section by Goal.
@@ -96,22 +96,43 @@ def get_gemini_recommendation(api_key, client_profile):
         *   **Format**:
             *   **Header**: "Goal: [Goal Name] ([Horizon] Years)"
             *   **Table Columns**: `Objective`, `Goal Name`, `Horizon (Yrs)`, `Product`, `Allocation (%)`, `Dollar Amount ($)`, `Rationale`.
-        *   **Important Rules**:
-            *   Use ONLY valid Syfe products.
+        *   **MANDATORY RULES**:
+            *   Use ONLY valid Syfe products from the Context below.
             *   **Thematic Exposure**: If the client has selected "Interest in AI : Yes", you MAY allocate up to **30%** (MAXIMUM) to "Thematic: Disruptive Technology" or similar, IF their Risk Score is high enough (4 or 5). If Risk Score is low, do NOT allocate to Thematic, even if interested.
             *   **Accredited Investors**: Only recommend Private Credit/Fixed Maturity if the client is Accredited.
-            *   **Total Allocation**: Must sum to 100% per goal.
+            *   **CRITICAL - 100% ALLOCATION RULE**: 
+                - For EACH goal, the Allocation (%) column MUST sum to EXACTLY 100%.
+                - If a client has multiple goals (e.g., Retirement, Education, Emergency Fund), EACH goal gets its own table where allocations sum to 100%.
+                - Example: Goal "Retirement" might have Core Equity100 (70%) + Income Enhance (30%) = 100%. Goal "Emergency Fund" might have Cash+ Flexi (100%) = 100%.
+                - DO NOT split percentages across goals. Each goal is independent with its own 100% allocation.
+            *   **Objective Tagging**: Each row MUST have one of these objectives: "Wealth Growth", "Income Generation", or "Capital Preservation".
     
-    **CRITICAL Formatting Rules (MUST FOLLOW):**
-    - OUTPUT ONLY PLAIN TEXT AND STANDARD MARKDOWN.
-    - NEVER use LaTeX formatting under any circumstances (no $...$ or $$...$$).
-    - Write money as plain text: "$50,000" or "50,000 dollars" - NOT "$50,000$" or "\\$50,000".
-    - Write percentages as plain text: "20%" - NOT "$20\\%$".
-    - Do NOT use any mathematical notation or special formatting.
-    - Do NOT escape dollar signs with backslashes.
-    - Do NOT use internal variable names (e.g. use "Risk Willingness" not "risk_willingness").
-    - Tables should use simple Markdown pipe syntax only.
-    - Output must be clean, professional, plain-text Markdown that renders properly in Streamlit.
+    ============================================================
+    ABSOLUTE FORMATTING REQUIREMENTS - VIOLATION WILL CAUSE ERRORS
+    ============================================================
+    
+    1. NEVER USE LATEX: 
+       - NO dollar signs for math like this: dollar-x-dollar or double-dollar-x-double-dollar
+       - Write "$50,000" as plain text (this is fine)
+       - Write "20%" as plain text (this is fine)
+       - DO NOT wrap numbers in dollar signs or use backslash escaping
+    
+    2. PLAIN TEXT ONLY:
+       - Money: Write as $50,000 or 50,000 dollars
+       - Percentages: Write as 20% or 20 percent
+       - No mathematical notation whatsoever
+       - No backslash escaping of any characters
+    
+    3. SIMPLE MARKDOWN TABLES:
+       - Use | Column1 | Column2 | format
+       - No special characters in cells
+       - Keep cells simple and readable
+    
+    4. NO INTERNAL VARIABLE NAMES:
+       - Use "Risk Willingness" not "risk_willingness"
+       - Use "Time Horizon" not "time_horizon"
+    
+    ============================================================
     
     **Context:**
     {SYFE_CONTEXT}
@@ -297,7 +318,7 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
     
     **Client Profile:**
     - Goal: {goal_name}
-    - Investment Amount: ${amount:,.2f}
+    - Investment Amount: {amount:,.0f} dollars
     - Risk Score: {client_profile.get('Risk Score', 'N/A')} (Scale 1-5)
     - Time Horizon: {client_profile.get('Time Horizon', 'N/A')} years
     - Investment Objective: {client_profile.get('Objective', 'N/A')}
@@ -312,7 +333,19 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
     3.  **Thematic Exposure (if applicable)**: If the allocation includes a Thematic/AI portfolio, explain that it is capped (e.g. at 30%) to manage risk while providing exposure to high-growth sectors.
     4.  **Tone**: Professional, encouraging, and confident.
     5.  **Format**: Use Markdown. Keep it concise (2-3 paragraphs). Do NOT output a table (the table is already shown to the user). Just the narrative.
-    6.  **CRITICAL Formatting Rule**: OUTPUT ONLY PLAIN TEXT. NEVER use LaTeX (no $...$ or $$...$$). Write money as "$50,000" and percentages as "20%" in plain text only. Do NOT escape dollar signs. Do NOT use internal variable names.
+    
+    ============================================================
+    ABSOLUTE FORMATTING REQUIREMENTS - VIOLATION WILL CAUSE ERRORS
+    ============================================================
+    
+    - NEVER USE LATEX: No wrapping numbers in dollar signs or backslash escaping
+    - Write money as: "50,000 dollars" or "$50,000" (plain text dollar sign is OK)
+    - Write percentages as: "20%" or "20 percent" (plain text)
+    - DO NOT wrap numbers in special formatting - just plain text
+    - NO mathematical notation whatsoever
+    - Use human-readable names like "Risk Willingness" not "risk_willingness"
+    
+    ============================================================
     """
 
         # List of models to try

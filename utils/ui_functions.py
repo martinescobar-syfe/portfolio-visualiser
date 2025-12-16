@@ -256,7 +256,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 
                     with col_p1:
                         st.markdown("**By Portfolio Type**")
-                        # Use consistent colors based on portfolio's asset class
+                        # Use consistent colors based on portfolio's objective
                         from styles.syfe_colors import get_portfolio_color
                         portfolio_colors = {name: get_portfolio_color(name) for name in client_weights.keys()}
                         fig_client = px.pie(
@@ -266,6 +266,8 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                             color=list(client_weights.keys()),
                             color_discrete_map=portfolio_colors
                         )
+                        # Remove % labels, show decimals on hover
+                        fig_client.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
                         st.plotly_chart(fig_client, use_container_width=True, key=f"{key_prefix}_pie_client")
                 
                     with col_p2:
@@ -294,21 +296,22 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                             color=list(final_asset_alloc.keys()),
                             color_discrete_map=asset_colors
                         )
+                        # Remove % labels, show decimals on hover
+                        fig_asset.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
                         st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset_alloc")
 
                     with col_p3:
                         st.markdown("**By Objective**")
+                        from styles.syfe_colors import OBJECTIVE_COLORS
                         fig_obj = px.pie(
                             values=list(objective_allocation.values()),
                             names=list(objective_allocation.keys()),
                             title="Objective Allocation",
-                            color_discrete_map={
-                                'Wealth Growth': '#0052CC',
-                                'Income Generation': '#36B37E', 
-                                'Capital Preservation': '#FFAB00',
-                                'Unclassified': '#C1C7D0'
-                            }
+                            color=list(objective_allocation.keys()),
+                            color_discrete_map=OBJECTIVE_COLORS
                         )
+                        # Remove % labels, show decimals on hover
+                        fig_obj.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
                         st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
 
                 # --- NEW: Side-by-Side 2x2 Exposure Layout (User Request) ---
@@ -1115,11 +1118,72 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
 def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal"):
     if st.session_state.optimization_results:
         st.header("3. Analysis Results")
+        
+        # --- Currency Selection for Analysis ---
+        # FX Methodology explanation
+        fx_methodology = """
+**FX Conversion Methodology:**
+
+When converting returns between currencies, we use the following formulas:
+
+• **USD to SGD**: R_SGD = (1 + R_USD) × (1 + R_FX) - 1
+• **SGD to USD**: R_USD = (1 + R_SGD) / (1 + R_FX) - 1
+
+Where:
+- R_USD = Return in USD terms
+- R_SGD = Return in SGD terms  
+- R_FX = Daily USDSGD exchange rate return
+
+This method compounds the asset return with the currency return to give the total return in the target currency. Daily FX returns are applied to properly capture currency movements over time.
+"""
+        
+        col_anal_ccy, col_anal_spacer = st.columns([1, 3])
+        
+        with col_anal_ccy:
+            analysis_currency = st.selectbox(
+                "Display Currency",
+                options=["USD", "SGD"],
+                index=0 if currency == "USD" else 1,
+                key=f"{key_prefix}_analysis_currency",
+                help=fx_methodology
+            )
+            
+            # Get latest FX rate from data if available
+            latest_fx_rate = 1.35  # Default fallback
+            if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
+                latest_usdsgd = df_fx['USDSGD'].dropna()
+                if not latest_usdsgd.empty:
+                    latest_fx_rate = float(latest_usdsgd.iloc[-1])
+                    if latest_fx_rate < 1:  # Looks like returns, not levels
+                        latest_fx_rate = 1.35
+            
+            use_latest_fx_anal = st.checkbox(
+                "Use Latest FX Rate",
+                value=True,
+                key=f"{key_prefix}_use_latest_fx_anal",
+                help=f"Latest rate from data: {latest_fx_rate:.4f}"
+            )
+            
+            if use_latest_fx_anal:
+                fx_rate_anal = latest_fx_rate
+                st.caption(f"USD/SGD: {fx_rate_anal:.4f}")
+            else:
+                fx_rate_anal = st.number_input(
+                    "Custom USD/SGD Rate",
+                    min_value=0.5,
+                    max_value=3.0,
+                    value=1.35,
+                    step=0.01,
+                    format="%.4f",
+                    key=f"{key_prefix}_fx_rate_anal_custom"
+                )
+        
+        st.markdown("---")
     
         res_data = st.session_state.optimization_results
         results = res_data['results']
-        ret_all = res_data['ret_all']
-        ret_bm = res_data['ret_bm']
+        ret_all = res_data['ret_all'].copy()
+        ret_bm = res_data['ret_bm'].copy()
     
         # Calculate start_opt_date for analytics
         earliest_start_date = ret_all.index.min()
@@ -1128,9 +1192,45 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         # Combine Returns
         all_port_ret = pd.DataFrame()
         for p_name, p_res in results.items():
-            p_ret = p_res['perf'][[c for c in p_res['perf'].columns if c.endswith('_port_ret')]]
+            p_ret = p_res['perf'][[c for c in p_res['perf'].columns if c.endswith('_port_ret')]].copy()
             p_ret.columns = [p_name]
             all_port_ret = pd.concat([all_port_ret, p_ret], axis=1)
+    
+        # Apply FX conversion if display currency differs from base currency
+        # Assume base returns are in USD (most common for global portfolios)
+        base_currency = currency  # The currency used during optimization
+        
+        if analysis_currency != base_currency:
+            # Get FX returns for conversion
+            if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
+                fx_returns = df_fx['USDSGD'].copy()
+                
+                # Check if FX data looks like returns or levels
+                if fx_returns.abs().max() > 1:
+                    # Looks like levels, convert to returns
+                    fx_returns = fx_returns.pct_change().fillna(0)
+                
+                # Align dates
+                common_fx_idx = all_port_ret.index.intersection(fx_returns.index)
+                
+                if len(common_fx_idx) > 0:
+                    fx_ret_aligned = fx_returns.loc[common_fx_idx]
+                    
+                    if base_currency == 'USD' and analysis_currency == 'SGD':
+                        # Convert USD returns to SGD: (1+r_usd) * (1+r_fx) - 1
+                        for col in all_port_ret.columns:
+                            all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
+                        for col in ret_bm.columns:
+                            if col in ret_bm.columns:
+                                ret_bm.loc[common_fx_idx, col] = (1 + ret_bm.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
+                    
+                    elif base_currency == 'SGD' and analysis_currency == 'USD':
+                        # Convert SGD returns to USD: (1+r_sgd) / (1+r_fx) - 1
+                        for col in all_port_ret.columns:
+                            all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) / (1 + fx_ret_aligned) - 1
+                        for col in ret_bm.columns:
+                            if col in ret_bm.columns:
+                                ret_bm.loc[common_fx_idx, col] = (1 + ret_bm.loc[common_fx_idx, col]) / (1 + fx_ret_aligned) - 1
     
         # Align with Benchmark
         common_idx = all_port_ret.index.intersection(ret_bm.index)
@@ -1681,13 +1781,66 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.header("6. Cash Flow Analysis")
             st.markdown("**Projected monthly cash flows based on portfolio yields and cash invested.**")
         
-            # Portfolio selection
-            all_portfolio_names = [p['name'] for idx, p in portfolios_with_cash.items()]
-            selected_portfolios = st.multiselect(
-                "Select Portfolio(s) to Display",
-                options=all_portfolio_names,
-                default=all_portfolio_names,
-                key=f"{key_prefix}_cashflow_portfolio_select"
+            # Currency and Portfolio selection row
+            col_ccy, col_port = st.columns([1, 3])
+            
+            with col_ccy:
+                display_currency = st.selectbox(
+                    "Display Currency",
+                    options=["SGD", "USD"],
+                    index=0,
+                    key=f"{key_prefix}_cashflow_currency"
+                )
+                
+                # Get latest FX rate from data if available
+                latest_fx_rate = 1.35  # Default fallback
+                if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
+                    # Get the latest non-null value
+                    latest_usdsgd = df_fx['USDSGD'].dropna()
+                    if not latest_usdsgd.empty:
+                        latest_fx_rate = float(latest_usdsgd.iloc[-1])
+                        # If it looks like a return (small value), it might need adjustment
+                        if latest_fx_rate < 1:
+                            latest_fx_rate = 1.35  # Fallback if data seems wrong
+                
+                # Toggle for Latest vs Custom FX (below Display Currency)
+                use_latest_fx = st.checkbox(
+                    "Use Latest FX Rate",
+                    value=True,
+                    key=f"{key_prefix}_use_latest_fx",
+                    help=f"Latest rate from data: {latest_fx_rate:.4f}"
+                )
+                
+                if use_latest_fx:
+                    fx_rate = latest_fx_rate
+                    st.caption(f"USD/SGD: {fx_rate:.4f}")
+                else:
+                    fx_rate = st.number_input(
+                        "Custom USD/SGD Rate",
+                        min_value=0.5,
+                        max_value=3.0,
+                        value=1.35,
+                        step=0.01,
+                        format="%.4f",
+                        key=f"{key_prefix}_fx_rate_custom"
+                    )
+            
+            with col_port:
+                # Portfolio selection - group by goal if available
+                all_portfolio_names = [p['name'] for idx, p in portfolios_with_cash.items()]
+                selected_portfolios = st.multiselect(
+                    "Select Portfolio(s) to Display",
+                    options=all_portfolio_names,
+                    default=all_portfolio_names,
+                    key=f"{key_prefix}_cashflow_portfolio_select"
+                )
+            
+            # Goal-based view toggle
+            show_goal_breakdown = st.checkbox(
+                "Show Goal-Based Breakdown",
+                value=True,
+                key=f"{key_prefix}_show_goal_breakdown",
+                help="Group cash flows by investment goal"
             )
         
             if not selected_portfolios:
@@ -1699,6 +1852,42 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 idx: p for idx, p in portfolios_with_cash.items() 
                 if p['name'] in selected_portfolios
             }
+            
+            # Define base currency for each portfolio/ticker type
+            # SGD-denominated: REITs, Income Enhance/Preserve, Cash SGD products
+            # USD-denominated: Private Credit (BlackRock, Monroe), Thematics
+            def get_ticker_base_currency(ticker):
+                """Determine the base currency of a ticker's cash flows."""
+                ticker_upper = ticker.upper()
+                
+                # USD-denominated assets (check first as they're more specific)
+                if 'BLACKROCK' in ticker_upper or 'MONROE' in ticker_upper:
+                    return 'USD'  # Private Credit funds pay in USD
+                if 'USD' in ticker_upper:  # Explicitly USD products
+                    return 'USD'
+                
+                # SGD-denominated assets (default for Syfe Singapore products)
+                if 'REIT' in ticker_upper:  # Singapore REITs pay in SGD
+                    return 'SGD'
+                if 'INCOME' in ticker_upper:  # Income Enhance/Preserve pay in SGD
+                    return 'SGD'
+                if 'SGD' in ticker_upper:  # Explicitly SGD products
+                    return 'SGD'
+                if 'SRS' in ticker_upper:  # SRS products are SGD
+                    return 'SGD'
+                    
+                # Default to SGD for other Syfe products
+                return 'SGD'
+            
+            def convert_currency(amount, from_ccy, to_ccy, fx_rate):
+                """Convert amount between currencies using the provided FX rate."""
+                if from_ccy == to_ccy:
+                    return amount
+                elif from_ccy == 'USD' and to_ccy == 'SGD':
+                    return amount * fx_rate  # USD to SGD
+                elif from_ccy == 'SGD' and to_ccy == 'USD':
+                    return amount / fx_rate  # SGD to USD
+                return amount  # Fallback
         
             # Helper function to determine payment frequency
             def get_payment_frequency(ticker):
@@ -1733,6 +1922,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     latest_weights = weights_df.iloc[-1]
                 
                     for ticker in port['tickers']:
+                        # Skip CORE portfolios - dividends are auto-reinvested, no cash payout
+                        if 'CORE' in ticker.upper():
+                            continue
+                            
                         weight_col = f"{ticker}_wgt"
                         if weight_col in latest_weights.index:
                             weight = latest_weights[weight_col]
@@ -1756,6 +1949,9 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         
                             if annual_yield > 0 and invested_in_ticker > 0:
                                 payment_freq = get_payment_frequency(ticker)
+                                
+                                # Get ticker's base currency and convert if needed
+                                ticker_base_ccy = get_ticker_base_currency(ticker)
                             
                                 # Store ticker-level cash flows for stacked chart
                                 ticker_key = f"{p_name} - {ticker}"
@@ -1764,11 +1960,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             
                                 if payment_freq == 'monthly':
                                     monthly_payment = (invested_in_ticker * annual_yield) / 12
+                                    # Convert to display currency
+                                    monthly_payment = convert_currency(monthly_payment, ticker_base_ccy, display_currency, fx_rate)
                                     for month in range(12):
                                         monthly_cash_flows.loc[p_name, month + 1] += monthly_payment
                                         ticker_cash_flows[ticker_key][month] += monthly_payment
                                 else:  # quarterly
                                     quarterly_payment = (invested_in_ticker * annual_yield) / 4
+                                    # Convert to display currency
+                                    quarterly_payment = convert_currency(quarterly_payment, ticker_base_ccy, display_currency, fx_rate)
                                     for quarter in range(4):
                                         month = (quarter * 3) + 2  # Months 3, 6, 9, 12 (index 2, 5, 8, 11)
                                         monthly_cash_flows.loc[p_name, month + 1] += quarterly_payment
@@ -1788,13 +1988,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     marker_color=colors_list[i % len(colors_list)]
                 ))
         
+            # Currency symbol for display
+            ccy_symbol = "S$" if display_currency == "SGD" else "$"
+            
             fig.update_layout(
                 barmode='stack',
-                title={'text': '<b>Monthly Cash Flow Projections</b>', 'font': {'size': 20, 'color': '#172B4D'}},
+                title={'text': f'<b>Monthly Cash Flow Projections ({display_currency})</b>', 'font': {'size': 20, 'color': '#172B4D'}},
                 xaxis_title="Month",
-                yaxis_title="Cash Flow ($)",
+                yaxis_title=f"Cash Flow ({ccy_symbol})",
                 xaxis={'tickmode': 'linear', 'tick0': 1, 'dtick': 1},
-                yaxis={'tickformat': '$,.0f'},
+                yaxis={'tickformat': ',.0f'},
                 font={'family': 'Helvetica Neue, Arial', 'color': '#172B4D'},
                 plot_bgcolor='white',
                 paper_bgcolor='white',
@@ -1816,8 +2019,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # Reset index to avoid duplicate index errors if portfolio names are same
                 display_df = monthly_cash_flows.reset_index().rename(columns={'index': 'Portfolio'})
                 
+                # Format with selected currency symbol
+                format_str = f"{ccy_symbol}{{:,.2f}}"
                 st.dataframe(
-                    display_df.style.format("${:,.2f}", subset=display_df.columns.drop('Portfolio'))
+                    display_df.style.format(format_str, subset=display_df.columns.drop('Portfolio'))
                     .background_gradient(cmap='Greens', axis=None, subset=display_df.columns.drop(['Portfolio', 'Total Annual'])),
                     use_container_width=True,
                     hide_index=True
@@ -1831,9 +2036,82 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Total Annual Cash Flow", f"${total_annual:,.2f}")
+                st.metric(f"Total Annual Cash Flow ({display_currency})", f"{ccy_symbol}{total_annual:,.2f}")
             with col2:
-                st.metric("Average Monthly Cash Flow", f"${total_annual/12:,.2f}")
+                st.metric(f"Average Monthly Cash Flow ({display_currency})", f"{ccy_symbol}{total_annual/12:,.2f}")
+            
+            # --- Detailed Portfolio Contribution Breakdown (Dropdown) ---
+            if show_goal_breakdown and ticker_cash_flows:
+                with st.expander("📊 View Detailed Portfolio Contributions", expanded=False):
+                    st.markdown("**Individual Portfolio Cash Flow Contributions**")
+                    
+                    # Build detailed breakdown data
+                    contribution_data = []
+                    for ticker_key, cash_flow_array in ticker_cash_flows.items():
+                        annual_total = sum(cash_flow_array)
+                        if annual_total > 0:
+                            # Extract just the ticker name (remove portfolio prefix if present)
+                            ticker_name = ticker_key.split(" - ")[-1] if " - " in ticker_key else ticker_key
+                            contribution_data.append({
+                                "Portfolio": ticker_key,
+                                "Ticker": ticker_name,
+                                **{f"Month {i+1}": f"{ccy_symbol}{cash_flow_array[i]:,.2f}" for i in range(12)},
+                                f"Annual Total": f"{ccy_symbol}{annual_total:,.2f}"
+                            })
+                    
+                    if contribution_data:
+                        contribution_df = pd.DataFrame(contribution_data)
+                        
+                        # Add grand total row
+                        total_monthly = [sum(ticker_cash_flows[k][i] for k in ticker_cash_flows) for i in range(12)]
+                        grand_total = sum(total_monthly)
+                        total_row = {
+                            "Portfolio": "GRAND TOTAL",
+                            "Ticker": "",
+                            **{f"Month {i+1}": f"{ccy_symbol}{total_monthly[i]:,.2f}" for i in range(12)},
+                            f"Annual Total": f"{ccy_symbol}{grand_total:,.2f}"
+                        }
+                        contribution_df = pd.concat([contribution_df, pd.DataFrame([total_row])], ignore_index=True)
+                        
+                        st.dataframe(
+                            contribution_df,
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        # Summary by ticker type - grouped and sorted
+                        st.markdown("**Summary by Portfolio Type**")
+                        
+                        # Group by portfolio type (ticker name) and sum cash flows
+                        grouped_cash_flows = {}
+                        for ticker_key, cash_flow_array in ticker_cash_flows.items():
+                            ticker_name = ticker_key.split(" - ")[-1] if " - " in ticker_key else ticker_key
+                            annual_total = sum(cash_flow_array)
+                            if annual_total > 0:
+                                if ticker_name in grouped_cash_flows:
+                                    grouped_cash_flows[ticker_name] += annual_total
+                                else:
+                                    grouped_cash_flows[ticker_name] = annual_total
+                        
+                        # Convert to list and sort by cash flow (descending)
+                        summary_data = []
+                        for ticker_name, annual_total in sorted(grouped_cash_flows.items(), key=lambda x: x[1], reverse=True):
+                            summary_data.append({
+                                "Portfolio Type": ticker_name,
+                                f"Annual Cash Flow ({display_currency})": annual_total,
+                                "% of Total": (annual_total / grand_total * 100) if grand_total > 0 else 0
+                            })
+                        
+                        if summary_data:
+                            summary_df = pd.DataFrame(summary_data)
+                            st.dataframe(
+                                summary_df.style.format({
+                                    f"Annual Cash Flow ({display_currency})": f"{ccy_symbol}{{:,.2f}}",
+                                    "% of Total": "{:.1f}%"
+                                }),
+                                use_container_width=True,
+                                hide_index=True
+                            )
         
         # --- Growth Forecast Calculator ---
         st.markdown("---")

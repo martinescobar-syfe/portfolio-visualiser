@@ -141,7 +141,7 @@ def plot_allocation_pie(weights, title="Portfolio Allocation", use_asset_colors=
         use_asset_colors: 
             - None: Use default PALETTE colors
             - 'asset': Use asset class color mapping
-            - 'portfolio': Use portfolio type color mapping
+            - 'portfolio': Use portfolio type color mapping (based on objective)
     """
     # Filter non-zero weights
     weights = weights[weights > 0.001]
@@ -159,8 +159,8 @@ def plot_allocation_pie(weights, title="Portfolio Allocation", use_asset_colors=
         values=weights.values, 
         hole=.4,
         marker=dict(colors=colors),
-        textinfo='none', # No text on chart
-        hoverinfo='label+percent+value'
+        textinfo='none', # No text on chart - remove % labels
+        hovertemplate='%{label}: %{value:.4f}<extra></extra>' # Show decimals on hover
     )])
     
     fig = apply_syfe_layout(fig, title=title)

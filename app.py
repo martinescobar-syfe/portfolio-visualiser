@@ -163,10 +163,16 @@ with st.container():
     with st.expander("⚙️ Base Settings", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         
+        # Get latest date from returns data
+        if df_daily_ret is not None and not df_daily_ret.empty:
+            latest_data_date = df_daily_ret.index.max().date()
+        else:
+            latest_data_date = date.today()
+        
         data_source = c1.selectbox("Data Source", ["Bloomberg", "Yahoo Finance"], key="exist_data_source")
-        currency = c2.selectbox("Currency", ["SGD", "USD"], key="exist_currency")
+        currency = c2.selectbox("Currency", ["USD", "SGD"], key="exist_currency")  # USD is default
         start_date = c3.date_input("Start Date", value=date(2015, 1, 1), key="exist_start_date")
-        end_date = c4.date_input("End Date", value=date.today(), key="exist_end_date")
+        end_date = c4.date_input("End Date", value=latest_data_date, key="exist_end_date", help=f"Latest available data: {latest_data_date}")
         
         backtest_offset_days = st.slider(
             "Backtest Offset (Days)", 
@@ -179,7 +185,7 @@ with st.container():
         bm_tickers = st.multiselect(
             "Benchmark Tickers",
             options=sorted(df_sec_list['Ticker'].tolist()),
-            default=['SPY', 'ACWI', 'URTH'],
+            default=['ACWI'],  # ACWI is default benchmark
             key="rev_bm_settings"
         )
     
