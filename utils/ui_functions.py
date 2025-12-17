@@ -88,6 +88,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 'BLACKROCK_PCF': 'BlackRock Private Credit Fund',
                 'MONROE': 'Monroe Income Plus Fund',
                 'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
+                'MONROE_CAPITAL': 'Monroe Income Plus Fund',
                 'SILVERDALE': 'Silverdale Fund (Nov 2027)',
                 # Cash Management
                 'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
@@ -1124,17 +1125,8 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         fx_methodology = """
 **FX Conversion Methodology:**
 
-When converting returns between currencies, we use the following formulas:
-
 • **USD to SGD**: R_SGD = (1 + R_USD) × (1 + R_FX) - 1
 • **SGD to USD**: R_USD = (1 + R_SGD) / (1 + R_FX) - 1
-
-Where:
-- R_USD = Return in USD terms
-- R_SGD = Return in SGD terms  
-- R_FX = Daily USDSGD exchange rate return
-
-This method compounds the asset return with the currency return to give the total return in the target currency. Daily FX returns are applied to properly capture currency movements over time.
 """
         
         col_anal_ccy, col_anal_spacer = st.columns([1, 3])
