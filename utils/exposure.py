@@ -151,8 +151,9 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
                 break
         
         if not found_cols:
-            # Try fuzzy or logging
-            # print(f"[DEBUG] Missing underlying data for {ticker}. Tried: {[f'{c} Holdings' for c in candidates]}")
+            # Fallback: If underlying data is missing, treat the ticker itself as the holding
+            # This handles cases like GLD (Gold) or single stocks not in the breakdown list
+            aggregated_holdings[ticker] = aggregated_holdings.get(ticker, 0.0) + weight_in_port
             continue
             
         # Extract data

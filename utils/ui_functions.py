@@ -1116,11 +1116,18 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 'ret_bm': ret_bm
             }
 
-def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal"):
-    if st.session_state.optimization_results:
+
+def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal", results_data=None):
+    
+    # Use provided results or fallback to session state
+    if results_data is None:
+        results_data = st.session_state.get('optimization_results')
+
+    if results_data:
         st.header("3. Analysis Results")
         
         # --- Currency Selection for Analysis ---
+
         # FX Methodology explanation
         fx_methodology = """
 **FX Conversion Methodology:**
@@ -1170,10 +1177,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     key=f"{key_prefix}_fx_rate_anal_custom"
                 )
         
+
         st.markdown("---")
     
-        res_data = st.session_state.optimization_results
+        res_data = results_data
         results = res_data['results']
+
         ret_all = res_data['ret_all'].copy()
         ret_bm = res_data['ret_bm'].copy()
     
