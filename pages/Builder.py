@@ -305,7 +305,7 @@ with st.expander("Define Constraints", expanded=True):
                 st.session_state.custom_constraints.pop(i)
                 st.rerun()
 
-# --- 4. Optimization Action ---
+# --- 4. Optimisation Action ---
 st.markdown("---")
 # Warning for ignored constraints
 has_constraints = (
@@ -316,14 +316,14 @@ has_constraints = (
 
 if has_constraints:
     if allocation_method not in ["Max Sharpe", "Min Volatility"]:
-        st.warning(f"⚠️ Constraints are ignored when using '{allocation_method}'. Switch to 'Max Sharpe' or 'Min Volatility' to optimize with constraints.")
+        st.warning(f"Constraints are ignored when using '{allocation_method}'. Switch to 'Max Sharpe' or 'Min Volatility' to optimise with constraints.")
 
-if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_width=True):
+if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_width=True):
     if not selected_tickers:
         st.error("Please select at least one asset.")
         st.stop()
         
-    with st.spinner("Optimizing..."):
+    with st.spinner("Optimising..."):
         # ... (Data Loading same as before)
         # 1. Prepare Data
         currency = "USD"
@@ -516,7 +516,7 @@ if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_wi
         # Show infeasibility warnings immediately
         warnings_list = [ci for ci in st.session_state['constraint_details'] if ci.get('warning')]
         if warnings_list:
-            warning_msgs = [f"⚠️ {ci['type']} {ci['target']}: {ci['warning']}" for ci in warnings_list]
+            warning_msgs = [f"{ci['type']} {ci['target']}: {ci['warning']}" for ci in warnings_list]
             st.warning("Constraint Feasibility Issues:\n" + "\n".join(warning_msgs))
 
 
@@ -524,7 +524,7 @@ if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_wi
         base_constraints = create_constraints(0.0, 1.0) 
         full_constraints = base_constraints + extra_constraints
         
-        # 3. Optimize
+        # 3. Optimise
         offset_days = 90
         start_opt_date = ret_all.index.min() + timedelta(days=offset_days)
         start_opt_date = max(start_opt_date, pd.Timestamp(start_date))
@@ -561,11 +561,11 @@ if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_wi
                             actual = w_vec[t_idx]
                             target = c['val']
                             if c['op'] == "Equal (=)" and abs(actual - target) > tol:
-                                violations.append(f"⚠️ ETF {t}: Expected {target:.1%}, Got {actual:.1%}")
+                                violations.append(f"ETF {t}: Expected {target:.1%}, Got {actual:.1%}")
                             elif c['op'] == "Max (<)" and actual > target + tol:
-                                violations.append(f"⚠️ ETF {t}: Expected <{target:.1%}, Got {actual:.1%}")
+                                violations.append(f"ETF {t}: Expected <{target:.1%}, Got {actual:.1%}")
                             elif c['op'] == "Min (>)" and actual < target - tol:
-                                violations.append(f"⚠️ ETF {t}: Expected >{target:.1%}, Got {actual:.1%}")
+                                violations.append(f"ETF {t}: Expected >{target:.1%}, Got {actual:.1%}")
                 
                 # Check Group constraints (Country/Sector) with weighted exposure
                 for c in st.session_state.custom_constraints:
@@ -598,9 +598,9 @@ if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_wi
                             )
                             
                             if actual_te > target_te + tol:
-                                violations.append(f"⚠️ Tracking Error: Expected <{target_te:.1%}, Got {actual_te:.1%}")
+                                violations.append(f"Tracking Error: Expected <{target_te:.1%}, Got {actual_te:.1%}")
                         except Exception as e:
-                            violations.append(f"⚠️ Tracking Error validation failed: {str(e)}")
+                            violations.append(f"Tracking Error validation failed: {str(e)}")
                         continue
                     
                     if exposure_row is not None:
@@ -616,11 +616,11 @@ if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_wi
                         )
                         
                         if c['operator'] == "Equal (=)" and abs(actual_exposure - target) > tol:
-                            violations.append(f"⚠️ {c['type']} {c['target']}: Expected {target:.1%}, Got {actual_exposure:.1%}")
+                            violations.append(f" {c['type']} {c['target']}: Expected {target:.1%}, Got {actual_exposure:.1%}")
                         elif c['operator'] == "Max (<)" and actual_exposure > target + tol:
-                            violations.append(f"⚠️ {c['type']} {c['target']}: Expected <{target:.1%}, Got {actual_exposure:.1%}")
+                            violations.append(f"{c['type']} {c['target']}: Expected <{target:.1%}, Got {actual_exposure:.1%}")
                         elif c['operator'] == "Min (>)" and actual_exposure < target - tol:
-                            violations.append(f"⚠️ {c['type']} {c['target']}: Expected >{target:.1%}, Got {actual_exposure:.1%}")
+                            violations.append(f"{c['type']} {c['target']}: Expected >{target:.1%}, Got {actual_exposure:.1%}")
                 
                 if violations:
                     st.warning("Constraint Warnings:\n" + "\n".join(violations))
@@ -644,10 +644,10 @@ if st.button("🚀 Build & Optimize Portfolio", type="primary", use_container_wi
             }
             
             st.session_state.builder_portfolio['results'] = res_struct
-            st.success("Optimization Complete!")
+            st.success("Optimisation Complete!")
             
         except Exception as e:
-            st.error(f"Optimization failed: {e}")
+            st.error(f"Optimisation failed: {e}")
             import traceback
             st.code(traceback.format_exc())
 
