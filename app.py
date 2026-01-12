@@ -30,31 +30,8 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Hide the header decoration */
-    header[data-testid="stHeader"] {
-        background: transparent;
-        z-index: 1;
-    }
-    
-    /* Hide the toolbar (Deploy button, etc) */
-    [data-testid="stToolbar"] {
-        visibility: hidden;
-        display: none !important;
-    }
-    
-    /* Hide the sidebar toggle button to make sidebar static */
-    [data-testid="stSidebarCollapsedControl"] {
-        display: none !important;
-    }
-    
-    [data-testid="collapsedControl"] {
-        display: none !important;
-    }
-    
-    button[kind="header"] {
-        display: none !important;
-    }
-    
+    /* Sidebar toggle enabled */
+
     /* Global Styles */
     .stApp {
         background-color: #f8f9fa;

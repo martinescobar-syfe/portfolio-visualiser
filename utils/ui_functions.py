@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+from utils.portfolio_storage import save_portfolio, load_portfolios, delete_portfolio
 import plotly.graph_objects as go
 from datetime import timedelta
 from utils.optimiser import optimize_portfolio, create_constraints, calc_port_perf
@@ -855,6 +856,16 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
 
 def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency, backtest_offset_days, data_path, df_fi_metrics, df_fx, df_daily_ret, key_prefix="cons"):
     st.header("2. Portfolio Construction")
+    
+    # Calculate Data Date Range for Tooltips
+    start_str = "N/A"
+    end_str = "N/A"
+    if df_daily_ret is not None and not df_daily_ret.empty:
+        start_str = df_daily_ret.index.min().strftime('%d %b %Y')
+        end_str = df_daily_ret.index.max().strftime('%d %b %Y')
+    
+    tooltip_data_msg = f"Data as of: {end_str}\nTime frame taken: {start_str} - {end_str}"
+
 
     col_add, col_del = st.columns([1, 4])
     with col_add:
@@ -883,7 +894,12 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
         
             c1, c2, c3 = st.columns(3)
             with c1:
-                st.session_state.portfolios[i]['name'] = st.text_input(f"Name", value=port['name'], key=f"{key_prefix}_name_{i}_{st.session_state.refresh_counter}")
+                st.session_state.portfolios[i]['name'] = st.text_input(
+                    f"Name", 
+                    value=port['name'], 
+                    key=f"{key_prefix}_name_{i}_{st.session_state.refresh_counter}",
+                    help=tooltip_data_msg
+                )
                 
                 # Goal Name Input
                 st.session_state.portfolios[i]['goal_name'] = st.text_input(
@@ -1141,7 +1157,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         with col_anal_ccy:
             analysis_currency = st.selectbox(
                 "Display Currency",
-                options=["USD", "SGD"],
+                options=["USD", "SGD", "HKD"],
                 index=0 if currency == "USD" else 1,
                 key=f"{key_prefix}_analysis_currency",
                 help=fx_methodology
@@ -1149,12 +1165,22 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             # Get latest FX rate from data if available
             latest_fx_rate = 1.35  # Default fallback
-            if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
-                latest_usdsgd = df_fx['USDSGD'].dropna()
-                if not latest_usdsgd.empty:
-                    latest_fx_rate = float(latest_usdsgd.iloc[-1])
-                    if latest_fx_rate < 1:  # Looks like returns, not levels
-                        latest_fx_rate = 1.35
+            if df_fx is not None and not df_fx.empty:
+                if analysis_currency == "SGD" and 'USDSGD' in df_fx.columns:
+                    latest_series = df_fx['USDSGD'].dropna()
+                    if not latest_series.empty:
+                        latest_fx_rate = float(latest_series.iloc[-1])
+                        if latest_fx_rate < 1: latest_fx_rate = 1.35
+                elif analysis_currency == "HKD" and 'USDHKD' in df_fx.columns:
+                     latest_series = df_fx['USDHKD'].dropna()
+                     if not latest_series.empty:
+                        latest_fx_rate = float(latest_series.iloc[-1])
+                        if latest_fx_rate < 1: latest_fx_rate = 7.80
+                     else:
+                        latest_fx_rate = 7.80
+                elif analysis_currency == "HKD":
+                     latest_fx_rate = 7.80
+            
             
             use_latest_fx_anal = st.checkbox(
                 "Use Latest FX Rate",
@@ -1165,10 +1191,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             if use_latest_fx_anal:
                 fx_rate_anal = latest_fx_rate
-                st.caption(f"USD/SGD: {fx_rate_anal:.4f}")
+                st.caption(f"USD/{analysis_currency}: {fx_rate_anal:.4f}")
             else:
                 fx_rate_anal = st.number_input(
-                    "Custom USD/SGD Rate",
+                    f"Custom USD/{analysis_currency} Rate",
                     min_value=0.5,
                     max_value=3.0,
                     value=1.35,
@@ -1203,8 +1229,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
         if analysis_currency != base_currency:
             # Get FX returns for conversion
-            if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
-                fx_returns = df_fx['USDSGD'].copy()
+            fx_ticker = None
+            if analysis_currency == 'SGD': fx_ticker = 'USDSGD'
+            elif analysis_currency == 'HKD': fx_ticker = 'USDHKD'
+            
+            if df_fx is not None and not df_fx.empty and fx_ticker and fx_ticker in df_fx.columns:
+                fx_returns = df_fx[fx_ticker].copy()
                 
                 # Check if FX data looks like returns or levels
                 if fx_returns.abs().max() > 1:
@@ -1217,16 +1247,28 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 if len(common_fx_idx) > 0:
                     fx_ret_aligned = fx_returns.loc[common_fx_idx]
                     
-                    if base_currency == 'USD' and analysis_currency == 'SGD':
-                        # Convert USD returns to SGD: (1+r_usd) * (1+r_fx) - 1
+                    if base_currency == 'USD':
+                        # Convert USD returns to Target: (1+r_usd) * (1+r_fx) - 1
                         for col in all_port_ret.columns:
                             all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
                         for col in ret_bm.columns:
                             if col in ret_bm.columns:
                                 ret_bm.loc[common_fx_idx, col] = (1 + ret_bm.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
                     
+                    elif base_currency == analysis_currency:
+                        pass # No conversion needed
+                    
+                    # Note: We are simplifying by only handling Base=USD or Base=SGD cases mostly.
+                    # If conversion is needed between non-USD pairs, we need cross rates.
+                    # Assuming Base is usually USD or SGD.
+                    
                     elif base_currency == 'SGD' and analysis_currency == 'USD':
-                        # Convert SGD returns to USD: (1+r_sgd) / (1+r_fx) - 1
+                         # Convert SGD returns to USD: (1+r_sgd) / (1+r_fx) - 1
+                         # Here fx_returns is USDSGD (USD relative to SGD? No, usually Quote Currency per Base Currency)
+                         # USDSGD means 1 USD = x SGD.
+                         # Return of USDSGD is return of USD against SGD.
+                         # If we have SGD assets and want USD: r_USD ~ r_SGD - r_FX (approx).
+                         # Exact: 1+r_USD = (1+r_SGD) / (1+r_USDSGD)
                         for col in all_port_ret.columns:
                             all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) / (1 + fx_ret_aligned) - 1
                         for col in ret_bm.columns:
@@ -1266,8 +1308,27 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             for idx in summary.index:
                 for col in summary.columns:
                     summary_formatted.loc[idx, col] = format_summary_value(summary.loc[idx, col], idx)
-                
-            st.dataframe(summary_formatted, use_container_width=True)
+            
+            # Rename Max Drawdown to prevent wrapping
+            summary_formatted.rename(index={'Max Drawdown': 'Max DD'}, inplace=True)
+            
+            # Create column configuration for tooltips
+            column_config = {}
+            exposure_start_date = all_port_ret.index.min().strftime('%d %b %Y')
+            exposure_end_date = all_port_ret.index.max().strftime('%d %b %Y')
+            tooltip_text = f"Data as of: {exposure_end_date}\nTime frame taken: {exposure_start_date} - {exposure_end_date}"
+            
+            for col in summary_formatted.columns:
+                column_config[col] = st.column_config.Column(
+                    label=col,
+                    help=tooltip_text
+                )
+            
+            st.dataframe(
+                summary_formatted, 
+                use_container_width=True,
+                column_config=column_config
+            )
         
             st.markdown("---")
         
@@ -1788,39 +1849,48 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             with col_ccy:
                 display_currency = st.selectbox(
                     "Display Currency",
-                    options=["SGD", "USD"],
+                    options=["SGD", "USD", "HKD"],
                     index=0,
                     key=f"{key_prefix}_cashflow_currency"
                 )
                 
-                # Get latest FX rate from data if available
-                latest_fx_rate = 1.35  # Default fallback
+                # 1. Fetch reference USD/SGD rate (always needed for cross-rates)
+                ref_usdsgd = 1.35
                 if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
-                    # Get the latest non-null value
-                    latest_usdsgd = df_fx['USDSGD'].dropna()
-                    if not latest_usdsgd.empty:
-                        latest_fx_rate = float(latest_usdsgd.iloc[-1])
-                        # If it looks like a return (small value), it might need adjustment
-                        if latest_fx_rate < 1:
-                            latest_fx_rate = 1.35  # Fallback if data seems wrong
-                
-                # Toggle for Latest vs Custom FX (below Display Currency)
+                    s = df_fx['USDSGD'].dropna()
+                    if not s.empty: 
+                        val = float(s.iloc[-1])
+                        if val > 1: ref_usdsgd = val
+
+                # 2. Determine default rate for Selected Currency
+                default_fx_rate = 1.0
+                if display_currency == "SGD":
+                    default_fx_rate = ref_usdsgd
+                elif display_currency == "HKD":
+                    default_fx_rate = 7.80
+                    if df_fx is not None and not df_fx.empty and 'USDHKD' in df_fx.columns:
+                        s = df_fx['USDHKD'].dropna()
+                        if not s.empty:
+                            val = float(s.iloc[-1])
+                            if val > 1: default_fx_rate = val
+
+                # Toggle for Latest vs Custom FX
                 use_latest_fx = st.checkbox(
                     "Use Latest FX Rate",
                     value=True,
                     key=f"{key_prefix}_use_latest_fx",
-                    help=f"Latest rate from data: {latest_fx_rate:.4f}"
+                    help=f"Latest rate from data: {default_fx_rate:.4f}"
                 )
                 
                 if use_latest_fx:
-                    fx_rate = latest_fx_rate
-                    st.caption(f"USD/SGD: {fx_rate:.4f}")
+                    fx_rate = default_fx_rate
+                    st.caption(f"USD/{display_currency}: {fx_rate:.4f}")
                 else:
                     fx_rate = st.number_input(
-                        "Custom USD/SGD Rate",
-                        min_value=0.5,
-                        max_value=3.0,
-                        value=1.35,
+                        f"Custom USD/{display_currency} Rate",
+                        min_value=0.1,
+                        max_value=20.0,
+                        value=default_fx_rate,
                         step=0.01,
                         format="%.4f",
                         key=f"{key_prefix}_fx_rate_custom"
@@ -1880,15 +1950,33 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # Default to SGD for other Syfe products
                 return 'SGD'
             
-            def convert_currency(amount, from_ccy, to_ccy, fx_rate):
-                """Convert amount between currencies using the provided FX rate."""
+            def convert_currency(amount, from_ccy, to_ccy, target_fx, cross_usdsgd=1.35):
+                """
+                Convert amount. 
+                target_fx: USD -> to_ccy rate (e.g. 1 USD = 7.8 HKD)
+                cross_usdsgd: USD -> SGD rate (used if from_ccy is SGD)
+                """
                 if from_ccy == to_ccy:
                     return amount
-                elif from_ccy == 'USD' and to_ccy == 'SGD':
-                    return amount * fx_rate  # USD to SGD
-                elif from_ccy == 'SGD' and to_ccy == 'USD':
-                    return amount / fx_rate  # SGD to USD
-                return amount  # Fallback
+                
+                # Convert source to USD first
+                usd_amount = amount
+                if from_ccy == 'SGD':
+                    usd_amount = amount / cross_usdsgd
+                elif from_ccy == 'HKD':
+                    # Not typical source, but for completeness:
+                    # If we had USDHKD rate we would divide. 
+                    # Assuming we don't have it separately here, but we could pass it.
+                    pass 
+                elif from_ccy == 'USD':
+                    usd_amount = amount
+                    
+                # Convert USD to target
+                if to_ccy == 'USD':
+                    return usd_amount
+                
+                # For non-USD target, we multiply by USD->Target rate
+                return usd_amount * target_fx
         
             # Helper function to determine payment frequency
             def get_payment_frequency(ticker):
@@ -1962,14 +2050,14 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 if payment_freq == 'monthly':
                                     monthly_payment = (invested_in_ticker * annual_yield) / 12
                                     # Convert to display currency
-                                    monthly_payment = convert_currency(monthly_payment, ticker_base_ccy, display_currency, fx_rate)
+                                    monthly_payment = convert_currency(monthly_payment, ticker_base_ccy, display_currency, fx_rate, ref_usdsgd)
                                     for month in range(12):
                                         monthly_cash_flows.loc[p_name, month + 1] += monthly_payment
                                         ticker_cash_flows[ticker_key][month] += monthly_payment
                                 else:  # quarterly
                                     quarterly_payment = (invested_in_ticker * annual_yield) / 4
                                     # Convert to display currency
-                                    quarterly_payment = convert_currency(quarterly_payment, ticker_base_ccy, display_currency, fx_rate)
+                                    quarterly_payment = convert_currency(quarterly_payment, ticker_base_ccy, display_currency, fx_rate, ref_usdsgd)
                                     for quarter in range(4):
                                         month = (quarter * 3) + 2  # Months 3, 6, 9, 12 (index 2, 5, 8, 11)
                                         monthly_cash_flows.loc[p_name, month + 1] += quarterly_payment
@@ -1990,7 +2078,9 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 ))
         
             # Currency symbol for display
-            ccy_symbol = "S$" if display_currency == "SGD" else "$"
+            ccy_symbol = "$"
+            if display_currency == "SGD": ccy_symbol = "S$"
+            elif display_currency == "HKD": ccy_symbol = "HK$"
             
             fig.update_layout(
                 barmode='stack',

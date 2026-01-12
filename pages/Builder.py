@@ -30,6 +30,7 @@ from styles.syfe_colors import PALETTE
 
 import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
+from utils.portfolio_storage import save_portfolio, load_portfolios, delete_portfolio
 
 # --- Page Config ---
 st.set_page_config(
@@ -103,8 +104,83 @@ if 'custom_constraints' not in st.session_state:
     ]
 
 st.title("Portfolio Builder (WIP)")
+
+col1, col2, col3 = st.columns(3)
+
 # --- 1. Data Selection ---
 st.header("1. Universe Selection")
+
+# Define available_tickers early for Load logic
+available_tickers = sorted(df_sec_list['Ticker'].tolist())
+
+# --- Load Saved Settings ---
+with st.expander("Load Saved Template", expanded=False):
+    saved_portfolios = load_portfolios()
+    if saved_portfolios:
+        saved_names = list(saved_portfolios.keys())
+        c_buttons = st.columns([1, 1, 6])
+        with c_buttons[0]:
+            if st.button("Load", key="builder_load_btn"):
+                st.session_state.trigger_load = True
+        
+        with c_buttons[1]:
+            if st.button("Delete", key="builder_del_btn"):
+                st.session_state.trigger_delete_conf = True
+                
+        selected_load = st.selectbox("Select Saved Template", saved_names, key="builder_load_select")
+        
+        if st.session_state.get('trigger_load'):
+            st.session_state.trigger_load = False
+            data = saved_portfolios[selected_load]
+            # Restore State
+            # 1. Tickers and Benchmark
+            if 'tickers' in data:
+                # Filter valid tickers
+                valid_t = [t for t in data['tickers'] if t in available_tickers]
+                st.session_state.builder_universe = valid_t
+            
+            if 'benchmark' in data and data['benchmark'] in available_tickers:
+                st.session_state.builder_benchmark = data['benchmark']
+
+            if 'allocation_type' in data:
+                mapping = {
+                    'Max sharpe': 'Max Sharpe', 'Max Sharpe': 'Max Sharpe',
+                    'Min vol': 'Min Volatility', 'Min Volatility': 'Min Volatility',
+                    'Equal weight': 'Equal Weight', 'Equal Weight': 'Equal Weight',
+                    'Fixed Weight': 'Fixed Weight'
+                }
+                mapped_alloc = mapping.get(data['allocation_type'], 'Max Sharpe')
+                if mapped_alloc in ["Fixed Weight", "Equal Weight", "Max Sharpe", "Min Volatility"]:
+                    st.session_state.builder_alloc_method = mapped_alloc
+            
+            if 'rebal_freq' in data:
+                rebal_map = {
+                    'Monthly': 'Monthly', 'Quarterly': 'Quarterly',
+                    'Semi-annually': 'Semi-Annual (Apr/Oct)', 'Annually': 'Annual (Apr)',
+                    'Semi-Annual (Apr/Oct)': 'Semi-Annual (Apr/Oct)', 'Annual (Apr)': 'Annual (Apr)'
+                }
+                mapped_freq = rebal_map.get(data['rebal_freq'], 'Annual (Apr)')
+                if mapped_freq in ["Semi-Annual (Apr/Oct)", "Annual (Apr)", "Monthly", "Quarterly"]:
+                    st.session_state.builder_rebal_freq = mapped_freq
+            
+            if 'fixed_weights' in data:
+                st.session_state.builder_portfolio['fixed_weights'] = data['fixed_weights']
+            
+            if 'custom_constraints' in data:
+                st.session_state.custom_constraints = data['custom_constraints']
+            if 'granular_constraints' in data:
+                st.session_state.builder_portfolio['granular_constraints'] = data['granular_constraints']
+
+            st.success(f"Loaded '{selected_load}'")
+            st.rerun()
+
+        if st.session_state.get('trigger_delete_conf'):
+            st.session_state.trigger_delete_conf = False
+            if delete_portfolio(selected_load):
+                st.success("Deleted!")
+                st.rerun()
+    else:
+        st.info("No saved templates found.")
 
 col1, col2, col3 = st.columns(3)
 
@@ -122,17 +198,22 @@ with col1:
     end_date = st.date_input("End Date", value=latest_data_date)
 
 with col2:
+    # Initialize default if not in session state
+    if 'builder_universe' not in st.session_state:
+        st.session_state.builder_universe = ['CSPX', 'DUHP', 'MOAT', 'EFA', 'KWEB', 'MCHI', 'EIMI', 'DFAT', 'QQQ', 'XDEW']
+    
     selected_tickers = st.multiselect(
         "Select Assets for Universe",
         options=available_tickers,
-        default=['CSPX', 'DUHP', 'MOAT', 'EFA', 'KWEB', 'MCHI', 'EIMI', 'DFAT', 'QQQ', 'XDEW']
+        key="builder_universe"
     )
 
 with col3:
     benchmark = st.selectbox(
         "Select Benchmark",
         options=available_tickers,
-        index=available_tickers.index('ACWI') if 'ACWI' in available_tickers else 0
+        index=available_tickers.index('ACWI') if 'ACWI' in available_tickers else 0,
+        key="builder_benchmark"
     )
 
 # --- 2. Construction Settings ---
@@ -143,13 +224,15 @@ c_strat, c_rebal = st.columns(2)
 with c_strat:
     allocation_method = st.selectbox(
         "Allocation Method",
-        ["Fixed Weight", "Equal Weight", "Max Sharpe", "Min Volatility"]
+        ["Fixed Weight", "Equal Weight", "Max Sharpe", "Min Volatility"],
+        key="builder_alloc_method"
     )
 
 with c_rebal:
     rebal_freq = st.selectbox(
         "Rebalancing Frequency",
-        ["Semi-Annual (Apr/Oct)", "Annual (Apr)", "Monthly", "Quarterly"]
+        ["Semi-Annual (Apr/Oct)", "Annual (Apr)", "Monthly", "Quarterly"],
+        key="builder_rebal_freq"
     )
 
 if allocation_method == "Fixed Weight":
@@ -650,6 +733,28 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
             st.error(f"Optimisation failed: {e}")
             import traceback
             st.code(traceback.format_exc())
+
+# --- Save Configuration ---
+st.markdown("---")
+with st.expander("💾 Save Configuration as Template", expanded=False):
+    save_name = st.text_input("Template Name", value="My Strategy", key="builder_save_name")
+    if st.button("Save Template", key="builder_save_btn"):
+        # Construct Save Data
+        save_data = {
+            'tickers': selected_tickers,
+            'benchmark': benchmark,
+            'allocation_type': allocation_method,
+            'rebal_freq': rebal_freq,
+            'fixed_weights': st.session_state.builder_portfolio.get('fixed_weights', {}),
+            'custom_constraints': st.session_state.custom_constraints,
+            'granular_constraints': st.session_state.builder_portfolio.get('granular_constraints', {})
+        }
+        
+        if save_portfolio(save_name, save_data):
+            st.success(f"Saved '{save_name}'!")
+            st.rerun()
+        else:
+            st.error("Failed to save.")
 
 
 # --- Helper Functions ---
@@ -1250,3 +1355,4 @@ if st.session_state.builder_portfolio['results']:
         st.info("Underlying data required for Overlap Matrix.")
     else:
         st.info("Need at least 2 assets to calculate overlap.")
+

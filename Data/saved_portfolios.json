@@ -1,0 +1,51 @@
+{
+    "(GT) E100 EQUAL WEIGHT EXAMPLE": {
+        "tickers": [
+            "CSPX",
+            "DUHP",
+            "MOAT",
+            "EFA",
+            "KWEB",
+            "MCHI",
+            "EIMI",
+            "DFAT",
+            "QQQ",
+            "XDEW"
+        ],
+        "benchmark": "ACWI",
+        "allocation_type": "Fixed Weight",
+        "rebal_freq": "Semi-Annual (Apr/Oct)",
+        "fixed_weights": {
+            "CSPX": 0.1,
+            "DUHP": 0.1,
+            "MOAT": 0.1,
+            "EFA": 0.1,
+            "KWEB": 0.1,
+            "MCHI": 0.1,
+            "EIMI": 0.1,
+            "DFAT": 0.1,
+            "QQQ": 0.1,
+            "XDEW": 0.1
+        },
+        "custom_constraints": [
+            {
+                "type": "Country",
+                "target": "United States",
+                "operator": "Max (<)",
+                "value": 0.65
+            },
+            {
+                "type": "Country",
+                "target": "China",
+                "operator": "Equal (=)",
+                "value": 0.15
+            }
+        ],
+        "granular_constraints": {
+            "CSPX": {
+                "op": "Equal (=)",
+                "val": 0.2
+            }
+        }
+    }
+}

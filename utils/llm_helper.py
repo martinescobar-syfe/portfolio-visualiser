@@ -46,6 +46,19 @@ SYFE_CONTEXT = """
 - AI status also implies higher risk capacity for other products.
 """
 
+def clean_llm_response(text):
+    """
+    Cleans common LLM formatting issues (e.g., missing spaces between numbers and words).
+    """
+    import re
+    # Fix "50,000and" -> "50,000 and"
+    text = re.sub(r'(\d+)(and|or|dollars|years|percent)', r'\1 \2', text)
+    # Fix "word50,000" -> "word 50,000" (less common but possible)
+    text = re.sub(r'([a-zA-Z])(\d+)', r'\1 \2', text)
+    # Fix "\$" -> "$"
+    text = text.replace(r'\$', '$')
+    return text
+
 def get_gemini_recommendation(api_key, client_profile):
     """
     Generates a portfolio recommendation using Gemini.
@@ -153,7 +166,7 @@ def get_gemini_recommendation(api_key, client_profile):
             try:
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
-                return response.text
+                return clean_llm_response(response.text)
             except Exception as e:
                 last_error = e
                 continue
@@ -346,7 +359,11 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
     - Use human-readable names like "Risk Willingness" not "risk_willingness"
     
     ============================================================
+    ============================================================
     """
+
+
+
 
         # List of models to try
         models_to_try = [
@@ -362,7 +379,7 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
             try:
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
-                return response.text
+                return clean_llm_response(response.text)
             except Exception as e:
                 last_error = e
                 continue
