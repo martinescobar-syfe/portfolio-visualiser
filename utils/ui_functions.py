@@ -30,7 +30,7 @@ def get_portfolio_objective(portfolio_name):
     if any(keyword in name_lower for keyword in ['china', 'disruptive', 'esg', 'clean', 'healthcare', 'equity', 'growth']):
         return 'Wealth Growth'
     
-    # Income Generation (includes AI investments like BlackRock, Monroe)
+    # Income Generation (includes AI investments like Blackrock, Monroe)
     if any(keyword in name_lower for keyword in ['income', 'enhance', 'reit', 'blackrock', 'monroe']):
         return 'Income Generation'
     
@@ -207,7 +207,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                             if aw > 0:
                                 asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
                     else:
-                        # Check if it's an AI investment (BlackRock, Monroe)
+                        # Check if it's an AI investment (Blackrock, Monroe)
                         if 'blackrock' in ticker.lower() or 'monroe' in ticker.lower():
                             asset_allocation['Alternative Investments'] = asset_allocation.get('Alternative Investments', 0.0) + weight
                         else:
@@ -914,7 +914,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     key=f"{key_prefix}_goal_{i}_{st.session_state.refresh_counter}"
                 )
                 
-                # Validate defaults exist in options (Handle casing mismatches e.g. BlackRock vs Blackrock)
+                # Validate defaults exist in options (Handle casing mismatches e.g. Blackrock vs Blackrock)
                 # available_tickers comes from df_sec_list['Ticker']
                 # port['tickers'] comes from user session or defaults
                 valid_defaults = []
@@ -1019,7 +1019,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                             current_dollar_amounts = st.session_state.portfolios[i].get('dollar_amounts', {})
                             existing_val = current_dollar_amounts.get(ticker)
                             if existing_val is None:
-                                # Try case-insensitive fallback for tickers like Blackrock/BlackRock
+                                # Try case-insensitive fallback for tickers like Blackrock/Blackrock
                                 alt_key = next((k for k in current_dollar_amounts.keys() if k.lower() == ticker.lower()), None)
                                 existing_val = current_dollar_amounts.get(alt_key, 1000.0)
 
@@ -1939,7 +1939,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             # Define base currency for each portfolio/ticker type
             # SGD-denominated: REITs, Income Enhance/Preserve, Cash SGD products
-            # USD-denominated: Private Credit (BlackRock, Monroe), Thematics
+            # USD-denominated: Private Credit (Blackrock, Monroe), Thematics
             def get_ticker_base_currency(ticker):
                 """Determine the base currency of a ticker's cash flows."""
                 ticker_upper = ticker.upper()
@@ -1996,7 +1996,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 """Returns 'monthly' or 'quarterly' based on ticker type."""
                 ticker_upper = ticker.upper()
                 
-                # Explicitly check for BlackRock and Monroe - monthly dividends
+                # Explicitly check for Blackrock and Monroe - monthly dividends
                 if 'BLACKROCK' in ticker_upper or 'MONROE' in ticker_upper:
                     return 'monthly'
                 
