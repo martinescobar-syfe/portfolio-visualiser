@@ -49,6 +49,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
     if uploaded_file:
         try:
             df_client = pd.read_csv(uploaded_file)
+            
+            # Standardize naming in the dataframe itself to handle user casing inconsistencies (BlackRock vs Blackrock)
+            if 'type' in df_client.columns:
+                df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
+                df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
         
             # Filter for ACTIVE portfolios
             if 'status' in df_client.columns:
@@ -84,9 +89,9 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 'REIT_RISK_MANAGED': 'REIT Risk Managed',
                 'REIT_RM': 'REIT Risk Managed',
                 # Private Credit / AI Products
-                'BLACKROCK': 'BlackRock Private Credit Fund',
-                'BLACKROCK_PRIVATE_CREDIT': 'BlackRock Private Credit Fund',
-                'BLACKROCK_PCF': 'BlackRock Private Credit Fund',
+                'BLACKROCK': 'Blackrock Private Credit Fund',
+                'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
+                'BLACKROCK_PCF': 'Blackrock Private Credit Fund',
                 'MONROE': 'Monroe Income Plus Fund',
                 'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
                 'MONROE_CAPITAL': 'Monroe Income Plus Fund',
@@ -131,7 +136,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 'REIT 100': 'Income Generation',
                 'Income Enhance': 'Income Generation',
                 'SRS Income Enhance': 'Income Generation',
-                'BlackRock PCF': 'Income Generation',
+                'Blackrock PCF': 'Income Generation',
                 'Income Preserve': 'Capital Preservation',
                 'SRS Income Preserve': 'Capital Preservation',
                 'Cash SGD guaranteed': 'Capital Preservation',
@@ -1010,10 +1015,18 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
 
                     for idx, ticker in enumerate(port['tickers']):
                         with fixed_cols[idx % 3]:
+                            # Get value using case-insensitive lookup
+                            current_dollar_amounts = st.session_state.portfolios[i].get('dollar_amounts', {})
+                            existing_val = current_dollar_amounts.get(ticker)
+                            if existing_val is None:
+                                # Try case-insensitive fallback for tickers like Blackrock/BlackRock
+                                alt_key = next((k for k in current_dollar_amounts.keys() if k.lower() == ticker.lower()), None)
+                                existing_val = current_dollar_amounts.get(alt_key, 1000.0)
+
                             amount = st.number_input(
                                 f"{ticker} ($)", 
                                 min_value=0.0, 
-                                value=st.session_state.portfolios[i]['dollar_amounts'].get(ticker, 1000.0),
+                                value=float(existing_val),
                                 step=100.0,
                                 key=f"{key_prefix}_amt_{i}_{ticker}_{st.session_state.refresh_counter}"
                             )

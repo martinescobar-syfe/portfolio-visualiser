@@ -38,7 +38,7 @@ SYFE_CONTEXT = """
 - **Direct Trading**: US/SG/HK stocks & ETFs. Fractional US shares. No platform fees. Retail access.
 
 **8. Private Wealth Products (Accredited Investor Only)**
-- **Private Credit Funds**: Institutional private lending strategies (e.g., via BlackRock). AI Only.
+- **Private Credit Funds**: Institutional private lending strategies (e.g., via Blackrock). AI Only.
 - **Fixed Maturity Bond Portfolios**: Professional bond portfolios targeting fixed yields. AI Only.
 
 **Accredited Investor (AI) Status**
@@ -223,8 +223,8 @@ def parse_recommendation_table(recommendation_text):
         "SRS Cash SGD flexi": "SRS Cash SGD flexi",
         "SRS Equity100": "SRS Equity100",
         # Private Credit (Accredited Investor)
-        "BlackRock Private Credit": "BlackRock Private Credit Fund",
-        "BlackRock Private Credit Fund": "BlackRock Private Credit Fund",
+        "Blackrock Private Credit": "Blackrock Private Credit Fund",
+        "Blackrock Private Credit Fund": "Blackrock Private Credit Fund",
         "Monroe Income Plus": "Monroe Income Plus Fund",
         "Monroe Income Plus Fund": "Monroe Income Plus Fund",
         # Silverdale

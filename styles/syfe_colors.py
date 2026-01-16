@@ -110,7 +110,7 @@ PORTFOLIO_TO_ASSET_CLASS = {
     'Cash SGD guaranteed': 'Cash',
     
     # Private Credit
-    'BlackRock Private Credit Fund': 'Private Credit',
+    'Blackrock Private Credit Fund': 'Private Credit',
     'Monroe Income Plus Fund': 'Private Credit',
     'Silverdale Fund (Nov 2027)': 'Private Credit',
     
@@ -139,7 +139,7 @@ PORTFOLIO_TO_OBJECTIVE = {
     'Income Preserve': 'Income Generation',
     'REIT 100': 'Income Generation',
     'REIT Risk Managed': 'Income Generation',
-    'BlackRock Private Credit Fund': 'Income Generation',
+    'Blackrock Private Credit Fund': 'Income Generation',
     'Monroe Income Plus Fund': 'Income Generation',
     'Silverdale Fund (Nov 2027)': 'Income Generation',
     'SRS Income Enhance': 'Income Generation',
