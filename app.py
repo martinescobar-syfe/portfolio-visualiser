@@ -10,6 +10,7 @@ import os
 from utils.data_loader import load_static_data, get_data_path, download_data
 from utils.ui_functions import (
     render_client_upload, 
+    render_client_pdf_upload,
     render_recommender, 
     render_portfolio_construction, 
     render_analysis
@@ -168,10 +169,16 @@ with st.container():
     
     # --- Conditional Flow ---
     if client_type == "Existing Client":
-        # Client Data Upload
+        # Client Data Upload (CSV)
         render_client_upload(
             df_asset_class, df_sector, df_country, df_underlying,
             key_prefix="exist_upload"
+        )
+        
+        # Client PDF Upload (AI Parsing)
+        render_client_pdf_upload(
+            GEMINI_API_KEY, df_asset_class, df_sector, df_country,
+            key_prefix="exist_pdf"
         )
     
     # --- Recommender Section (Always visible) ---

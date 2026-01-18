@@ -151,7 +151,7 @@ def get_gemini_recommendation(api_key, client_profile):
     {SYFE_CONTEXT}
     """
 
-        # Use Gemini 3 Pro Preview (Verified Available)
+        # Use Gemini 3 Pro Preview
         models_to_try = [
             'gemini-3-pro-preview',
             'gemini-2.0-flash-exp',

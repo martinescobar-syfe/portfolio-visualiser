@@ -482,8 +482,329 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
         except Exception as e:
             st.error(f"Error processing file: {e}")
 
+
+def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key_prefix="pdf_upload"):
+    """
+    Render a PDF upload section for parsing client portfolio PDFs using Gemini AI.
+    Extracts stock holdings and provides country/sector exposure analysis via yfinance.
+    Uses parallel dual-pass parsing for accuracy scoring.
+    """
+    from utils.pdf_helper import (
+        parse_pdf_parallel,
+        enrich_with_yfinance,
+        calculate_aggregate_exposure,
+        format_holdings_dataframe
+    )
+    
+    st.header("2. Client PDF Upload")
+    st.markdown("Upload a PDF document (e.g., brokerage statement) to extract stock holdings and analyze country/sector exposure.")
+    
+    # Presentation Currency Selector
+    col_ccy, col_spacer = st.columns([1, 3])
+    with col_ccy:
+        presentation_ccy = st.selectbox(
+            "Presentation Currency",
+            ["USD", "SGD", "HKD"],
+            key=f"{key_prefix}_pres_ccy",
+            help="Convert all values to this currency using latest yfinance rates"
+        )
+    
+    # Helper function to get FX rate from yfinance
+    @st.cache_data(ttl=3600)  # Cache for 1 hour
+    def get_fx_rate(from_ccy, to_ccy):
+        """Get FX rate using yfinance. Retries until successful."""
+        if from_ccy == to_ccy:
+            return 1.0
+        if not from_ccy or not to_ccy:
+            return 1.0
+        
+        # Normalize currency codes (CNH and CNY are both Chinese Yuan)
+        from_ccy = from_ccy.upper().strip()
+        to_ccy = to_ccy.upper().strip()
+        if from_ccy == 'CNH':
+            from_ccy = 'CNY'
+        if to_ccy == 'CNH':
+            to_ccy = 'CNY'
+        
+        if from_ccy == to_ccy:
+            return 1.0
+        
+        import yfinance as yf
+        import time
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Try direct pair first (e.g., SGDUSD=X)
+                ticker = f"{from_ccy}{to_ccy}=X"
+                print(f"  Trying FX: {ticker} (attempt {attempt+1})")
+                fx = yf.Ticker(ticker)
+                hist = fx.history(period="5d")
+                if not hist.empty:
+                    rate = float(hist['Close'].iloc[-1])
+                    if rate > 0:
+                        print(f"  SUCCESS: {ticker} = {rate}")
+                        return rate
+                
+                # Try inverse pair and invert
+                ticker_inv = f"{to_ccy}{from_ccy}=X"
+                print(f"  Trying FX inverse: {ticker_inv} (attempt {attempt+1})")
+                fx_inv = yf.Ticker(ticker_inv)
+                hist_inv = fx_inv.history(period="5d")
+                if not hist_inv.empty:
+                    rate_inv = float(hist_inv['Close'].iloc[-1])
+                    if rate_inv > 0:
+                        rate = 1.0 / rate_inv
+                        print(f"  SUCCESS: 1/{ticker_inv} = {rate}")
+                        return rate
+                
+                # Wait before retry
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    
+            except Exception as e:
+                print(f"  ERROR on attempt {attempt+1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+        
+        # After all retries failed, return 1.0 (no conversion)
+        print(f"  FAILED: Could not get rate for {from_ccy} -> {to_ccy}, returning 1.0")
+        return 1.0
+    
+    uploaded_pdf = st.file_uploader(
+        "Upload Client Portfolio PDF", 
+        type=['pdf'], 
+        key=f"{key_prefix}_file_uploader",
+        help="Upload a PDF containing stock holdings. Gemini AI will parse the document to extract tickers and values."
+    )
+    
+    if uploaded_pdf:
+        # Store in session state if not already processed
+        pdf_key = f"{key_prefix}_parsed_data"
+        
+        # Check if we need to reprocess (new file uploaded)
+        current_filename = uploaded_pdf.name
+        stored_filename = st.session_state.get(f"{key_prefix}_filename", "")
+        
+        if current_filename != stored_filename:
+            # New file - process it with parallel dual-pass parsing
+            with st.spinner("Parsing PDF with Gemini AI..."):
+                pdf_bytes = uploaded_pdf.read()
+                holdings, accuracy_metrics, raw_responses = parse_pdf_parallel(api_key, pdf_bytes, uploaded_pdf.name, num_passes=2)
+                
+                if holdings:
+                    with st.spinner("Downloading data from yfinance..."):
+                        enriched, failed = enrich_with_yfinance(holdings)
+                        country_exp, sector_exp = calculate_aggregate_exposure(enriched)
+                        holdings_df = format_holdings_dataframe(enriched)
+                        
+                        # Store in session state
+                        st.session_state[pdf_key] = {
+                            'holdings': holdings,
+                            'enriched': enriched,
+                            'failed': failed,
+                            'country_exp': country_exp,
+                            'sector_exp': sector_exp,
+                            'holdings_df': holdings_df,
+                            'raw_response': '\n\n---\n\n'.join(raw_responses),
+                            'accuracy_metrics': accuracy_metrics
+                        }
+                        st.session_state[f"{key_prefix}_filename"] = current_filename
+                else:
+                    st.error(f"Could not extract holdings from PDF.\n\n**Details:**\n{raw_responses}")
+                    return
+        
+        # Display results if we have them
+        if pdf_key in st.session_state:
+            data = st.session_state[pdf_key]
+            holdings_df = data['holdings_df'].copy()  # Make a copy to avoid modifying original
+            country_exp = data['country_exp']
+            sector_exp = data['sector_exp']
+            failed = data['failed']
+            enriched = data['enriched']
+            
+            # Apply currency conversion
+            # Get unique source currencies from the data and fetch FX rates
+            fx_rates = {}
+            for ticker, info in enriched.items():
+                source_ccy = info.get('currency', 'USD')
+                if source_ccy and source_ccy not in fx_rates:
+                    fx_rates[source_ccy] = get_fx_rate(source_ccy, presentation_ccy)
+            
+            # Print FX rates to terminal for debugging
+            print(f"=== FX RATES DEBUG (presentation_ccy={presentation_ccy}) ===")
+            for ccy, rate in fx_rates.items():
+                print(f"  {ccy} → {presentation_ccy}: {rate}")
+            
+            # Convert values in holdings_df
+            # The Currency column shows the original currency from yfinance
+            # We convert from that currency to the presentation currency
+            def convert_value(row):
+                source_ccy = row.get('Currency', 'USD')
+                if not source_ccy or source_ccy == presentation_ccy:
+                    return row['Value ($)'], 1.0, 'No'
+                rate = fx_rates.get(source_ccy, 1.0)
+                converted = 'Yes' if abs(rate - 1.0) > 0.0001 else 'No'
+                return row['Value ($)'] * rate, rate, converted
+            
+            # Apply conversion
+            result = holdings_df.apply(convert_value, axis=1, result_type='expand')
+            result.columns = ['Converted_Value', 'Rate_Applied', 'Converted?']
+            holdings_df['Value'] = result['Converted_Value']
+            holdings_df['Converted?'] = result['Converted?']
+            holdings_df['FX Rate'] = result['Rate_Applied']  # Add rate column for debugging
+            
+            # Rename Currency to Original Currency to clarify it's the source currency
+            holdings_df = holdings_df.rename(columns={'Currency': 'Original Currency'})
+            
+            holdings_df['Weight (%)'] = holdings_df['Value'] / holdings_df['Value'].sum()
+            
+            # Rename column to reflect presentation currency
+            holdings_df = holdings_df.rename(columns={'Value': f'Value ({presentation_ccy})'})
+            holdings_df = holdings_df.drop(columns=['Value ($)'])
+            
+            # Reorder columns - include FX Rate for debugging
+            col_order = ['Ticker', 'Name', f'Value ({presentation_ccy})', 'Weight (%)', 'Country', 'Sector', 'Original Currency', 'FX Rate', 'Converted?']
+            holdings_df = holdings_df[[c for c in col_order if c in holdings_df.columns]]
+            
+            total_value = holdings_df[f'Value ({presentation_ccy})'].sum()
+            
+            # Summary with correct currency symbol
+            ccy_symbols = {'USD': '$', 'SGD': 'S$', 'HKD': 'HK$'}
+            ccy_symbol = ccy_symbols.get(presentation_ccy, '$')
+            st.success(f"Found {len(holdings_df)} holdings with total value of {ccy_symbol}{total_value:,.2f} {presentation_ccy}")
+            
+            # Display accuracy metrics from parallel parsing
+            accuracy_metrics = data.get('accuracy_metrics', {})
+            if accuracy_metrics:
+                acc_score = accuracy_metrics.get('accuracy_score', 0)
+                ticker_agree = accuracy_metrics.get('ticker_agreement', 0)
+                
+                col_acc1, col_acc2 = st.columns(2)
+                with col_acc1:
+                    st.metric("Accuracy Score", f"{acc_score:.1f}/100")
+                with col_acc2:
+                    st.metric("Ticker Agreement", f"{ticker_agree:.1f}%")
+            
+            # Failed tickers warning
+            if failed:
+                st.warning(f"{len(failed)} ticker(s) could not be found via yfinance: {', '.join(failed)}")
+            
+            # Holdings Table (removed emoji)
+            st.subheader("Extracted Holdings")
+            value_col = f'Value ({presentation_ccy})'
+            st.dataframe(
+                holdings_df.style.format({
+                    value_col: f'{ccy_symbol}{{:,.2f}}',
+                    'Weight (%)': '{:.2%}'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Exposure Charts (removed emoji)
+            st.subheader("Exposure Analysis")
+            
+            col_country, col_sector = st.columns(2)
+            
+            with col_country:
+                st.markdown("**Country Exposure**")
+                if country_exp:
+                    # Use project's plot_allocation_pie for consistent styling
+                    country_series = pd.Series(country_exp)
+                    fig_country = plot_allocation_pie(country_series, title='Country Allocation')
+                    st.plotly_chart(fig_country, use_container_width=True, key=f"{key_prefix}_country_pie")
+                    
+                    with st.expander("View Data"):
+                        country_table = country_series.to_frame(name='Weight')
+                        st.dataframe(
+                            country_table.style.format({'Weight': '{:.2%}'}),
+                            use_container_width=True
+                        )
+                else:
+                    st.info("No country data available.")
+            
+            with col_sector:
+                st.markdown("**Sector Exposure**")
+                if sector_exp:
+                    # Use project's plot_allocation_pie for consistent styling
+                    sector_series = pd.Series(sector_exp)
+                    fig_sector = plot_allocation_pie(sector_series, title='Sector Allocation')
+                    st.plotly_chart(fig_sector, use_container_width=True, key=f"{key_prefix}_sector_pie")
+                    
+                    with st.expander("View Data"):
+                        sector_table = sector_series.to_frame(name='Weight')
+                        st.dataframe(
+                            sector_table.style.format({'Weight': '{:.2%}'}),
+                            use_container_width=True
+                        )
+                else:
+                    st.info("No sector data available.")
+            
+            # Load into Portfolio Analysis
+            st.markdown("---")
+            col_load1, col_load_new = st.columns(2)
+            
+            with col_load1:
+                if st.button("Load into Portfolio 1", key=f"{key_prefix}_load_p1"):
+                    # Create weights from values
+                    client_weights = {}
+                    client_holdings_raw = {}
+                    
+                    for ticker, info in enriched.items():
+                        client_weights[ticker] = info['value'] / total_value if total_value > 0 else 0
+                        client_holdings_raw[ticker] = info['value']
+                    
+                    # Update session state
+                    st.session_state.portfolios[0]['name'] = "PDF Portfolio"
+                    st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
+                    st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
+                    st.session_state.portfolios[0]['fixed_weights'] = client_weights
+                    st.session_state.portfolios[0]['cash_invested'] = total_value
+                    st.session_state.portfolios[0]['dollar_amounts'] = client_holdings_raw
+                    st.session_state.portfolios[0]['decimal_weights'] = client_weights
+                    
+                    st.session_state.refresh_counter += 1
+                    st.success("Loaded PDF portfolio into Portfolio 1!")
+                    st.rerun()
+            
+            with col_load_new:
+                if st.button("Load as New Portfolio", key=f"{key_prefix}_load_new"):
+                    # Create weights from values
+                    client_weights = {}
+                    client_holdings_raw = {}
+                    
+                    for ticker, info in enriched.items():
+                        client_weights[ticker] = info['value'] / total_value if total_value > 0 else 0
+                        client_holdings_raw[ticker] = info['value']
+                    
+                    new_id = len(st.session_state.portfolios) + 1
+                    new_port = {
+                        'id': new_id,
+                        'name': f"PDF Upload {new_id}",
+                        'tickers': list(client_weights.keys()),
+                        'allocation_type': 'Fixed Weight',
+                        'rebal_freq': 'Annually',
+                        'min_weight': 0.0,
+                        'max_weight': 1.0,
+                        'cash_invested': total_value,
+                        'fixed_weights': client_weights,
+                        'dollar_amounts': client_holdings_raw,
+                        'decimal_weights': client_weights
+                    }
+                    st.session_state.portfolios.append(new_port)
+                    st.session_state.refresh_counter += 1
+                    st.success(f"Created new portfolio 'PDF Upload {new_id}'!")
+                    st.rerun()
+            
+            # Debug expander
+            with st.expander("Debug: Raw AI Response"):
+                st.text(data.get('raw_response', 'No raw response available'))
+
+
 from utils.risk_engine import calculate_risk_score, get_eligible_portfolios, get_recommendation_text, get_smart_recommendation
 from utils.llm_helper import get_recommendation_narrative
+
 
 def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     st.header("Syfe Portfolio Recommender (Risk Engine)")
