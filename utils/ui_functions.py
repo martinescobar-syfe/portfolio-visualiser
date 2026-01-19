@@ -1624,6 +1624,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         with tabs[0]: # Key Summary
             summary = get_performance_summary(all_port_ret)
         
+            # Display date information above the table
+            exposure_start_date = all_port_ret.index.min().strftime('%d %b %Y')
+            exposure_end_date = all_port_ret.index.max().strftime('%d %b %Y')
+            st.markdown(f"**Data as of:** {exposure_end_date}<br>**Time frame taken:** {exposure_start_date} - {exposure_end_date}", unsafe_allow_html=True)
+        
             # Format the summary DataFrame properly
             # Metrics are in rows (index), portfolios are in columns
             # We need to format by row, so we'll create a formatted copy
@@ -1646,22 +1651,9 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             # Rename Max Drawdown to prevent wrapping
             summary_formatted.rename(index={'Max Drawdown': 'Max DD'}, inplace=True)
             
-            # Create column configuration for tooltips
-            column_config = {}
-            exposure_start_date = all_port_ret.index.min().strftime('%d %b %Y')
-            exposure_end_date = all_port_ret.index.max().strftime('%d %b %Y')
-            tooltip_text = f"Data as of: {exposure_end_date}\nTime frame taken: {exposure_start_date} - {exposure_end_date}"
-            
-            for col in summary_formatted.columns:
-                column_config[col] = st.column_config.Column(
-                    label=col,
-                    help=tooltip_text
-                )
-            
             st.dataframe(
                 summary_formatted, 
-                use_container_width=True,
-                column_config=column_config
+                use_container_width=True
             )
         
             st.markdown("---")
