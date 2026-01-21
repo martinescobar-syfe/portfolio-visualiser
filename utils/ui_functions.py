@@ -76,6 +76,24 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             st.write("") # Spacer
             st.write("") 
             lookup_clicked = st.button("Fetch Client", key=f"{key_prefix}_meta_btn")
+        
+        with st.expander("🛠️ Connection Diagnostics (For IT)", expanded=False):
+             if st.button("Test Metabase Connection", key=f"{key_prefix}_debug_conn"):
+                 import socket
+                 import requests
+                 st.write("1. Testing DNS Resolution...")
+                 try:
+                     ip = socket.gethostbyname("metabase.internal.syfe.com")
+                     st.success(f"DNS Resolved: {ip}")
+                 except Exception as e:
+                     st.error(f"DNS Resolution Failed: {e}")
+                 
+                 st.write("2. Testing HTTPS Reachability (Port 443)...")
+                 try:
+                     resp = requests.head("https://metabase.internal.syfe.com", timeout=5)
+                     st.success(f"Connection Successful! Status Code: {resp.status_code}")
+                 except Exception as e:
+                     st.error(f"Connection Failed: {e}")
             
         if lookup_clicked and client_id_input:
             with st.spinner("Fetching client data from Metabase..."):
