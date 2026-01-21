@@ -2,12 +2,12 @@
 Portfolio Report Generator - Creates PDF reports matching Syfe Portfolio Summary format.
 
 This module generates professional PDF reports with:
-- Cover page with branding
+- Cover page from template
 - Portfolio Summary tables with conditional formatting
-- Asset Class, Country, and Sector exposure charts
+- Native ReportLab pie charts for Asset Class, Country, and Sector exposure
 - Growth Portfolios section
 - Income & Preservation Portfolios section  
-- Disclaimers page
+- Appendix/Disclaimers page from template
 """
 
 import os
@@ -15,23 +15,20 @@ import io
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
-import plotly.graph_objects as go
-import plotly.express as px
 
 # ReportLab Imports
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.units import inch, cm
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Spacer, Image, 
-    Paragraph, PageBreak, KeepTogether, Frame, PageTemplate, BaseDocTemplate
+    SimpleDocTemplate, Table, TableStyle, Spacer, 
+    Paragraph, PageBreak, KeepTogether
 )
 from reportlab.pdfgen import canvas
-from reportlab.graphics.shapes import Drawing, Rect
+from reportlab.graphics.shapes import Drawing, String, Rect
 from reportlab.graphics.charts.piecharts import Pie
-from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.charts.legends import Legend
 from reportlab.graphics import renderPDF
 
@@ -58,10 +55,18 @@ SYFE_COLORS = {
     'teal': colors.HexColor("#00B8D9"),
 }
 
-# Chart color palette for pie charts
+# Chart color palette for pie charts (matching Syfe brand)
 PIE_COLORS = [
-    "#0052CC", "#36B37E", "#FFAB00", "#FF5630", "#00B8D9",
-    "#6554C0", "#FF8B00", "#2684FF", "#4C9AFF", "#B3D4FF"
+    colors.HexColor("#0052CC"),  # Primary Blue
+    colors.HexColor("#36B37E"),  # Green
+    colors.HexColor("#FFAB00"),  # Yellow/Gold
+    colors.HexColor("#FF5630"),  # Red
+    colors.HexColor("#00B8D9"),  # Teal
+    colors.HexColor("#6554C0"),  # Purple
+    colors.HexColor("#FF8B00"),  # Orange
+    colors.HexColor("#2684FF"),  # Light Blue
+    colors.HexColor("#4C9AFF"),  # Lighter Blue
+    colors.HexColor("#172B4D"),  # Dark Navy
 ]
 
 # ==========================================
@@ -72,139 +77,181 @@ def get_syfe_styles():
     """Returns dictionary of styled ParagraphStyles for Syfe branding."""
     styles = {}
     
-    styles['title'] = ParagraphStyle(
-        name='SyfeTitle',
+    styles['brand_header'] = ParagraphStyle(
+        name='BrandHeader',
         fontName='Helvetica-Bold',
-        fontSize=24,
-        leading=30,
-        alignment=TA_CENTER,
-        textColor=SYFE_COLORS['dark_blue'],
-        spaceAfter=20
+        fontSize=16,
+        textColor=SYFE_COLORS['primary_blue'],
+        spaceAfter=6
     )
     
-    styles['subtitle'] = ParagraphStyle(
-        name='SyfeSubtitle',
+    styles['page_header'] = ParagraphStyle(
+        name='PageHeader',
         fontName='Helvetica',
-        fontSize=14,
-        leading=18,
-        alignment=TA_CENTER,
+        fontSize=10,
         textColor=SYFE_COLORS['dark_grey'],
-        spaceAfter=12
+        spaceAfter=4
     )
     
     styles['section_header'] = ParagraphStyle(
-        name='SyfeSectionHeader',
+        name='SectionHeader',
         fontName='Helvetica-Bold',
-        fontSize=14,
-        leading=18,
-        alignment=TA_LEFT,
+        fontSize=12,
+        leading=16,
         textColor=SYFE_COLORS['navy'],
-        spaceBefore=20,
-        spaceAfter=10
+        spaceBefore=15,
+        spaceAfter=8
     )
     
-    styles['body'] = ParagraphStyle(
-        name='SyfeBody',
-        fontName='Helvetica',
-        fontSize=9,
-        leading=12,
-        alignment=TA_LEFT,
-        textColor=SYFE_COLORS['black'],
+    styles['chart_title'] = ParagraphStyle(
+        name='ChartTitle',
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        textColor=SYFE_COLORS['navy'],
+        alignment=TA_CENTER,
+        spaceAfter=4
     )
     
-    styles['small'] = ParagraphStyle(
-        name='SyfeSmall',
-        fontName='Helvetica',
+    styles['footnote'] = ParagraphStyle(
+        name='Footnote',
+        fontName='Helvetica-Oblique',
         fontSize=7,
-        leading=9,
-        alignment=TA_LEFT,
         textColor=SYFE_COLORS['dark_grey'],
+        spaceBefore=4,
+        spaceAfter=2
     )
     
     styles['footer'] = ParagraphStyle(
-        name='SyfeFooter',
+        name='Footer',
         fontName='Helvetica',
         fontSize=8,
-        leading=10,
+        textColor=SYFE_COLORS['dark_grey'],
         alignment=TA_CENTER,
-        textColor=SYFE_COLORS['dark_grey'],
-    )
-    
-    styles['disclaimer'] = ParagraphStyle(
-        name='SyfeDisclaimer',
-        fontName='Helvetica',
-        fontSize=8,
-        leading=11,
-        alignment=TA_JUSTIFY,
-        textColor=SYFE_COLORS['dark_grey'],
-        spaceBefore=6,
-        spaceAfter=6
     )
     
     return styles
 
 # ==========================================
-# TABLE CREATION FUNCTIONS
+# NATIVE REPORTLAB PIE CHART
 # ==========================================
 
-def create_portfolio_table(df, title="", highlight_groups=True, col_widths=None):
+def create_pie_chart_drawing(data, title="", width=220, height=180):
+    """
+    Creates a native ReportLab pie chart drawing.
+    
+    Args:
+        data: pd.Series or dict with labels as keys and values as data
+        title: Chart title
+        width, height: Drawing dimensions
+    
+    Returns:
+        Drawing object or None
+    """
+    if data is None:
+        return None
+    
+    if isinstance(data, dict):
+        data = pd.Series(data)
+    
+    if data.empty or data.sum() == 0:
+        return None
+    
+    # Filter small values and normalize
+    data = data[data > 0.001]
+    total = data.sum()
+    data = data / total  # Normalize to percentages
+    
+    # Limit to top 8 + Others
+    if len(data) > 8:
+        top_data = data.head(7)
+        others = data.iloc[7:].sum()
+        if others > 0:
+            top_data = pd.concat([top_data, pd.Series({'Others': others})])
+        data = top_data
+    
+    # Create drawing
+    d = Drawing(width, height)
+    
+    # Create pie chart
+    pie = Pie()
+    pie.x = width // 2 - 50
+    pie.y = 25
+    pie.width = 100
+    pie.height = 100
+    pie.data = list(data.values)
+    pie.labels = None  # We'll use legend instead
+    
+    # Set colors
+    for i in range(len(data)):
+        pie.slices[i].fillColor = PIE_COLORS[i % len(PIE_COLORS)]
+        pie.slices[i].strokeColor = colors.white
+        pie.slices[i].strokeWidth = 1
+    
+    # Create legend
+    legend = Legend()
+    legend.x = width - 90
+    legend.y = height - 30
+    legend.dx = 8
+    legend.dy = 8
+    legend.fontName = 'Helvetica'
+    legend.fontSize = 7
+    legend.boxAnchor = 'nw'
+    legend.columnMaximum = 10
+    legend.strokeWidth = 0.5
+    legend.strokeColor = colors.white
+    legend.deltax = 5
+    legend.deltay = 3
+    legend.autoXPadding = 3
+    legend.yGap = 0
+    legend.dxTextSpace = 4
+    legend.alignment = 'right'
+    legend.dividerLines = 1|2|4
+    legend.dividerOffsY = 4.5
+    legend.subCols.rpad = 15
+    
+    # Legend items with percentages
+    legend_items = []
+    for i, (label, value) in enumerate(data.items()):
+        color = PIE_COLORS[i % len(PIE_COLORS)]
+        pct = value * 100
+        legend_items.append((color, f"{label[:15]}{'...' if len(str(label)) > 15 else ''} ({pct:.1f}%)"))
+    
+    legend.colorNamePairs = legend_items
+    
+    # Add title
+    title_str = String(width // 2, height - 10, title,
+                       fontName='Helvetica-Bold', fontSize=9,
+                       fillColor=SYFE_COLORS['navy'], textAnchor='middle')
+    
+    d.add(pie)
+    d.add(legend)
+    d.add(title_str)
+    
+    return d
+
+# ==========================================
+# TABLE CREATION
+# ==========================================
+
+def create_portfolio_table(df, highlight_groups=True, col_widths=None):
     """
     Creates a styled ReportLab Table from a DataFrame.
     
     Args:
         df: pandas DataFrame with portfolio data
-        title: Optional table title
         highlight_groups: Whether to highlight aggregation rows
         col_widths: Optional list of column widths
     
     Returns:
-        list: ReportLab flowable elements (title + table)
+        Table object
     """
-    elements = []
-    styles = get_syfe_styles()
-    
     if df.empty:
-        return elements
+        return None
     
-    # Add title if provided
-    if title:
-        elements.append(Paragraph(title, styles['section_header']))
-        elements.append(Spacer(1, 0.1 * inch))
-    
-    # Convert DataFrame to list of lists for ReportLab
-    # Use Paragraph for wrapping text in cells
-    header_row = []
-    for col in df.columns:
-        header_row.append(Paragraph(f"<b>{col}</b>", ParagraphStyle(
-            name='HeaderCell',
-            fontName='Helvetica-Bold',
-            fontSize=8,
-            leading=10,
-            alignment=TA_CENTER,
-            textColor=colors.white
-        )))
-    
-    table_data = [header_row]
-    
-    for idx, row in df.iterrows():
-        row_data = []
-        for val in row:
-            cell_style = ParagraphStyle(
-                name='Cell',
-                fontName='Helvetica',
-                fontSize=8,
-                leading=10,
-                alignment=TA_CENTER,
-                textColor=colors.black
-            )
-            row_data.append(Paragraph(str(val) if pd.notna(val) else '-', cell_style))
-        table_data.append(row_data)
-    
-    # Calculate column widths if not provided
-    if col_widths is None:
-        page_width = landscape(A4)[0] - 1.4 * inch  # Account for margins
-        num_cols = len(df.columns)
-        col_widths = [page_width / num_cols] * num_cols
+    # Convert DataFrame to list of lists
+    table_data = [list(df.columns)]  # Header row
+    for _, row in df.iterrows():
+        table_data.append([str(v) if pd.notna(v) else '-' for v in row])
     
     # Create table
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
@@ -231,7 +278,7 @@ def create_portfolio_table(df, title="", highlight_groups=True, col_widths=None)
         ('BACKGROUND', (0, 1), (-1, -1), colors.white),
         ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
         ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ('FONTSIZE', (0, 1), (-1, -1), 7),
         ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
         
         # Grid
@@ -241,543 +288,238 @@ def create_portfolio_table(df, title="", highlight_groups=True, col_widths=None)
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, SYFE_COLORS['light_grey']]),
     ]
     
-    # Highlight special group rows (e.g., "Growth Portfolios", "Total")
-    if highlight_groups and 'Portfolio ID' in df.columns:
+    # Highlight special group rows
+    if highlight_groups:
         special_groups = [
             'Growth Portfolios', 'Income & Preservation Portfolios',
             'Core', 'Specialised', 'Income+', 'REITs', 'Cash / MMF', 'Total'
         ]
         
+        first_col = df.columns[0]
         for i, row in df.iterrows():
-            row_idx = df.index.get_loc(i) + 1  # +1 for header row
-            port_id = str(row.get('Portfolio ID', ''))
+            row_idx = df.index.get_loc(i) + 1  # +1 for header
+            first_val = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ''
             
-            if port_id in special_groups:
+            if first_val in special_groups:
                 style_cmds.append(('BACKGROUND', (0, row_idx), (-1, row_idx), SYFE_COLORS['light_blue']))
                 style_cmds.append(('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold'))
             
-            if port_id == 'Total':
+            if first_val == 'Total':
                 style_cmds.append(('BACKGROUND', (0, row_idx), (-1, row_idx), SYFE_COLORS['dark_blue']))
                 style_cmds.append(('TEXTCOLOR', (0, row_idx), (-1, row_idx), colors.white))
     
     table.setStyle(TableStyle(style_cmds))
-    elements.append(table)
     
-    return elements
-
-def create_income_table(df, title=""):
-    """
-    Creates a specialized table for Income & Preservation portfolios with additional columns.
-    """
-    return create_portfolio_table(df, title=title, highlight_groups=True)
+    return table
 
 # ==========================================
-# CHART CREATION FUNCTIONS
+# PAGE BUILDING FUNCTIONS
 # ==========================================
 
-def create_pie_chart_image(data, title="", width=350, height=250):
+def build_page_header(elements, client_name, report_date):
+    """Add standard page header with Syfe branding."""
+    styles = get_syfe_styles()
+    
+    elements.append(Paragraph("Syfe", styles['brand_header']))
+    elements.append(Spacer(1, 0.05 * inch))
+    elements.append(Paragraph(f"Client Name: {client_name}", styles['page_header']))
+    elements.append(Paragraph(f"Date: {report_date.strftime('%B %d, %Y')}", styles['page_header']))
+    elements.append(Spacer(1, 0.15 * inch))
+
+def build_page_footer(elements):
+    """Add standard page footer."""
+    styles = get_syfe_styles()
+    elements.append(Spacer(1, 0.2 * inch))
+    elements.append(Paragraph("[FOR INTERNAL PURPOSES ONLY - V1]", styles['footer']))
+
+def build_charts_row(elements, charts_data, page_width):
     """
-    Creates a pie chart using Plotly and returns as image bytes.
+    Build a row of pie charts from exposure data.
     
     Args:
-        data: Series with labels as index and values as data
-        title: Chart title
-        width, height: Image dimensions
-    
-    Returns:
-        bytes: PNG image data
+        elements: List to append to
+        charts_data: Dict with keys like 'asset_class', 'country', 'sector'
+        page_width: Available page width
     """
-    if data.empty or data.sum() == 0:
-        return None
+    styles = get_syfe_styles()
+    chart_drawings = []
     
-    # Filter out very small values and limit to top 10
-    data = data[data > 0.001]
-    if len(data) > 10:
-        top_data = data.head(9)
-        others = data.iloc[9:].sum()
-        top_data['Others'] = others
-        data = top_data
-    
-    # Create pie chart
-    fig = go.Figure(data=[go.Pie(
-        labels=data.index,
-        values=data.values,
-        hole=0.4,
-        marker=dict(colors=PIE_COLORS[:len(data)]),
-        textinfo='percent+label',
-        textposition='outside',
-        textfont=dict(size=8),
-        outsidetextfont=dict(size=8),
-        insidetextfont=dict(size=7),
-    )])
-    
-    fig.update_layout(
-        title=dict(
-            text=f'<b>{title}</b>',
-            font=dict(size=12, color='#172B4D'),
-            x=0.5,
-            y=0.95
-        ),
-        showlegend=True,
-        legend=dict(
-            orientation='v',
-            yanchor='middle',
-            y=0.5,
-            xanchor='right',
-            x=1.3,
-            font=dict(size=8)
-        ),
-        margin=dict(l=20, r=100, t=40, b=20),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        width=width,
-        height=height
-    )
-    
-    # Export to bytes
-    img_bytes = fig.to_image(format='png', scale=2)
-    return img_bytes
-
-def create_bar_chart_image(data, title="", width=350, height=250):
-    """
-    Creates a horizontal bar chart using Plotly and returns as image bytes.
-    """
-    if data.empty or data.sum() == 0:
-        return None
-    
-    # Limit to top 10
-    data = data.head(10)
-    
-    fig = go.Figure(data=[go.Bar(
-        x=data.values,
-        y=data.index,
-        orientation='h',
-        marker_color=PIE_COLORS[0],
-        text=[f'{v:.1%}' for v in data.values],
-        textposition='outside',
-        textfont=dict(size=8)
-    )])
-    
-    fig.update_layout(
-        title=dict(
-            text=f'<b>{title}</b>',
-            font=dict(size=12, color='#172B4D'),
-            x=0.5,
-            y=0.95
-        ),
-        xaxis=dict(
-            tickformat='.0%',
-            range=[0, max(data.values) * 1.2],
-            tickfont=dict(size=8)
-        ),
-        yaxis=dict(
-            tickfont=dict(size=8),
-            autorange='reversed'
-        ),
-        margin=dict(l=100, r=60, t=40, b=30),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        width=width,
-        height=height
-    )
-    
-    img_bytes = fig.to_image(format='png', scale=2)
-    return img_bytes
-
-def add_charts_to_elements(elements, charts_data, available_width):
-    """
-    Adds exposure charts (pie charts) to the elements list.
-    
-    Args:
-        elements: List of flowable elements
-        charts_data: Dict with 'asset_class', 'country', 'sector' keys containing Series data
-        available_width: Available page width for charts
-    """
-    temp_files = []
-    chart_images = []
-    
-    chart_config = [
+    chart_configs = [
         ('asset_class', 'Asset Class Exposure'),
         ('country', 'Country Exposure'),
-        ('sector', 'Sector Exposure')
+        ('sector', 'Sector Exposure'),
     ]
     
-    chart_width = 3.5 * inch
-    chart_height = 2.5 * inch
-    
-    for key, title in chart_config:
+    for key, title in chart_configs:
         if key in charts_data and charts_data[key] is not None:
             data = charts_data[key]
             if isinstance(data, pd.Series) and not data.empty:
-                img_bytes = create_pie_chart_image(data, title=title, width=350, height=250)
-                if img_bytes:
-                    # Save to temp file
-                    temp_file = f"temp_chart_{key}_{datetime.now().strftime('%H%M%S%f')}.png"
-                    with open(temp_file, 'wb') as f:
-                        f.write(img_bytes)
-                    temp_files.append(temp_file)
-                    
-                    img = Image(temp_file, width=chart_width, height=chart_height)
-                    chart_images.append(img)
+                drawing = create_pie_chart_drawing(data, title=title)
+                if drawing:
+                    chart_drawings.append(drawing)
     
-    # Arrange charts in rows of 2
-    if chart_images:
-        rows = []
-        for i in range(0, len(chart_images), 2):
-            row = chart_images[i:i+2]
-            if len(row) == 1:
-                row.append('')  # Empty cell for alignment
-            rows.append(row)
-        
-        if rows:
-            col_widths = [available_width / 2] * 2
-            chart_table = Table(rows, colWidths=col_widths)
+    if not chart_drawings:
+        return
+    
+    # Arrange charts in a table row
+    elements.append(Spacer(1, 0.1 * inch))
+    
+    # Create a table with charts
+    if len(chart_drawings) <= 3:
+        col_width = page_width / len(chart_drawings)
+        chart_table = Table([chart_drawings], colWidths=[col_width] * len(chart_drawings))
+        chart_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ]))
+        elements.append(chart_table)
+    else:
+        # Multiple rows if more than 3 charts
+        for i in range(0, len(chart_drawings), 3):
+            row_charts = chart_drawings[i:i+3]
+            col_width = page_width / len(row_charts)
+            chart_table = Table([row_charts], colWidths=[col_width] * len(row_charts))
             chart_table.setStyle(TableStyle([
                 ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ]))
-            elements.append(Spacer(1, 0.2 * inch))
             elements.append(chart_table)
-    
-    return temp_files
+            elements.append(Spacer(1, 0.1 * inch))
 
 # ==========================================
 # PAGE CREATION FUNCTIONS
 # ==========================================
 
-def create_cover_page(client_id, report_date):
-    """
-    Creates cover page elements.
-    
-    Args:
-        client_id: Client identifier
-        report_date: Report generation date
-    
-    Returns:
-        list: Flowable elements for cover page
-    """
+def create_portfolio_summary_page(df_summary, charts_data, client_name, report_date, page_width):
+    """Creates the Portfolio Summary page elements."""
     elements = []
     styles = get_syfe_styles()
     
-    # Add vertical spacing to center content
-    elements.append(Spacer(1, 2.5 * inch))
-    
-    # Syfe Logo placeholder (text for now)
-    logo_style = ParagraphStyle(
-        name='Logo',
-        fontName='Helvetica-Bold',
-        fontSize=48,
-        alignment=TA_CENTER,
-        textColor=SYFE_COLORS['primary_blue'],
-        spaceAfter=30
-    )
-    elements.append(Paragraph("Syfe", logo_style))
-    
-    # Title
-    elements.append(Paragraph("PORTFOLIO SUMMARY", styles['title']))
-    
-    elements.append(Spacer(1, 0.5 * inch))
-    
-    # Client info
-    client_style = ParagraphStyle(
-        name='ClientInfo',
-        fontName='Helvetica',
-        fontSize=14,
-        alignment=TA_CENTER,
-        textColor=SYFE_COLORS['dark_grey'],
-        spaceAfter=10
-    )
-    elements.append(Paragraph(f"Client {client_id}", client_style))
-    elements.append(Paragraph(report_date.strftime("%B %d, %Y"), client_style))
-    
-    elements.append(PageBreak())
-    
-    return elements
-
-def create_portfolio_summary_page(df_summary, charts_data, client_name, report_date):
-    """
-    Creates the main Portfolio Summary page.
-    
-    Args:
-        df_summary: DataFrame with portfolio summary data
-        charts_data: Dict with exposure data for charts
-        client_name: Client name/ID
-        report_date: Report date
-    
-    Returns:
-        tuple: (elements list, temp_files list)
-    """
-    elements = []
-    styles = get_syfe_styles()
-    temp_files = []
-    
-    # Page header
-    header_style = ParagraphStyle(
-        name='PageHeader',
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        alignment=TA_LEFT,
-        textColor=SYFE_COLORS['dark_grey'],
-    )
-    
-    # Client name and date header
-    elements.append(Paragraph(f"<b>Syfe</b>", ParagraphStyle(
-        name='BrandHeader',
-        fontName='Helvetica-Bold',
-        fontSize=16,
-        textColor=SYFE_COLORS['primary_blue']
-    )))
-    elements.append(Spacer(1, 0.1 * inch))
-    elements.append(Paragraph(f"Client Name: {client_name}", header_style))
-    elements.append(Paragraph(f"Date: {report_date.strftime('%B %d, %Y')}", header_style))
-    elements.append(Spacer(1, 0.2 * inch))
+    # Header
+    build_page_header(elements, client_name, report_date)
     
     # Section title
     elements.append(Paragraph("Portfolio Summary", styles['section_header']))
     
-    # Portfolio table
-    page_width = landscape(A4)[0] - 1.4 * inch
-    table_elements = create_portfolio_table(df_summary, highlight_groups=True)
-    elements.extend(table_elements)
+    # Table
+    if not df_summary.empty:
+        table = create_portfolio_table(df_summary, highlight_groups=True)
+        if table:
+            elements.append(table)
     
-    # Add charts
+    # Charts
     if charts_data:
-        temp_files = add_charts_to_elements(elements, charts_data, page_width)
+        build_charts_row(elements, charts_data, page_width)
     
     # Footer
-    elements.append(Spacer(1, 0.3 * inch))
-    elements.append(Paragraph("[FOR INTERNAL PURPOSES ONLY - V1]", styles['footer']))
-    
+    build_page_footer(elements)
     elements.append(PageBreak())
     
-    return elements, temp_files
+    return elements
 
-def create_growth_portfolios_page(df_growth, charts_data, client_name, report_date):
-    """
-    Creates the Growth Portfolios detail page.
-    """
+def create_growth_portfolios_page(df_growth, charts_data, client_name, report_date, page_width):
+    """Creates the Growth Portfolios page elements."""
     elements = []
     styles = get_syfe_styles()
-    temp_files = []
     
     # Header
-    elements.append(Paragraph(f"<b>Syfe</b>", ParagraphStyle(
-        name='BrandHeader',
-        fontName='Helvetica-Bold',
-        fontSize=16,
-        textColor=SYFE_COLORS['primary_blue']
-    )))
-    elements.append(Spacer(1, 0.1 * inch))
-    
-    header_style = ParagraphStyle(
-        name='PageHeader',
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        alignment=TA_LEFT,
-        textColor=SYFE_COLORS['dark_grey'],
-    )
-    elements.append(Paragraph(f"Client Name: {client_name}", header_style))
-    elements.append(Paragraph(f"Date: {report_date.strftime('%B %d, %Y')}", header_style))
-    elements.append(Spacer(1, 0.2 * inch))
+    build_page_header(elements, client_name, report_date)
     
     # Section title
     elements.append(Paragraph("Growth Portfolios", styles['section_header']))
     
     # Table
-    page_width = landscape(A4)[0] - 1.4 * inch
     if not df_growth.empty:
-        table_elements = create_portfolio_table(df_growth, highlight_groups=True)
-        elements.extend(table_elements)
+        table = create_portfolio_table(df_growth, highlight_groups=True)
+        if table:
+            elements.append(table)
     
     # Charts
     if charts_data:
-        temp_files = add_charts_to_elements(elements, charts_data, page_width)
+        build_charts_row(elements, charts_data, page_width)
     
     # Footer
-    elements.append(Spacer(1, 0.3 * inch))
-    elements.append(Paragraph("[FOR INTERNAL PURPOSES ONLY - V1]", styles['footer']))
-    
+    build_page_footer(elements)
     elements.append(PageBreak())
     
-    return elements, temp_files
+    return elements
 
-def create_income_preservation_page(df_income, charts_data, client_name, report_date):
-    """
-    Creates the Income & Preservation Portfolios detail page.
-    """
+def create_income_preservation_page(df_income, charts_data, client_name, report_date, page_width):
+    """Creates the Income & Preservation Portfolios page elements."""
     elements = []
     styles = get_syfe_styles()
-    temp_files = []
     
     # Header
-    elements.append(Paragraph(f"<b>Syfe</b>", ParagraphStyle(
-        name='BrandHeader',
-        fontName='Helvetica-Bold',
-        fontSize=16,
-        textColor=SYFE_COLORS['primary_blue']
-    )))
-    elements.append(Spacer(1, 0.1 * inch))
-    
-    header_style = ParagraphStyle(
-        name='PageHeader',
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        alignment=TA_LEFT,
-        textColor=SYFE_COLORS['dark_grey'],
-    )
-    elements.append(Paragraph(f"Client Name: {client_name}", header_style))
-    elements.append(Paragraph(f"Date: {report_date.strftime('%B %d, %Y')}", header_style))
-    elements.append(Spacer(1, 0.2 * inch))
+    build_page_header(elements, client_name, report_date)
     
     # Section title
     elements.append(Paragraph("Income & Preservation Portfolios", styles['section_header']))
     
-    # Footnotes for yields
-    footnote_style = ParagraphStyle(
-        name='Footnote',
-        fontName='Helvetica-Oblique',
-        fontSize=7,
-        textColor=SYFE_COLORS['dark_grey'],
-        spaceBefore=4
-    )
-    
     # Table
-    page_width = landscape(A4)[0] - 1.4 * inch
     if not df_income.empty:
-        table_elements = create_portfolio_table(df_income, highlight_groups=True)
-        elements.extend(table_elements)
+        table = create_portfolio_table(df_income, highlight_groups=True)
+        if table:
+            elements.append(table)
         
-        # Add footnotes
+        # Footnotes
         elements.append(Spacer(1, 0.1 * inch))
         elements.append(Paragraph(
             "*Est. Yield (%): References latest annualised distribution yield for Income+ portfolios, "
             "estimated dividend yield for REIT+ portfolios, projected returns for Cash+ Flexi portfolios, "
             "and guaranteed rates for Cash+ Guaranteed portfolios.",
-            footnote_style
+            styles['footnote']
         ))
         elements.append(Paragraph(
             "**Annualised Projected Dividend: Estimated dividend yield multiplied by current portfolio value.",
-            footnote_style
+            styles['footnote']
         ))
     
     # Charts
     if charts_data:
-        temp_files = add_charts_to_elements(elements, charts_data, page_width)
+        build_charts_row(elements, charts_data, page_width)
     
     # Footer
-    elements.append(Spacer(1, 0.3 * inch))
-    elements.append(Paragraph("[FOR INTERNAL PURPOSES ONLY - V1]", styles['footer']))
-    
+    build_page_footer(elements)
     elements.append(PageBreak())
-    
-    return elements, temp_files
-
-def create_disclaimers_page(client_name, report_date):
-    """
-    Creates the disclaimers page.
-    """
-    elements = []
-    styles = get_syfe_styles()
-    
-    # Header
-    elements.append(Paragraph(f"<b>Syfe</b>", ParagraphStyle(
-        name='BrandHeader',
-        fontName='Helvetica-Bold',
-        fontSize=16,
-        textColor=SYFE_COLORS['primary_blue']
-    )))
-    elements.append(Spacer(1, 0.1 * inch))
-    
-    header_style = ParagraphStyle(
-        name='PageHeader',
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        alignment=TA_LEFT,
-        textColor=SYFE_COLORS['dark_grey'],
-    )
-    elements.append(Paragraph(f"Client Name: {client_name}", header_style))
-    elements.append(Paragraph(f"Date: {report_date.strftime('%B %d, %Y')}", header_style))
-    elements.append(Spacer(1, 0.3 * inch))
-    
-    # Disclaimers title
-    elements.append(Paragraph("Disclaimers", styles['section_header']))
-    elements.append(Spacer(1, 0.2 * inch))
-    
-    # Disclaimer text
-    disclaimers = [
-        "Please review this statement carefully. If you disagree with any transactions, or if there are any errors or omissions, please notify our Investment Advisory Team at advisory@syfe.com as soon as possible. The statement will otherwise be considered conclusive.",
-        
-        "All figures are rounded to 2 decimal numbers. Amounts and units less than 0.01 are shown as <0.01.",
-        
-        "For Cash+ Guaranteed portfolios, the closing value shown in this statement includes the returns to-date and is indicative only. All Cash+ Guaranteed returns will only be available after maturity.",
-        
-        "Any values, forecast, projection or target is indicative only and is not guaranteed in any way. Past performances are not indicative of future performances. All forms of investments carry risks. The possibility exists that you could lose some or all your investments or deposits. If you have any doubt on this material or any offering documentation, you should seek independent professional advice.",
-        
-        "This material does not constitute an offer or invitation to anyone in any jurisdiction to invest in any of Syfe's product or use any Syfe's services where such offer or invitation is not lawful, or in which the person making such offer or invitation is not qualified to do so, nor has it been prepared in connection with any such offer or invitation.",
-        
-        "Syfe Pte. Ltd. is registered with the Monetary Authority of Singapore (\"MAS\") as a Capital Markets Services (\"CMS\") license holder to carry out retail fund management activities issued under the Securities and Futures Act (Singapore Statute Cap. 289)."
-    ]
-    
-    for disclaimer in disclaimers:
-        elements.append(Paragraph(disclaimer, styles['disclaimer']))
-    
-    elements.append(Spacer(1, 0.5 * inch))
-    
-    # Company info
-    company_info_style = ParagraphStyle(
-        name='CompanyInfo',
-        fontName='Helvetica-Bold',
-        fontSize=10,
-        textColor=SYFE_COLORS['navy'],
-        spaceBefore=4,
-        spaceAfter=2
-    )
-    
-    contact_style = ParagraphStyle(
-        name='Contact',
-        fontName='Helvetica',
-        fontSize=9,
-        textColor=SYFE_COLORS['dark_grey'],
-        spaceBefore=2,
-        spaceAfter=2
-    )
-    
-    elements.append(Paragraph("Syfe Pte. Ltd", company_info_style))
-    elements.append(Paragraph("4 Robinson Rd", contact_style))
-    elements.append(Paragraph("#11-01", contact_style))
-    elements.append(Paragraph("The House Of Eden", contact_style))
-    elements.append(Paragraph("Singapore 048543", contact_style))
-    elements.append(Spacer(1, 0.1 * inch))
-    elements.append(Paragraph("Email: advisory@syfe.com", contact_style))
-    elements.append(Paragraph("Phone: +65 6911 6863", contact_style))
-    elements.append(Paragraph("MAS License: CMS100837", contact_style))
-    
-    # Footer
-    elements.append(Spacer(1, 0.5 * inch))
-    elements.append(Paragraph("[FOR INTERNAL PURPOSES ONLY - V1]", styles['footer']))
     
     return elements
 
 # ==========================================
-# PAGE NUMBERING
+# PDF UTILITIES
 # ==========================================
 
-def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4)):
+def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4), skip_first=True, skip_last=True):
     """
     Adds 'Page X of Y' to the bottom right of each page.
+    Skips first page (cover) and last page (appendix) by default.
     """
     page_width, page_height = page_size
     reader = PdfReader(input_pdf)
     writer = PdfWriter()
     total_pages = len(reader.pages)
     
-    for page_num, page in enumerate(reader.pages, start=1):
+    # Calculate content pages (excluding cover and appendix)
+    content_pages = total_pages
+    if skip_first:
+        content_pages -= 1
+    if skip_last:
+        content_pages -= 1
+    
+    for page_idx, page in enumerate(reader.pages):
+        # Skip numbering for cover (first) and appendix (last)
+        if (skip_first and page_idx == 0) or (skip_last and page_idx == total_pages - 1):
+            writer.add_page(page)
+            continue
+        
+        # Calculate page number (adjusted for skipped pages)
+        page_num = page_idx if skip_first else page_idx + 1
+        
         packet = io.BytesIO()
         can = canvas.Canvas(packet, pagesize=page_size)
         can.setFont("Helvetica", 8)
         can.setFillColor(SYFE_COLORS['dark_grey'])
         
-        text = f"Page {page_num} of {total_pages}"
+        text = f"Page {page_num} of {content_pages}"
         text_width = can.stringWidth(text, "Helvetica", 8)
         
         x_pos = page_width - 50 - text_width
@@ -793,36 +535,21 @@ def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4)):
     with open(output_pdf, "wb") as f:
         writer.write(f)
 
-def merge_with_template(template_pdf_path, overlay_pdf_path, output_pdf_path):
-    """
-    Merges content (overlay) onto a background template.
-    """
-    if not os.path.exists(template_pdf_path):
-        # If template doesn't exist, just copy the overlay
-        import shutil
-        shutil.copy(overlay_pdf_path, output_pdf_path)
-        return
+def merge_pdfs(pdf_list, output_path):
+    """Merge multiple PDFs into one."""
+    writer = PdfWriter()
     
-    template_pdf = PdfReader(template_pdf_path)
-    overlay_pdf = PdfReader(overlay_pdf_path)
-    output_pdf = PdfWriter()
+    for pdf_path in pdf_list:
+        if os.path.exists(pdf_path):
+            reader = PdfReader(pdf_path)
+            for page in reader.pages:
+                writer.add_page(page)
     
-    template_page = template_pdf.pages[0]
-    
-    for page in overlay_pdf.pages:
-        new_page = template_page.create_blank_page(
-            width=template_page.mediabox.width,
-            height=template_page.mediabox.height
-        )
-        new_page.merge_page(template_page)
-        new_page.merge_page(page)
-        output_pdf.add_page(new_page)
-    
-    with open(output_pdf_path, "wb") as f:
-        output_pdf.write(f)
+    with open(output_path, "wb") as f:
+        writer.write(f)
 
 # ==========================================
-# MAIN REPORT GENERATOR
+# MAIN REPORT GENERATOR CLASS
 # ==========================================
 
 class PortfolioReportGenerator:
@@ -842,7 +569,6 @@ class PortfolioReportGenerator:
         self.client_id = str(client_id)
         self.report_date = report_date or date.today()
         self.data_path = data_path
-        self.temp_files = []
         
     def _get_template_path(self, filename):
         """Get full path to template file."""
@@ -858,7 +584,7 @@ class PortfolioReportGenerator:
         income_exposure_data=None,
         output_filename=None,
         include_cover=True,
-        include_disclaimers=True
+        include_appendix=True
     ):
         """
         Generate the complete portfolio report PDF.
@@ -871,8 +597,8 @@ class PortfolioReportGenerator:
             growth_exposure_data: Dict with exposure data for growth page
             income_exposure_data: Dict with exposure data for income page
             output_filename: Output PDF filename
-            include_cover: Whether to include cover page
-            include_disclaimers: Whether to include disclaimers page
+            include_cover: Whether to include cover page from template
+            include_appendix: Whether to include appendix page from template
         
         Returns:
             str: Path to generated PDF file
@@ -880,56 +606,49 @@ class PortfolioReportGenerator:
         if output_filename is None:
             output_filename = f"Client_{self.client_id}_Portfolio_Summary_{self.report_date.strftime('%Y%m%d')}.pdf"
         
-        all_elements = []
-        all_temp_files = []
+        # Page setup
+        page_size = landscape(A4)
+        page_width = page_size[0] - 1.0 * inch  # Account for margins
         
-        # Cover page
-        if include_cover:
-            cover_elements = create_cover_page(self.client_id, self.report_date)
-            all_elements.extend(cover_elements)
+        all_elements = []
         
         # Portfolio Summary page
-        summary_elements, temp_files = create_portfolio_summary_page(
+        summary_elements = create_portfolio_summary_page(
             df_portfolio_summary,
             exposure_data,
             self.client_id,
-            self.report_date
+            self.report_date,
+            page_width
         )
         all_elements.extend(summary_elements)
-        all_temp_files.extend(temp_files)
         
         # Growth Portfolios page
         if df_growth_portfolios is not None and not df_growth_portfolios.empty:
-            growth_elements, temp_files = create_growth_portfolios_page(
+            growth_elements = create_growth_portfolios_page(
                 df_growth_portfolios,
                 growth_exposure_data,
                 self.client_id,
-                self.report_date
+                self.report_date,
+                page_width
             )
             all_elements.extend(growth_elements)
-            all_temp_files.extend(temp_files)
         
         # Income & Preservation Portfolios page
         if df_income_portfolios is not None and not df_income_portfolios.empty:
-            income_elements, temp_files = create_income_preservation_page(
+            income_elements = create_income_preservation_page(
                 df_income_portfolios,
                 income_exposure_data,
                 self.client_id,
-                self.report_date
+                self.report_date,
+                page_width
             )
             all_elements.extend(income_elements)
-            all_temp_files.extend(temp_files)
         
-        # Disclaimers page
-        if include_disclaimers:
-            disclaimer_elements = create_disclaimers_page(self.client_id, self.report_date)
-            all_elements.extend(disclaimer_elements)
-        
-        # Build PDF
-        temp_pdf = "temp_report_content.pdf"
+        # Build content PDF
+        content_pdf = "temp_content.pdf"
         doc = SimpleDocTemplate(
-            temp_pdf,
-            pagesize=landscape(A4),
+            content_pdf,
+            pagesize=page_size,
             leftMargin=0.5 * inch,
             rightMargin=0.5 * inch,
             topMargin=0.4 * inch,
@@ -942,21 +661,37 @@ class PortfolioReportGenerator:
             print(f"Error building PDF: {e}")
             raise
         
-        # Add page numbers
-        numbered_pdf = "temp_numbered.pdf"
-        add_page_numbers(temp_pdf, numbered_pdf)
+        # Merge with cover and appendix
+        pdfs_to_merge = []
         
-        # Optionally merge with template
-        template_path = self._get_template_path("Portfolio_Visualiser_Template_Landscape.pdf")
-        if os.path.exists(template_path):
-            merge_with_template(template_path, numbered_pdf, output_filename)
-        else:
-            import shutil
-            shutil.copy(numbered_pdf, output_filename)
+        # Add cover page
+        cover_path = self._get_template_path("Portfolio_Visualiser_Cover.pdf")
+        if include_cover and os.path.exists(cover_path):
+            pdfs_to_merge.append(cover_path)
+        
+        # Add content
+        pdfs_to_merge.append(content_pdf)
+        
+        # Add appendix
+        appendix_path = self._get_template_path("Portfolio_Visualiser_Appendix.pdf")
+        if include_appendix and os.path.exists(appendix_path):
+            pdfs_to_merge.append(appendix_path)
+        
+        # Merge PDFs
+        merged_pdf = "temp_merged.pdf"
+        merge_pdfs(pdfs_to_merge, merged_pdf)
+        
+        # Add page numbers (skip cover and appendix)
+        add_page_numbers(
+            merged_pdf, 
+            output_filename, 
+            page_size=page_size,
+            skip_first=include_cover and os.path.exists(cover_path),
+            skip_last=include_appendix and os.path.exists(appendix_path)
+        )
         
         # Cleanup temp files
-        cleanup_files = [temp_pdf, numbered_pdf] + all_temp_files
-        for f in cleanup_files:
+        for f in [content_pdf, merged_pdf]:
             if os.path.exists(f):
                 try:
                     os.remove(f)
@@ -984,14 +719,7 @@ def prepare_portfolio_summary_df(portfolios_data):
     else:
         df = portfolios_data.copy()
     
-    # Expected columns for summary table
-    expected_cols = [
-        'Portfolio ID', 'Portfolio Type', 'Classification', 
-        'Risk rating (0-5)', 'Activated date', 'Value (SGD)', 
-        'Allocation', 'Portfolio Returns', 'Returns (Q1)'
-    ]
-    
-    # Rename columns if needed (map common variations)
+    # Column mapping
     col_mapping = {
         'portfolio_id': 'Portfolio ID',
         'portfolio_type': 'Portfolio Type',
@@ -1027,29 +755,21 @@ def prepare_portfolio_summary_df(portfolios_data):
             lambda x: f"{x:.2%}" if pd.notna(x) and isinstance(x, (int, float)) else x
         )
     
+    if 'Risk rating (0-5)' in df.columns:
+        df['Risk rating (0-5)'] = df['Risk rating (0-5)'].apply(
+            lambda x: f"{x:.1f}" if pd.notna(x) and isinstance(x, (int, float)) else x
+        )
+    
     return df
 
 def prepare_income_portfolio_df(portfolios_data):
     """
     Prepares the income portfolio DataFrame with yield columns.
-    
-    Args:
-        portfolios_data: List of dicts or DataFrame
-    
-    Returns:
-        DataFrame: Formatted for income portfolios table
     """
     if isinstance(portfolios_data, list):
         df = pd.DataFrame(portfolios_data)
     else:
         df = portfolios_data.copy()
-    
-    # Expected columns for income table
-    expected_cols = [
-        'Portfolio ID', 'Portfolio Type', 'Risk rating (0-5)', 
-        'Value (SGD)', 'Est. Yield (%)*', 'Ann. Proj. Dividend (SGD)**',
-        'Dividend Option', 'Maturity period', 'Allocation'
-    ]
     
     col_mapping = {
         'portfolio_id': 'Portfolio ID',
@@ -1074,11 +794,12 @@ def prepare_income_portfolio_df(portfolios_data):
             lambda x: f"{x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else x
         )
     
+    if 'Ann. Proj. Dividend (SGD)**' in df.columns:
+        df['Ann. Proj. Dividend (SGD)**'] = df['Ann. Proj. Dividend (SGD)**'].apply(
+            lambda x: f"{x:,.2f}" if pd.notna(x) and isinstance(x, (int, float)) else x
+        )
+    
     return df
-
-# ==========================================
-# CONVENIENCE FUNCTION
-# ==========================================
 
 def generate_client_report(
     client_id,
@@ -1090,17 +811,6 @@ def generate_client_report(
 ):
     """
     Convenience function to generate a client report.
-    
-    Args:
-        client_id: Client identifier
-        portfolio_data: Dict with 'summary', 'growth', 'income' DataFrames
-        exposure_data: Dict with 'summary', 'growth', 'income' exposure dicts
-        report_date: Report date
-        data_path: Path to data folder
-        output_path: Output file path
-    
-    Returns:
-        str: Path to generated PDF
     """
     generator = PortfolioReportGenerator(
         client_id=client_id,
@@ -1135,7 +845,7 @@ if __name__ == "__main__":
     print("Portfolio Report Generator - Example Usage")
     print("=" * 50)
     
-    # Create sample data matching the PDF structure
+    # Sample data matching the PDF structure
     df_summary = pd.DataFrame([
         {'Portfolio ID': '644643869', 'Portfolio Type': 'Core Equity100', 'Classification': 'Core', 
          'Risk rating (0-5)': 4.0, 'Activated date': 'April 9, 2025', 'Value (SGD)': 103466.88, 
@@ -1163,25 +873,17 @@ if __name__ == "__main__":
     # Sample exposure data
     exposure_data = {
         'asset_class': pd.Series({
-            'Fixed Income': 0.35,
-            'Equity': 0.25,
-            'Cash': 0.25,
-            'REITs': 0.15
+            'Cash & MMF': 0.6074,
+            'Fixed Income': 0.1755,
+            'REITs': 0.1587,
+            'Equity': 0.0584
         }),
         'country': pd.Series({
-            'United States': 0.45,
-            'Singapore': 0.30,
-            'China': 0.10,
-            'Japan': 0.08,
-            'Others': 0.07
-        }),
-        'sector': pd.Series({
-            'Financial Services': 0.20,
-            'Technology': 0.18,
-            'Real Estate': 0.15,
-            'Healthcare': 0.12,
-            'Consumer': 0.10,
-            'Others': 0.25
+            'Singapore': 0.6774,
+            'United States': 0.2050,
+            'Europe': 0.0520,
+            'Asia Pacific': 0.0400,
+            'Others': 0.0256
         })
     }
     
@@ -1200,11 +902,10 @@ if __name__ == "__main__":
             df_portfolio_summary=df_summary_formatted,
             exposure_data=exposure_data,
             include_cover=True,
-            include_disclaimers=True
+            include_appendix=True
         )
         print(f"\nSUCCESS: Report generated at {output_file}")
     except Exception as e:
         print(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
-

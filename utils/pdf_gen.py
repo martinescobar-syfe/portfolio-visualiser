@@ -378,8 +378,7 @@ def aggregate_by_portfolio_type(df):
     return agg_df
 
 def create_exposure_pie_chart(data, title, colors=None):
-    """Create a pie chart with Syfe styling."""
-    import plotly.graph_objects as go
+    """Create a pie chart with Syfe styling using Plotly."""
     
     if data is None or (isinstance(data, pd.Series) and data.empty):
         return None
@@ -421,6 +420,116 @@ def create_exposure_pie_chart(data, title, colors=None):
     )
     
     return fig
+
+
+def create_native_pie_chart_drawing(data, title="", width=220, height=180):
+    """
+    Creates a native ReportLab pie chart drawing (for PDF export without Plotly).
+    
+    Args:
+        data: pd.Series or dict with labels as keys and values as data
+        title: Chart title
+        width, height: Drawing dimensions
+    
+    Returns:
+        Drawing object or None
+    """
+    from reportlab.graphics.shapes import Drawing, String
+    from reportlab.graphics.charts.piecharts import Pie
+    from reportlab.graphics.charts.legends import Legend
+    from reportlab.lib import colors as rl_colors
+    
+    if data is None:
+        return None
+    
+    if isinstance(data, dict):
+        data = pd.Series(data)
+    
+    if data.empty or data.sum() == 0:
+        return None
+    
+    # Filter small values and normalize
+    data = data[data > 0.001]
+    total = data.sum()
+    data = data / total  # Normalize to percentages
+    
+    # Limit to top 8 + Others
+    if len(data) > 8:
+        top_data = data.head(7)
+        others = data.iloc[7:].sum()
+        if others > 0:
+            top_data = pd.concat([top_data, pd.Series({'Others': others})])
+        data = top_data
+    
+    # Native colors
+    PIE_COLORS_NATIVE = [
+        rl_colors.HexColor("#0052CC"),
+        rl_colors.HexColor("#36B37E"),
+        rl_colors.HexColor("#FFAB00"),
+        rl_colors.HexColor("#FF5630"),
+        rl_colors.HexColor("#00B8D9"),
+        rl_colors.HexColor("#6554C0"),
+        rl_colors.HexColor("#FF8B00"),
+        rl_colors.HexColor("#2684FF"),
+        rl_colors.HexColor("#4C9AFF"),
+        rl_colors.HexColor("#172B4D"),
+    ]
+    
+    # Create drawing
+    d = Drawing(width, height)
+    
+    # Create pie chart
+    pie = Pie()
+    pie.x = width // 2 - 50
+    pie.y = 25
+    pie.width = 100
+    pie.height = 100
+    pie.data = list(data.values)
+    pie.labels = None
+    
+    # Set colors
+    for i in range(len(data)):
+        pie.slices[i].fillColor = PIE_COLORS_NATIVE[i % len(PIE_COLORS_NATIVE)]
+        pie.slices[i].strokeColor = rl_colors.white
+        pie.slices[i].strokeWidth = 1
+    
+    # Create legend
+    legend = Legend()
+    legend.x = width - 90
+    legend.y = height - 30
+    legend.dx = 8
+    legend.dy = 8
+    legend.fontName = 'Helvetica'
+    legend.fontSize = 7
+    legend.boxAnchor = 'nw'
+    legend.columnMaximum = 10
+    legend.strokeWidth = 0.5
+    legend.strokeColor = rl_colors.white
+    legend.deltax = 5
+    legend.deltay = 3
+    legend.dxTextSpace = 4
+    legend.alignment = 'right'
+    
+    # Legend items with percentages
+    legend_items = []
+    for i, (label, value) in enumerate(data.items()):
+        color = PIE_COLORS_NATIVE[i % len(PIE_COLORS_NATIVE)]
+        pct = value * 100
+        short_label = str(label)[:12] + ('...' if len(str(label)) > 12 else '')
+        legend_items.append((color, f"{short_label} ({pct:.1f}%)"))
+    
+    legend.colorNamePairs = legend_items
+    
+    # Add title
+    title_str = String(width // 2, height - 10, title,
+                       fontName='Helvetica-Bold', fontSize=9,
+                       fillColor=rl_colors.HexColor("#172B4D"), textAnchor='middle')
+    
+    d.add(pie)
+    d.add(legend)
+    d.add(title_str)
+    
+    return d
 
 def generate_report_content(modules):
     """Gather data and charts based on selected modules."""
@@ -612,27 +721,131 @@ def render_export_ui(modules_selected):
             return
 
         with st.spinner("Generating PDF..."):
-            # 1. Gather Content
+            # Check if we have client data from either CSV or Metabase
+            df_port = None
+            client_info = {}
+            
+            # Try CSV upload first
+            if 'csv_client_df' in st.session_state and st.session_state['csv_client_df'] is not None:
+                df_port = st.session_state['csv_client_df'].copy()
+                client_info = st.session_state.get('metabase_client_info', {'client_id': 'CSV_Client'})
+            # Then try Metabase
+            elif 'metabase_client_df' in st.session_state and st.session_state['metabase_client_df'] is not None:
+                if not st.session_state['metabase_client_df'].empty:
+                    df_port = st.session_state['metabase_client_df'].copy()
+                    client_info = st.session_state.get('metabase_client_info', {'client_id': 'Client'})
+            
+            has_client_data = df_port is not None and not df_port.empty
+            
+            if has_client_data and "1. Client Data Source" in modules_selected:
+                # Use the PortfolioReportGenerator for proper formatting
+                try:
+                    client_id = str(client_info.get('client_id', 'Client')).replace(' ', '_')
+                    
+                    # Aggregate by portfolio type
+                    agg_df = aggregate_by_portfolio_type(df_port)
+                    
+                    if not agg_df.empty:
+                        # Prepare summary dataframe
+                        df_summary = format_dataframe_for_pdf(agg_df)
+                        
+                        # Build exposure data for charts
+                        exposure_data = {}
+                        val_col = None
+                        for c in agg_df.columns:
+                            if 'nav' in c.lower() or 'value' in c.lower() or 'balance' in c.lower():
+                                val_col = c
+                                break
+                        
+                        if val_col:
+                            # By Classification (Asset Class)
+                            if 'classification' in agg_df.columns:
+                                class_exp = agg_df.groupby('classification')[val_col].sum()
+                                class_exp = class_exp / class_exp.sum()
+                                exposure_data['asset_class'] = class_exp
+                            
+                            # By Objective (using country slot)
+                            if 'objective' in agg_df.columns:
+                                obj_exp = agg_df.groupby('objective')[val_col].sum()
+                                obj_exp = obj_exp / obj_exp.sum()
+                                exposure_data['country'] = obj_exp
+                            
+                            # By Portfolio Type (using sector slot)
+                            type_col = None
+                            for c in ['type', 'portfolio_type', 'name']:
+                                if c in agg_df.columns:
+                                    type_col = c
+                                    break
+                            if type_col:
+                                type_exp = agg_df.groupby(type_col)[val_col].sum()
+                                type_exp = type_exp / type_exp.sum()
+                                exposure_data['sector'] = type_exp
+                        
+                        # Generate report using the generator
+                        generator = PortfolioReportGenerator(
+                            client_id=client_id,
+                            report_date=date.today(),
+                            data_path='Data/'
+                        )
+                        
+                        final_filename = f"Client_{client_id}_Portfolio_Summary_{date.today().strftime('%Y%m%d')}.pdf"
+                        
+                        generated_file = generator.generate_report(
+                            df_portfolio_summary=df_summary,
+                            exposure_data=exposure_data if exposure_data else None,
+                            output_filename=final_filename,
+                            include_cover=True,
+                            include_appendix=True
+                        )
+                        
+                        # Read for download
+                        with open(generated_file, "rb") as f:
+                            pdf_data = f.read()
+                        
+                        st.success("PDF generated successfully with Cover and Appendix!")
+                        
+                        st.download_button(
+                            label="📥 Download Portfolio Summary PDF",
+                            data=pdf_data,
+                            file_name=final_filename,
+                            mime="application/pdf"
+                        )
+                        
+                        # Cleanup
+                        if os.path.exists(generated_file):
+                            os.remove(generated_file)
+                        
+                        return
+                    else:
+                        st.warning("Could not aggregate portfolio data.")
+                        
+                except Exception as e:
+                    st.error(f"Error generating PDF: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                    return
+            
+            # Fallback to standard export if no client data
             content_blocks = generate_report_content(modules_selected)
             
             if not content_blocks:
-                st.warning("No data found for selected modules. Run analysis first.")
+                st.warning("No data found for selected modules. Please load client data first (CSV or Metabase).")
                 return
 
-            # 2. Create Temp PDF
+            # Create Temp PDF
             temp_filename = "temp_report.pdf"
             final_filename = f"Portfolio_Report_{datetime.date.today()}.pdf"
             
             create_pdf_with_table_and_charts(temp_filename, content_blocks)
             
-            # 3. Add Page Numbers
+            # Add Page Numbers
             add_page_numbers(temp_filename, final_filename)
             
-            # 4. Read back for download
+            # Read back for download
             with open(final_filename, "rb") as f:
                 pdf_data = f.read()
             
-            # 5. Show Download Button
+            # Show Download Button
             st.download_button(
                 label="📥 Download PDF Report",
                 data=pdf_data,

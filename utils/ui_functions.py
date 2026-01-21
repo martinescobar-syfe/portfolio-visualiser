@@ -64,6 +64,18 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 # Filter for ACTIVE
                 if 'status' in df_client.columns:
                     df_client = df_client[df_client['status'] == 'ACTIVE']
+                
+                # Store in session state for PDF export
+                st.session_state['csv_client_df'] = df_client
+                st.session_state['metabase_client_df'] = df_client  # Also set this for compatibility
+                st.session_state['metabase_client_info'] = {
+                    'client_id': 'CSV Upload',
+                    'name': uploaded_file.name.replace('.csv', ''),
+                    'age': None,
+                    'risk_score': None
+                }
+                st.success(f"Loaded {len(df_client)} portfolios from CSV")
+                
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
 
