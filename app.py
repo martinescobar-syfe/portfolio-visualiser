@@ -128,6 +128,23 @@ bm_tickers = ['SPY', 'ACWI', 'URTH'] # Default value, can be updated by user in 
 
 with st.container():
     st.markdown("## Portfolio Visualiser")
+
+    # --- Module Export Selector (Cosmetic for now) ---
+    export_modules = st.multiselect(
+        "Select Modules for Export",
+        [
+            "1. Client Data Source",
+            "2. Syfe Portfolio Recommender",
+            "3. Portfolio Construction",
+            "4. Analysis Results",
+            "5. Exposure Analysis",
+            "6. Factor Exposures",
+            "7. Cash Flow Analysis and Growth Forecast Calculator"
+        ],
+        default=[],
+        key="module_export_selector",
+        help="Select sections to include in the generated PDF report."
+    )
     
     # --- Client Type Selection ---
     client_type = st.radio(

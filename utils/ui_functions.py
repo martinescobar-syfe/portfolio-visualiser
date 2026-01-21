@@ -579,7 +579,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
         format_holdings_dataframe
     )
     
-    st.header("2. Client PDF Upload")
+    st.header("1.1 Client PDF Upload")
     st.markdown("Upload a PDF document (e.g., brokerage statement) to extract stock holdings and analyze country/sector exposure.")
     
     # Presentation Currency Selector
@@ -890,10 +890,9 @@ from utils.llm_helper import get_recommendation_narrative
 
 
 def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
-    st.header("Syfe Portfolio Recommender (Risk Engine)")
-
+    st.header("2. Syfe Portfolio Recommender")
     # --- Step 1: Personal & Financial Profile ---
-    st.subheader("1. Personal & Financial Profile")
+    st.subheader("2.1 Personal & Financial Profile")
     
     col_p1, col_p2 = st.columns(2)
     with col_p1:
@@ -942,7 +941,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     )
 
     # --- Step 2: Risk Tolerance & Horizon ---
-    st.subheader("2. Risk Tolerance & Horizon")
+    st.subheader("2.2 Risk Assessment")
     
     # We need a primary objective to guide the risk questions, or just ask generic ones?
     # User said "Goals need to be defined and typed".
@@ -992,7 +991,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     )
 
     # --- Step 3: Investment Goals ---
-    st.subheader("3. Investment Goals")
+    st.subheader("2.3 Investment Goals")
     st.markdown("Please define your goals below.")
     
     # Default data for the table
@@ -1032,7 +1031,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                                  key=f"{key_prefix}_ai_toggle")
 
     # --- Step 4: Qualitative & Check ---
-    st.subheader("4. Additional Details")
+    st.subheader("2.4 Additional Details")
     qualitative_details = st.text_area(
         "Additional Qualitative Inputs", 
         placeholder="Any other details relevant to your financial situation (e.g., existing liabilities, preferences, constraints)...",
@@ -1264,7 +1263,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 st.warning("No structured portfolio data found. Please regenerate.")
 
 def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency, backtest_offset_days, data_path, df_fi_metrics, df_fx, df_daily_ret, key_prefix="cons"):
-    st.header("2. Portfolio Construction")
+    st.header("3. Portfolio Construction")
     
     # Calculate Data Date Range for Tooltips
     start_str = "N/A"
@@ -1557,7 +1556,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         results_data = st.session_state.get('optimization_results')
 
     if results_data:
-        st.header("3. Analysis Results")
+        st.header("4. Analysis Results")
         
         # --- Currency Selection for Analysis ---
 
@@ -1907,7 +1906,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
 
     # --- Exposure Analysis ---
     if st.session_state.optimization_results:
-        st.header("4. Exposure Analysis")
+        st.header("5. Exposure Analysis")
         
         res_data = st.session_state.optimization_results
         results = res_data['results']
@@ -2093,7 +2092,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
 
     # --- Factor Exposures ---
     if st.session_state.optimization_results:
-        st.header("5. Factor Exposures")
+        st.header("6. Factor Exposures")
     
         st.markdown("""
         **Fama-French 5-Factor Model** exposure coefficients:
@@ -2249,7 +2248,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         }
     
         if portfolios_with_cash:
-            st.header("6. Cash Flow Analysis")
+            st.header("7. Cash Flow Analysis and Growth Forecast Calculator")
             st.markdown("**Projected monthly cash flows based on portfolio yields and cash invested.**")
         
             # Currency and Portfolio selection row
@@ -2620,7 +2619,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
         # --- Growth Forecast Calculator ---
         st.markdown("---")
-        st.header("Growth Forecast Calculator")
+        st.header("7.1 Growth Forecast Calculator")
         st.caption("Project future portfolio value based on historical returns")
         
         if st.session_state.portfolios:
