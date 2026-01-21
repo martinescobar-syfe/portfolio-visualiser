@@ -71,7 +71,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
     with tab_metabase:
         c_id, c_btn = st.columns([3, 1])
         with c_id:
-            client_id_input = st.text_input("Client ID", key=f"{key_prefix}_meta_id", placeholder="e.g. 556208915")
+            client_id_input = st.text_input("Client ID", key=f"{key_prefix}_meta_id")
         with c_btn:
             st.write("") # Spacer
             st.write("") 
@@ -2420,8 +2420,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     latest_weights = weights_df.iloc[-1]
                 
                     for ticker in port['tickers']:
-                        # Skip CORE portfolios - dividends are auto-reinvested, no cash payout
-                        if 'CORE' in ticker.upper():
+                        # Skip CORE and Thematic portfolios - dividends are auto-reinvested, no cash payout
+                        ticker_upper = ticker.upper()
+                        if ('CORE' in ticker_upper or 
+                            'CHINA GROWTH' in ticker_upper or 
+                            'ESG' in ticker_upper or 
+                            'HEALTHCARE' in ticker_upper or 
+                            'DISRUPTIVE' in ticker_upper):
                             continue
                             
                         weight_col = f"{ticker}_wgt"

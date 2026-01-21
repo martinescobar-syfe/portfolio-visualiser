@@ -5,9 +5,7 @@ import requests
 import streamlit as st
 import pandas as pd
 
-# Constants
 METABASE_URL = "https://metabase.internal.syfe.com"
-# Note: In a production environment, this should be in secrets/env vars
 API_KEY = "mb_5fsl6dNzjFaylX86lm9rsJnEHc+0dVDIrP+e+tYjetA="
 
 HEADERS = {
@@ -31,8 +29,14 @@ def run_card(card_id, params=None):
         else:
             st.error(f"Metabase API Error {response.status_code}: {response.text}")
             return []
+    except requests.exceptions.ConnectTimeout:
+        st.error("Connection to Metabase timed out. Please ensure you are connected to the Syfe VPN.")
+        return []
+    except requests.exceptions.ConnectionError:
+        st.error("Connection to Metabase failed. Please check your network and VPN connection.")
+        return []
     except Exception as e:
-        st.error(f"Connection to Metabase failed: {str(e)}")
+        st.error(f"An unexpected error occurred connecting to Metabase: {str(e)}")
         return []
 
 def get_client_info_by_email(email):
