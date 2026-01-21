@@ -17,7 +17,8 @@ from utils.data_loader import download_data
 import port_cons as pc
 from styles.syfe_colors import PALETTE
 import os
-from utils.llm_helper import get_gemini_recommendation, parse_recommendation_table
+from utils.llm_helper import get_gemini_recommendation, parse_recommendation_table, analyze_portfolio_appropriateness
+from utils.metabase_helper import get_client_info_by_id, get_active_portfolios
 import requests
 import zipfile
 import io
@@ -43,444 +44,526 @@ def get_portfolio_objective(portfolio_name):
 
 
 def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, key_prefix="upload"):
-    st.header("1. Client Data Upload")
-    uploaded_file = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key=f"{key_prefix}_file_uploader")
+    st.header("1. Client Data Source")
+    
+    # Create tabs for different data sources
+    tab_csv, tab_metabase = st.tabs(["📂 CSV Upload", "🔍 Metabase Lookup"])
+    
+    df_client = None
+    
+    # --- Tab 1: CSV Upload ---
+    with tab_csv:
+        uploaded_file = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key=f"{key_prefix}_file_uploader")
+        if uploaded_file:
+            try:
+                df_client = pd.read_csv(uploaded_file)
+                # Standardize naming
+                if 'type' in df_client.columns:
+                    df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
+                    df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
+                # Filter for ACTIVE
+                if 'status' in df_client.columns:
+                    df_client = df_client[df_client['status'] == 'ACTIVE']
+            except Exception as e:
+                st.error(f"Error reading CSV: {e}")
 
-    if uploaded_file:
-        try:
-            df_client = pd.read_csv(uploaded_file)
+    # --- Tab 2: Metabase Lookup ---
+    with tab_metabase:
+        c_id, c_btn = st.columns([3, 1])
+        with c_id:
+            client_id_input = st.text_input("Client ID", key=f"{key_prefix}_meta_id", placeholder="e.g. 556208915")
+        with c_btn:
+            st.write("") # Spacer
+            st.write("") 
+            lookup_clicked = st.button("Fetch Client", key=f"{key_prefix}_meta_btn")
             
-            # Standardize naming in the dataframe itself to handle user casing inconsistencies (BlackRock vs Blackrock)
-            if 'type' in df_client.columns:
-                df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
-                df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
-        
-            # Filter for ACTIVE portfolios
-            if 'status' in df_client.columns:
-                df_client = df_client[df_client['status'] == 'ACTIVE']
-        
-            # Mapping logic - handles various naming conventions from CSV exports
-            # Keys are normalized (uppercase, underscores, no _ACTIVE suffix)
-            CLIENT_PORTFOLIO_MAPPING = {
-                # Core Portfolios
-                'GLOBAL_EQUITY_100': 'Core Equity100',
-                'GLOBAL_EQUITY': 'Core Equity100',
-                'CORE_EQUITY100': 'Core Equity100',
-                'CORE_EQUITY_100': 'Core Equity100',
-                'EQUITY100': 'Core Equity100',
-                'CORE_GROWTH': 'Core Growth',
-                'CORE_BALANCED': 'Core Balanced',
-                'CORE_DEFENSIVE': 'Core Defensive',
-                'DOWNSIDE_PROTECTED': 'Downside protected',
-                # Thematic Portfolios
-                'CHINA_GROWTH': 'China Growth',
-                'DISRUPTIVE_TECHNOLOGY': 'Disruptive Technology',
-                'DISRUPTIVE_TECH': 'Disruptive Technology',
-                'ESG_AND_CLEAN_ENERGY': 'ESG & Clean Energy',
-                'ESG_CLEAN_ENERGY': 'ESG & Clean Energy',
-                'HEALTHCARE_INNOVATION': 'Healthcare Innovation',
-                # Income Portfolios
-                'INCOME_ENHANCE': 'Income Enhance',
-                'INCOME_ENHANCED': 'Income Enhance',
-                'INCOME_PRESERVE': 'Income Preserve',
-                # REIT Portfolios
-                'REIT': 'REIT 100',
-                'REIT_100': 'REIT 100',
-                'REIT_RISK_MANAGED': 'REIT Risk Managed',
-                'REIT_RM': 'REIT Risk Managed',
-                # Private Credit / AI Products
-                'BLACKROCK': 'Blackrock Private Credit Fund',
-                'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
-                'BLACKROCK_PCF': 'Blackrock Private Credit Fund',
-                'MONROE': 'Monroe Income Plus Fund',
-                'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
-                'MONROE_CAPITAL': 'Monroe Income Plus Fund',
-                'SILVERDALE': 'Silverdale Fund (Nov 2027)',
-                # Cash Management
-                'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
-                'CASH_PLUS_GUARANTEED': 'Cash SGD guaranteed',
-                'CASH_GUARANTEED': 'Cash SGD guaranteed',
-                'CASH_PLUS_USD': 'Cash USD flexi',
-                'CASH_USD': 'Cash USD flexi',
-                'CASH_PLUS': 'Cash SGD flexi',
-                'CASH_SGD': 'Cash SGD flexi',
-                'CASH_PLUS_SGD': 'Cash SGD flexi',
-                # SRS Portfolios
-                'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
-                'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
-                'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
-                'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
-                'SRS_CASH': 'SRS Cash SGD flexi',
-                'SRS_GLOBAL_EQUITY_100': 'SRS Equity100',
-                'SRS_EQUITY100': 'SRS Equity100',
-                'SRS_EQUITY_100': 'SRS Equity100',
-            }
-            
-            def normalize_portfolio_type(p_type):
-                """Normalize portfolio type string for mapping."""
-                if not isinstance(p_type, str):
-                    return None
-                # Uppercase, remove _ACTIVE suffix, strip whitespace
-                normalized = p_type.upper().strip()
-                # Remove common suffixes
-                for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED', '_PENDING']:
-                    if normalized.endswith(suffix):
-                        normalized = normalized[:-len(suffix)]
-                return normalized
-
-            # Objective Mapping
-            OBJECTIVE_MAPPING = {
-                'Core Equity100': 'Wealth Growth',
-                'SRS Equity100': 'Wealth Growth',
-                'China Growth': 'Wealth Growth',
-                'REIT 100': 'Income Generation',
-                'Income Enhance': 'Income Generation',
-                'SRS Income Enhance': 'Income Generation',
-                'Blackrock PCF': 'Income Generation',
-                'Income Preserve': 'Capital Preservation',
-                'SRS Income Preserve': 'Capital Preservation',
-                'Cash SGD guaranteed': 'Capital Preservation',
-                'Cash SGD flexi': 'Capital Preservation',
-                'Cash USD flexi': 'Capital Preservation'
-            }
-        
-            # Process data to get ticker weights
-            client_holdings = {}
-            total_nav = 0.0
-            
-            # Helper function to safely convert to float
-            def safe_float(val, default=0.0):
-                if pd.isna(val):
-                    return default
+        if lookup_clicked and client_id_input:
+            with st.spinner("Fetching client data from Metabase..."):
                 try:
-                    return float(str(val).replace(',', ''))
-                except (ValueError, TypeError):
-                    return default
-        
-            for index, row in df_client.iterrows():
-                p_type = row.get('type', None)
-                currency = str(row.get('currency', 'SGD'))
-                nav = safe_float(row.get('nav_in_sgd', 0))
-            
-                if nav < 50: # Ignore small balances
-                    continue
-                
-                ticker = None
-                
-                # Normalize the portfolio type
-                normalized_type = normalize_portfolio_type(p_type)
-                
-                if normalized_type is None:
-                    continue
-            
-                # Special handling for CASH_PLUS variants
-                if 'CASH' in normalized_type and 'PLUS' in normalized_type:
-                    if currency == 'USD' or 'USD' in normalized_type:
-                        ticker = 'Cash USD flexi'
-                    elif 'GUARANTEED' in normalized_type:
-                        ticker = 'Cash SGD guaranteed'
-                    else:
-                        ticker = 'Cash SGD flexi'
-                elif normalized_type in CLIENT_PORTFOLIO_MAPPING:
-                    ticker = CLIENT_PORTFOLIO_MAPPING[normalized_type]
-            
-                if ticker:
-                    client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
-                    total_nav += nav
-        
-            if total_nav > 0:
-                # Calculate weights
-                client_weights = {k: v/total_nav for k, v in client_holdings.items()}
-            
-                # Calculate Asset Allocation
-                asset_allocation = {}
-                for ticker, weight in client_weights.items():
-                    if ticker in df_asset_class.columns:
-                        # Get asset breakdown for this ticker
-                        ticker_assets = df_asset_class[ticker]
-                        for asset, asset_weight in ticker_assets.items():
-                            # Safely convert asset_weight to float
-                            try:
-                                aw = float(asset_weight) if not pd.isna(asset_weight) else 0.0
-                            except (ValueError, TypeError):
-                                aw = 0.0
-                            if aw > 0:
-                                asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
-                    else:
-                        # Check if it's an AI investment (Blackrock, Monroe)
-                        if 'blackrock' in ticker.lower() or 'monroe' in ticker.lower():
-                            asset_allocation['Alternative Investments'] = asset_allocation.get('Alternative Investments', 0.0) + weight
-                        else:
-                            # Fallback for other unknown tickers
-                            asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
+                    # Clean input
+                    client_id_str = client_id_input.strip()
+                    client_id = int(client_id_str) # Convert to int for logic
+                    
+                    # 1. Get Client Info
+                    client_info = get_client_info_by_id(client_id)
+                    
+                    if client_info.get('client_id'):
+                        # 2. Get Portfolios
+                        fetched_df = get_active_portfolios(client_info.get('client_id'))
+                        
+                        # Store in session state
+                        st.session_state['metabase_client_info'] = client_info
+                        st.session_state['metabase_client_df'] = fetched_df
+                        st.session_state['client_profile'] = {
+                            'name': client_info.get('name'),
+                            'age': client_info.get('age'),
+                            'risk_score': client_info.get('risk_score'),
+                            'email': client_info.get('email')
+                        }
+                        
+                        # --- Auto-Generate AI Analysis ---
+                        with st.spinner("Generating AI Analysis..."):
+                            holdings_list = fetched_df[['name', 'type', 'nav_in_sgd']].to_dict('records')
+                            ai_analysis = analyze_portfolio_appropriateness(
+                                "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0", # Hardcoded key
+                                st.session_state['client_profile'],
+                                holdings_list
+                            )
+                            st.session_state['metabase_ai_analysis'] = ai_analysis
+                            
+                        st.success(f"Found client: {client_info.get('name')} (ID: {client_info.get('client_id')})") # Temporary success message
 
-                # Calculate Objective Allocation
-                objective_allocation = {}
+                    else:
+                        st.error("Client not found or invalid ID.")
+                        
+                except Exception as e:
+                    st.error(f"Error fetching data: {e}")
+
+        # --- Persisted Display Logic (Runs if data exists in session state) ---
+        if st.session_state.get('metabase_client_info') and st.session_state.get('metabase_client_df') is not None:
+            c_info = st.session_state['metabase_client_info']
+            df_display = st.session_state['metabase_client_df']
+            
+            # Display Client Profile
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Name", c_info.get('name'))
+            c2.metric("Age", c_info.get('age'))
+            c3.metric("Risk Score", c_info.get('risk_score'))
+            
+            # Display Portfolios
+            if not df_display.empty:
+                st.dataframe(df_display[['name', 'type', 'nav_in_sgd', 'pnl_inception']], use_container_width=True)
+                df_client = df_display # Set for downstream processing
+            else:
+                st.warning("Client has no ACTIVE portfolios.")
+
+    # --- Common Processing (runs if df_client is populated from either source) ---
+    if df_client is not None and not df_client.empty:
+        # Mapping logic - handles various naming conventions
+        CLIENT_PORTFOLIO_MAPPING = {
+            # Core Portfolios
+            'GLOBAL_EQUITY_100': 'Core Equity100',
+            'GLOBAL_EQUITY': 'Core Equity100',
+            'CORE_EQUITY100': 'Core Equity100',
+            'CORE_EQUITY_100': 'Core Equity100',
+            'EQUITY100': 'Core Equity100',
+            'CORE_GROWTH': 'Core Growth',
+            'CORE_BALANCED': 'Core Balanced',
+            'CORE_DEFENSIVE': 'Core Defensive',
+            'DOWNSIDE_PROTECTED': 'Downside protected',
+            # Thematic Portfolios
+            'CHINA_GROWTH': 'China Growth',
+            'DISRUPTIVE_TECHNOLOGY': 'Disruptive Technology',
+            'DISRUPTIVE_TECH': 'Disruptive Technology',
+            'ESG_AND_CLEAN_ENERGY': 'ESG & Clean Energy',
+            'ESG_CLEAN_ENERGY': 'ESG & Clean Energy',
+            'HEALTHCARE_INNOVATION': 'Healthcare Innovation',
+            # Income Portfolios
+            'INCOME_ENHANCE': 'Income Enhance',
+            'INCOME_ENHANCED': 'Income Enhance',
+            'INCOME_PRESERVE': 'Income Preserve',
+            # REIT Portfolios
+            'REIT': 'REIT 100',
+            'REIT_100': 'REIT 100',
+            'REIT_RISK_MANAGED': 'REIT Risk Managed',
+            'REIT_RM': 'REIT Risk Managed',
+            # Private Credit / AI Products
+            'BLACKROCK': 'Blackrock Private Credit Fund',
+            'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
+            'BLACKROCK_PCF': 'Blackrock Private Credit Fund',
+            'MONROE': 'Monroe Income Plus Fund',
+            'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
+            'MONROE_CAPITAL': 'Monroe Income Plus Fund',
+            'SILVERDALE': 'Silverdale Fund (Nov 2027)',
+            # Cash Management
+            'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
+            'CASH_PLUS_GUARANTEED': 'Cash SGD guaranteed',
+            'CASH_GUARANTEED': 'Cash SGD guaranteed',
+            'CASH_PLUS_USD': 'Cash USD flexi',
+            'CASH_USD': 'Cash USD flexi',
+            'CASH_PLUS': 'Cash SGD flexi',
+            'CASH_SGD': 'Cash SGD flexi',
+            'CASH_PLUS_SGD': 'Cash SGD flexi',
+            # SRS Portfolios
+            'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
+            'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
+            'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
+            'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
+            'SRS_CASH': 'SRS Cash SGD flexi',
+            'SRS_GLOBAL_EQUITY_100': 'SRS Equity100',
+            'SRS_EQUITY100': 'SRS Equity100',
+            'SRS_EQUITY_100': 'SRS Equity100',
+        }
+        
+        def normalize_portfolio_type(p_type):
+            """Normalize portfolio type string for mapping."""
+            if not isinstance(p_type, str):
+                return None
+            # Uppercase, remove _ACTIVE suffix, strip whitespace
+            normalized = p_type.upper().strip()
+            # Remove common suffixes
+            for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED', '_PENDING']:
+                if normalized.endswith(suffix):
+                    normalized = normalized[:-len(suffix)]
+            return normalized
+
+        # Objective Mapping
+        OBJECTIVE_MAPPING = {
+            'Core Equity100': 'Wealth Growth',
+            'SRS Equity100': 'Wealth Growth',
+            'China Growth': 'Wealth Growth',
+            'REIT 100': 'Income Generation',
+            'Income Enhance': 'Income Generation',
+            'SRS Income Enhance': 'Income Generation',
+            'Blackrock PCF': 'Income Generation',
+            'Income Preserve': 'Capital Preservation',
+            'SRS Income Preserve': 'Capital Preservation',
+            'Cash SGD guaranteed': 'Capital Preservation',
+            'Cash SGD flexi': 'Capital Preservation',
+            'Cash USD flexi': 'Capital Preservation'
+        }
+    
+        # Process data to get ticker weights
+        client_holdings = {}
+        total_nav = 0.0
+        
+        # Helper function to safely convert to float
+        def safe_float(val, default=0.0):
+            if pd.isna(val):
+                return default
+            try:
+                return float(str(val).replace(',', ''))
+            except (ValueError, TypeError):
+                return default
+    
+        for index, row in df_client.iterrows():
+            p_type = row.get('type', None)
+            currency = str(row.get('currency', 'SGD'))
+            nav = safe_float(row.get('nav_in_sgd', 0))
+        
+            if nav < 50: # Ignore small balances
+                continue
+            
+            ticker = None
+            
+            # Normalize the portfolio type
+            normalized_type = normalize_portfolio_type(p_type)
+            
+            if normalized_type is None:
+                continue
+        
+            # Special handling for CASH_PLUS variants
+            if 'CASH' in normalized_type and 'PLUS' in normalized_type:
+                if currency == 'USD' or 'USD' in normalized_type:
+                    ticker = 'Cash USD flexi'
+                elif 'GUARANTEED' in normalized_type:
+                    ticker = 'Cash SGD guaranteed'
+                else:
+                    ticker = 'Cash SGD flexi'
+            elif normalized_type in CLIENT_PORTFOLIO_MAPPING:
+                ticker = CLIENT_PORTFOLIO_MAPPING[normalized_type]
+        
+            if ticker:
+                client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
+                total_nav += nav
+    
+        if total_nav > 0:
+            # Calculate weights
+            client_weights = {k: v/total_nav for k, v in client_holdings.items()}
+        
+            # Calculate Asset Allocation
+            asset_allocation = {}
+            for ticker, weight in client_weights.items():
+                if ticker in df_asset_class.columns:
+                    # Get asset breakdown for this ticker
+                    ticker_assets = df_asset_class[ticker]
+                    for asset, asset_weight in ticker_assets.items():
+                        # Safely convert asset_weight to float
+                        try:
+                            aw = float(asset_weight) if not pd.isna(asset_weight) else 0.0
+                        except (ValueError, TypeError):
+                            aw = 0.0
+                        if aw > 0:
+                            asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
+                else:
+                    # Check if it's an AI investment (Blackrock, Monroe)
+                    if 'blackrock' in ticker.lower() or 'monroe' in ticker.lower():
+                        asset_allocation['Alternative Investments'] = asset_allocation.get('Alternative Investments', 0.0) + weight
+                    else:
+                        # Fallback for other unknown tickers
+                        asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
+
+            # Calculate Objective Allocation
+            objective_allocation = {}
+            for ticker, weight in client_weights.items():
+                obj = get_portfolio_objective(ticker)
+                objective_allocation[obj] = objective_allocation.get(obj, 0.0) + weight
+
+            # --- Natural Summary ---
+            st.markdown("### Portfolio Summary")
+            
+            # Identify top portfolio types
+            sorted_ports = sorted(client_weights.items(), key=lambda x: x[1], reverse=True)
+            top_port = sorted_ports[0][0] if sorted_ports else "N/A"
+            
+            # Identify dominant objective
+            sorted_objs = sorted(objective_allocation.items(), key=lambda x: x[1], reverse=True)
+            top_obj = sorted_objs[0][0] if sorted_objs else "N/A"
+            
+            # Identify top underlying (concentration) across all portfolios
+            # We need to re-calculate concentration here for the summary text
+            top_holdings_str = ""
+            if df_underlying is not None and not df_underlying.empty:
+                # Calculate strict top 3 for summary
+                # Re-use exposure logic
+                # Create a series from client_weights
+                w_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
+                conc_exp = get_concentration_exposure(w_series, df_underlying, top_n=3)
+                if not conc_exp.empty:
+                    top_3 = conc_exp.head(3)
+                    top_holdings_str = ", ".join([f"{n} ({w:.1%})" for n, w in top_3.items()])
+            
+            summary_text = f"Your current portfolio is primarily allocated to **{top_port}**, aligning with a **{top_obj}** objective."
+            if top_holdings_str:
+                summary_text += f" Across your holdings, your top underlying exposures are **{top_holdings_str}**."
+            
+            if 'Unclassified' in objective_allocation and objective_allocation['Unclassified'] > 0.1:
+                summary_text += f" Note: {objective_allocation['Unclassified']:.1%} of your portfolio is in unclassified or custom assets."
+            
+            st.info(summary_text)
+
+            # --- NEW: Gemini Appropriateness Report ---
+            # --- NEW: Gemini Appropriateness Report (Persisted) ---
+            if 'metabase_ai_analysis' in st.session_state:
+                with st.expander("✨ Insights", expanded=True):
+                     st.markdown(st.session_state['metabase_ai_analysis'])
+
+            # --- NEW: Tabs for Allocation vs Exposures ---
+            tab_alloc, tab_exposures = st.tabs(["Client Portfolio Allocation", "Client Exposures"])
+
+            with tab_alloc:
+                col_p1, col_p2, col_p3 = st.columns(3)
+            
+                with col_p1:
+                    st.markdown("**By Portfolio Type**")
+                    # Use consistent colors based on portfolio's objective
+                    from styles.syfe_colors import get_portfolio_color
+                    portfolio_colors = {name: get_portfolio_color(name) for name in client_weights.keys()}
+                    fig_client = px.pie(
+                        values=list(client_weights.values()),
+                        names=list(client_weights.keys()),
+                        title=f"Total NAV: ${total_nav:,.2f}",
+                        color=list(client_weights.keys()),
+                        color_discrete_map=portfolio_colors
+                    )
+                    # Remove % labels, show decimals on hover
+                    fig_client.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
+                    st.plotly_chart(fig_client, use_container_width=True, key=f"{key_prefix}_pie_client")
+            
+                with col_p2:
+                    st.markdown("**By Asset Class**")
+                    # Filter out small values for cleaner chart and group into Others
+                    threshold = 0.01 # 1% threshold
+                    final_asset_alloc = {}
+                    others_val = 0.0
+                    
+                    for k, v in asset_allocation.items():
+                        if v >= threshold:
+                            final_asset_alloc[k] = v
+                        else:
+                            others_val += v
+                    
+                    if others_val > 0:
+                        final_asset_alloc['Others'] = others_val
+                    
+                    # Use consistent asset class colors
+                    from styles.syfe_colors import get_asset_class_color
+                    asset_colors = {name: get_asset_class_color(name) for name in final_asset_alloc.keys()}
+                    fig_asset = px.pie(
+                        values=list(final_asset_alloc.values()),
+                        names=list(final_asset_alloc.keys()),
+                        title="Asset Allocation",
+                        color=list(final_asset_alloc.keys()),
+                        color_discrete_map=asset_colors
+                    )
+                    # Remove % labels, show decimals on hover
+                    fig_asset.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
+                    st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset_alloc")
+            
+                with col_p3:
+                    st.markdown("**By Objective**")
+                    from styles.syfe_colors import OBJECTIVE_COLORS
+                    fig_obj = px.pie(
+                        values=list(objective_allocation.values()),
+                        names=list(objective_allocation.keys()),
+                        title="Objective Allocation",
+                        color=list(objective_allocation.keys()),
+                        color_discrete_map=OBJECTIVE_COLORS
+                    )
+                    # Remove % labels, show decimals on hover
+                    fig_obj.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
+                    st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
+
+            # --- NEW: Side-by-Side 2x2 Exposure Layout (User Request) ---
+            st.markdown("### Portfolio Exposures")
+            st.markdown("#### Filter Exposures")
+            c_filter, c_dummy = st.columns([2, 1])
+            
+            with c_filter:
+                filter_mode = st.radio(
+                    "Filter Mode", 
+                    ["Show All", "By Objective", "By Portfolio Type"], 
+                    horizontal=True,
+                    key=f"{key_prefix}_filt_mode"
+                )
+            
+            filtered_weights = {}
+            
+            if filter_mode == "Show All":
+                filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
+                
+            elif filter_mode == "By Objective":
+                all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
+                sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
+                
                 for ticker, weight in client_weights.items():
                     obj = get_portfolio_objective(ticker)
-                    objective_allocation[obj] = objective_allocation.get(obj, 0.0) + weight
-
-                # --- Natural Summary ---
-                st.markdown("### Portfolio Summary")
-                
-                # Identify top portfolio types
-                sorted_ports = sorted(client_weights.items(), key=lambda x: x[1], reverse=True)
-                top_port = sorted_ports[0][0] if sorted_ports else "N/A"
-                
-                # Identify dominant objective
-                sorted_objs = sorted(objective_allocation.items(), key=lambda x: x[1], reverse=True)
-                top_obj = sorted_objs[0][0] if sorted_objs else "N/A"
-                
-                # Identify top underlying (concentration) across all portfolios
-                # We need to re-calculate concentration here for the summary text
-                top_holdings_str = ""
-                if df_underlying is not None and not df_underlying.empty:
-                    # Calculate strict top 3 for summary
-                    # Re-use exposure logic
-                    # Create a series from client_weights
-                    w_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
-                    conc_exp = get_concentration_exposure(w_series, df_underlying, top_n=3)
-                    if not conc_exp.empty:
-                        top_3 = conc_exp.head(3)
-                        top_holdings_str = ", ".join([f"{n} ({w:.1%})" for n, w in top_3.items()])
-                
-                summary_text = f"""
-                Your current portfolio is primarily allocated to **{top_port}**, aligning with a **{top_obj}** objective. 
-                """
-                if top_holdings_str:
-                    summary_text += f"\nAcross your holdings, your top underlying exposures are **{top_holdings_str}**."
-                
-                if 'Unclassified' in objective_allocation and objective_allocation['Unclassified'] > 0.1:
-                    summary_text += f"\n\n*Note: {objective_allocation['Unclassified']:.1%} of your portfolio is in unclassified or custom assets.*"
-                
-                st.info(summary_text)
-
-                # --- NEW: Tabs for Allocation vs Exposures ---
-                tab_alloc, tab_exposures = st.tabs(["Client Portfolio Allocation", "Client Exposures"])
-
-                with tab_alloc:
-                    col_p1, col_p2, col_p3 = st.columns(3)
-                
-                    with col_p1:
-                        st.markdown("**By Portfolio Type**")
-                        # Use consistent colors based on portfolio's objective
-                        from styles.syfe_colors import get_portfolio_color
-                        portfolio_colors = {name: get_portfolio_color(name) for name in client_weights.keys()}
-                        fig_client = px.pie(
-                            values=list(client_weights.values()),
-                            names=list(client_weights.keys()),
-                            title=f"Total NAV: ${total_nav:,.2f}",
-                            color=list(client_weights.keys()),
-                            color_discrete_map=portfolio_colors
-                        )
-                        # Remove % labels, show decimals on hover
-                        fig_client.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
-                        st.plotly_chart(fig_client, use_container_width=True, key=f"{key_prefix}_pie_client")
-                
-                    with col_p2:
-                        st.markdown("**By Asset Class**")
-                        # Filter out small values for cleaner chart and group into Others
-                        threshold = 0.01 # 1% threshold
-                        final_asset_alloc = {}
-                        others_val = 0.0
+                    if obj in sel_objectives:
+                        filtered_weights[f"{ticker}_wgt"] = weight
                         
-                        for k, v in asset_allocation.items():
-                            if v >= threshold:
-                                final_asset_alloc[k] = v
-                            else:
-                                others_val += v
-                        
-                        if others_val > 0:
-                            final_asset_alloc['Others'] = others_val
-                        
-                        # Use consistent asset class colors
-                        from styles.syfe_colors import get_asset_class_color
-                        asset_colors = {name: get_asset_class_color(name) for name in final_asset_alloc.keys()}
-                        fig_asset = px.pie(
-                            values=list(final_asset_alloc.values()),
-                            names=list(final_asset_alloc.keys()),
-                            title="Asset Allocation",
-                            color=list(final_asset_alloc.keys()),
-                            color_discrete_map=asset_colors
-                        )
-                        # Remove % labels, show decimals on hover
-                        fig_asset.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
-                        st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset_alloc")
+            elif filter_mode == "By Portfolio Type":
+                all_port_types = sorted(list(client_weights.keys()))
+                sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
+                
+                for ticker, weight in client_weights.items():
+                    if ticker in sel_port_types:
+                        filtered_weights[f"{ticker}_wgt"] = weight
 
-                    with col_p3:
-                        st.markdown("**By Objective**")
-                        from styles.syfe_colors import OBJECTIVE_COLORS
-                        fig_obj = px.pie(
-                            values=list(objective_allocation.values()),
-                            names=list(objective_allocation.keys()),
-                            title="Objective Allocation",
-                            color=list(objective_allocation.keys()),
-                            color_discrete_map=OBJECTIVE_COLORS
-                        )
-                        # Remove % labels, show decimals on hover
-                        fig_obj.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
-                        st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
+            weights_series = pd.Series(filtered_weights)
 
-                # --- NEW: Side-by-Side 2x2 Exposure Layout (User Request) ---
-                st.markdown("### Portfolio Exposures")
-                st.markdown("#### Filter Exposures")
-                c_filter, c_dummy = st.columns([2, 1])
+            if not weights_series.empty:
+                # Calculate all charts first
+                charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
                 
-                with c_filter:
-                    filter_mode = st.radio(
-                        "Filter Mode", 
-                        ["Show All", "By Objective", "By Portfolio Type"], 
-                        horizontal=True,
-                        key=f"{key_prefix}_filt_mode"
-                    )
+                # --- Row 1: Asset Class + Top Holdings ---
+                col_asset, col_holdings = st.columns([1, 1])
                 
-                filtered_weights = {}
+                with col_asset:
+                    st.markdown("**Asset Class**")
+                    if 'asset_pie' in charts:
+                        st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_exp")
+                        with st.expander("View Data"):
+                            st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                    else:
+                        st.info("Asset Class data unavailable.")
                 
-                if filter_mode == "Show All":
-                    filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
+                with col_holdings:
+                    # Selector for Top N
+                    t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_client")
                     
-                elif filter_mode == "By Objective":
-                    all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
-                    sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
-                    
-                    for ticker, weight in client_weights.items():
-                        obj = get_portfolio_objective(ticker)
-                        if obj in sel_objectives:
-                            filtered_weights[f"{ticker}_wgt"] = weight
+                    if df_underlying is not None:
+                        conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
+                        if not conc_raw.empty:
+                            conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
+                            conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
+                            total_conc = conc_df['Weight'].sum()
                             
-                elif filter_mode == "By Portfolio Type":
-                    all_port_types = sorted(list(client_weights.keys()))
-                    sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
-                    
-                    for ticker, weight in client_weights.items():
-                        if ticker in sel_port_types:
-                            filtered_weights[f"{ticker}_wgt"] = weight
-
-                weights_series = pd.Series(filtered_weights)
-
-                if not weights_series.empty:
-                    # Calculate all charts first
-                    charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
-                    
-                    # --- Row 1: Asset Class + Top Holdings ---
-                    col_asset, col_holdings = st.columns([1, 1])
-                    
-                    with col_asset:
-                        st.markdown("**Asset Class**")
-                        if 'asset_pie' in charts:
-                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_exp")
+                            # Bar Chart for Top Holdings
+                            conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # Sort for bar chart (bottom to top)
+                            
+                            fig_top_bar = px.bar(
+                                conc_df_sorted, 
+                                x='Weight', 
+                                y=conc_df_sorted.index, 
+                                orientation='h',
+                                title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
+                                color='Weight',
+                                color_continuous_scale=PALETTE # Use Syfe Palette
+                            )
+                            fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
+                            st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_bar_top_holdings_client")
+                            
                             with st.expander("View Data"):
-                                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Asset Class data unavailable.")
-                    
-                    with col_holdings:
-                        # Selector for Top N
-                        t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_client")
-                        
-                        if df_underlying is not None:
-                            conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
-                            if not conc_raw.empty:
-                                conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
-                                conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
-                                total_conc = conc_df['Weight'].sum()
-                                
-                                # Bar Chart for Top Holdings
-                                conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # Sort for bar chart (bottom to top)
-                                
-                                fig_top_bar = px.bar(
-                                    conc_df_sorted, 
-                                    x='Weight', 
-                                    y=conc_df_sorted.index, 
-                                    orientation='h',
-                                    title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
-                                    color='Weight',
-                                    color_continuous_scale=PALETTE # Use Syfe Palette
+                                st.dataframe(
+                                    conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                                    use_container_width=True
                                 )
-                                fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
-                                st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_bar_top_holdings_client")
-                                
-                                with st.expander("View Data"):
-                                    st.dataframe(
-                                        conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                        use_container_width=True
-                                    )
-                            else:
-                                st.warning("No underlying holdings found.")
                         else:
-                            st.info("Concentration data not available.")
-                    
-                    # --- Row 2: Sector + Country ---
-                    col_sector, col_country = st.columns([1, 1])
-                    
-                    with col_sector:
-                        st.markdown("**Sector**")
-                        if 'sector_pie' in charts:
-                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_pie_sector")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Sector data unavailable.")
-                    
-                    with col_country:
-                        st.markdown("**Country**")
-                        if 'country_pie' in charts:
-                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_pie_country")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Country data unavailable.")
-
-                else:
-                    st.warning("No data matches the selected filters.")
-
-                # Load into Portfolio 1 Button
-                c_load1, c_load_new = st.columns(2)
+                            st.warning("No underlying holdings found.")
+                    else:
+                        st.info("Concentration data not available.")
                 
-                with c_load1:
-                    if st.button("Load into Portfolio 1", key=f"{key_prefix}_load_p1"):
-                        # Update underlying data
-                        st.session_state.portfolios[0]['name'] = "Client Portfolio"
-                        st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
-                        st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
-                        st.session_state.portfolios[0]['fixed_weights'] = client_weights
-                        st.session_state.portfolios[0]['cash_invested'] = total_nav
-                    
-                        # Update dollar amounts and decimal weights dictionaries
-                        st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
-                        st.session_state.portfolios[0]['decimal_weights'] = client_weights
-                    
-                        # Increment refresh counter to force widget update
-                        st.session_state.refresh_counter += 1
-                    
-                        st.success("Loaded client portfolio into Portfolio 1!")
-                        st.rerun()
+                # --- Row 2: Sector + Country ---
+                col_sector, col_country = st.columns([1, 1])
                 
-                with c_load_new:
-                    if st.button("Load as New Portfolio", key=f"{key_prefix}_load_new"):
-                        new_id = len(st.session_state.portfolios) + 1
-                        new_port = {
-                            'id': new_id,
-                            'name': f"Client Upload {new_id}",
-                            'tickers': list(client_weights.keys()),
-                            'allocation_type': 'Fixed Weight',
-                            'rebal_freq': 'Annually',
-                            'min_weight': 0.0,
-                            'max_weight': 1.0,
-                            'cash_invested': total_nav,
-                            'fixed_weights': client_weights,
-                            'dollar_amounts': client_holdings,
-                            'decimal_weights': client_weights
-                        }
-                        st.session_state.portfolios.append(new_port)
-                        st.session_state.refresh_counter += 1
-                        st.success(f"Created new portfolio 'Client Upload {new_id}'!")
-                        st.rerun()
+                with col_sector:
+                    st.markdown("**Sector**")
+                    if 'sector_pie' in charts:
+                        st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_pie_sector")
+                        with st.expander("View Data"):
+                            st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                    else:
+                        st.info("Sector data unavailable.")
+                
+                with col_country:
+                    st.markdown("**Country**")
+                    if 'country_pie' in charts:
+                        st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_pie_country")
+                        with st.expander("View Data"):
+                            st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                    else:
+                        st.info("Country data unavailable.")
+
             else:
-                st.warning("No valid active portfolios found with NAV >= $50.")
+                st.warning("No data matches the selected filters.")
+
+            # Load into Portfolio 1 Button
+            c_load1, c_load_new = st.columns(2)
             
-        except Exception as e:
-            st.error(f"Error processing file: {e}")
+            with c_load1:
+                if st.button("Load into Portfolio 1", key=f"{key_prefix}_load_p1"):
+                    # Update underlying data
+                    st.session_state.portfolios[0]['name'] = "Client Portfolio"
+                    st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
+                    st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
+                    st.session_state.portfolios[0]['fixed_weights'] = client_weights
+                    st.session_state.portfolios[0]['cash_invested'] = total_nav
+                
+                    # Update dollar amounts and decimal weights dictionaries
+                    st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
+                    st.session_state.portfolios[0]['decimal_weights'] = client_weights
+                
+                    # Increment refresh counter to force widget update
+                    st.session_state.refresh_counter += 1
+                
+                    st.success("Loaded client portfolio into Portfolio 1!")
+                    st.rerun()
+            
+            with c_load_new:
+                if st.button("Load as New Portfolio", key=f"{key_prefix}_load_new"):
+                    new_id = len(st.session_state.portfolios) + 1
+                    new_port = {
+                        'id': new_id,
+                        'name': f"Client Upload {new_id}",
+                        'tickers': list(client_weights.keys()),
+                        'allocation_type': 'Fixed Weight',
+                        'rebal_freq': 'Annually',
+                        'min_weight': 0.0,
+                        'max_weight': 1.0,
+                        'cash_invested': total_nav,
+                        'fixed_weights': client_weights,
+                        'dollar_amounts': client_holdings,
+                        'decimal_weights': client_weights
+                    }
+                    st.session_state.portfolios.append(new_port)
+                    st.session_state.refresh_counter += 1
+                    st.success(f"Created new portfolio 'Client Upload {new_id}'!")
+                    st.rerun()
+    else:
+        # If no data found and we are on the CSV tab, show warning (Metabase has its own warning)
+        # We can't easily check tab activation in Streamlit without session state hacks, 
+        # but we can just show generic warning if no data is present after interaction.
+        pass
 
 
 def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key_prefix="pdf_upload"):

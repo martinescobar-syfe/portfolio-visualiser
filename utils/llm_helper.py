@@ -387,3 +387,76 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
         return f"Error generating narrative: {str(last_error)}"
     except Exception as e:
         return f"Error configuring API: {str(e)}"
+
+def analyze_portfolio_appropriateness(api_key, client_profile, current_holdings):
+    """
+    Analyzes if the current portfolio is appropriate for the client using Gemini.
+    
+    Args:
+        api_key (str): Google Gemini API Key.
+        client_profile (dict): Dictionary with 'Age', 'Risk Score', 'Name'.
+        current_holdings (dict): Dictionary of {Ticker: Weight(decimal)} or list of holding dicts.
+        
+    Returns:
+        str: analysis text
+    """
+    try:
+        genai.configure(api_key=api_key)
+        
+        # Format holdings for prompt
+        holdings_str = ""
+        if isinstance(current_holdings, dict):
+             holdings_str = "\n".join([f"- **{k}**: {v:.1%}" for k, v in current_holdings.items()])
+        elif isinstance(current_holdings, list):
+             holdings_str = "\n".join([f"- **{h.get('name', 'Unknown')}** ({h.get('type', 'Unknown')}): {h.get('nav_in_sgd', 0):,.2f} SGD" for h in current_holdings])
+        
+        prompt = f"""
+    You are a Senior Risk Officer at Syfe.
+    Your job is to evaluate if a client's CURRENT holdings are appropriate given their Age and Risk Score.
+    
+    **Client Profile:**
+    - Name: {client_profile.get('name', 'Client')}
+    - Age: {client_profile.get('age', 'Unknown')}
+    - Risk Score: {client_profile.get('risk_score', 'Unknown')} (Scale 1-5, where 5 is Aggressive)
+    
+    **Current Holdings (Active Portfolios):**
+    {holdings_str}
+    
+    **Instructions:**
+    Your goal is to provide a single, actionable, and cohesive block of text (short narrative) that addresses the following:
+    
+    1.  **Diversification**: Is the portfolio well-diversified or concentrated? (e.g., heavily tilted to one sector/country).
+    2.  **Risk & Age Fit**: Is the current risk level appropriate for their Age and Risk Score? Is it too conservative or too aggressive?
+    3.  **Next Steps**: Specifically recommend where they should allocate their *next* dollar to improve their portfolio (e.g., "Consider adding fixed income to balance the high equity exposure" or "Shift excess cash into a diversified core portfolio").
+    
+    **Tone:** Professional, direct, and helpful.
+    **Constraint:** Do NOT use bullet points. Write it as one or two cohesive paragraphs.
+    
+    **Context:**
+    {SYFE_CONTEXT}
+    """
+        models_to_try = [
+            'gemini-3-pro-preview',
+            'gemini-2.5-pro',
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-2.0-flash-exp',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash'
+        ]
+        
+        last_error = None
+        
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                last_error = e
+                continue
+                
+        return f"Analysis unavailable. Error: {str(last_error)}"
+
+    except Exception as e:
+        return f"Error: {str(e)}"
