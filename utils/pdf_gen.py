@@ -4,7 +4,9 @@ import io
 import pandas as pd
 import streamlit as st
 import datetime
+from datetime import date
 import plotly.io as pio
+import plotly.graph_objects as go
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.units import inch
@@ -20,6 +22,14 @@ from utils.plotting import (
     plot_drawdowns, plot_correlation_heatmap
 )
 from utils.exposure import get_exposure_charts
+
+# Import the new portfolio report generator
+from utils.portfolio_report_generator import (
+    PortfolioReportGenerator,
+    prepare_portfolio_summary_df,
+    prepare_income_portfolio_df,
+    generate_client_report
+)
 
 # --- User Provided PDF Functions ---
 
@@ -206,6 +216,212 @@ def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manu
 
 # --- Integration Logic ---
 
+# Column name mapping for clean display
+COLUMN_NAME_MAPPING = {
+    'nav_in_sgd': 'Net Asset Value (SGD)',
+    'nav': 'Net Asset Value',
+    'pnl_inception': 'P&L Since Inception',
+    'pnl': 'Profit/Loss',
+    'invested_amount': 'Invested Amount',
+    'portfolio_name': 'Portfolio Name',
+    'portfolio_id': 'Portfolio ID',
+    'type': 'Portfolio Type',
+    'name': 'Name',
+    'code': 'Code',
+    'allocation': 'Allocation (%)',
+    'balance': 'Balance',
+    'status': 'Status',
+    'currency': 'Currency',
+    'risk_rating': 'Risk Rating',
+    'activated_date': 'Activated Date',
+    'est_yield': 'Est. Yield (%)',
+    'dividend_option': 'Dividend Option',
+}
+
+# Portfolio type to classification mapping
+PORTFOLIO_CLASSIFICATION = {
+    'Core Equity100': 'Core',
+    'Core Growth': 'Core',
+    'Core Balanced': 'Core',
+    'Core Defensive': 'Core',
+    'SRS Equity100': 'Core',
+    'China Growth': 'Thematic',
+    'Disruptive Technology': 'Thematic',
+    'ESG & Clean Energy': 'Thematic',
+    'Healthcare Innovation': 'Thematic',
+    'Income Enhance': 'Income+',
+    'Income Preserve': 'Income+',
+    'SRS Income Enhance': 'Income+',
+    'SRS Income Preserve': 'Income+',
+    'REIT 100': 'REITs',
+    'REIT Risk Managed': 'REITs',
+    'Cash SGD flexi': 'Cash / MMF',
+    'Cash USD flexi': 'Cash / MMF',
+    'Cash SGD guaranteed': 'Cash / MMF',
+    'SRS Cash SGD flexi': 'Cash / MMF',
+    'Blackrock Private Credit Fund': 'Private Credit',
+    'Monroe Income Plus Fund': 'Private Credit',
+    'Silverdale Fund (Nov 2027)': 'Private Credit',
+}
+
+# Portfolio type to objective mapping
+PORTFOLIO_OBJECTIVE = {
+    'Core Equity100': 'Wealth Growth',
+    'Core Growth': 'Wealth Growth',
+    'Core Balanced': 'Wealth Growth',
+    'SRS Equity100': 'Wealth Growth',
+    'China Growth': 'Wealth Growth',
+    'Disruptive Technology': 'Wealth Growth',
+    'ESG & Clean Energy': 'Wealth Growth',
+    'Healthcare Innovation': 'Wealth Growth',
+    'Income Enhance': 'Income Generation',
+    'Income Preserve': 'Income Generation',
+    'SRS Income Enhance': 'Income Generation',
+    'SRS Income Preserve': 'Income Generation',
+    'REIT 100': 'Income Generation',
+    'REIT Risk Managed': 'Income Generation',
+    'Blackrock Private Credit Fund': 'Income Generation',
+    'Monroe Income Plus Fund': 'Income Generation',
+    'Silverdale Fund (Nov 2027)': 'Income Generation',
+    'Core Defensive': 'Capital Preservation',
+    'Cash SGD flexi': 'Capital Preservation',
+    'Cash USD flexi': 'Capital Preservation',
+    'Cash SGD guaranteed': 'Capital Preservation',
+    'SRS Cash SGD flexi': 'Capital Preservation',
+}
+
+# Syfe chart colors
+SYFE_CHART_COLORS = [
+    '#0052CC',  # Primary Blue
+    '#36B37E',  # Green
+    '#FFAB00',  # Yellow
+    '#FF5630',  # Red
+    '#00B8D9',  # Teal
+    '#6554C0',  # Purple
+    '#FF8B00',  # Orange
+    '#2684FF',  # Secondary Blue
+    '#4C9AFF',  # Tertiary Blue
+    '#172B4D',  # Dark Blue
+]
+
+def format_column_name(col_name):
+    """Convert column names to clean display format."""
+    if col_name in COLUMN_NAME_MAPPING:
+        return COLUMN_NAME_MAPPING[col_name]
+    # Convert snake_case to Title Case
+    return col_name.replace('_', ' ').title()
+
+def format_dataframe_for_pdf(df):
+    """Format DataFrame columns and values for PDF display."""
+    df = df.copy()
+    
+    # Rename columns
+    new_columns = {col: format_column_name(col) for col in df.columns}
+    df = df.rename(columns=new_columns)
+    
+    # Format numeric columns
+    for col in df.columns:
+        if df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
+            # Check if it's a percentage column
+            if 'Allocation' in col or '%' in col or 'Return' in col:
+                df[col] = df[col].apply(lambda x: f"{x:.2%}" if pd.notna(x) and abs(x) < 10 else f"{x:.2f}%" if pd.notna(x) else '-')
+            elif 'Value' in col or 'Amount' in col or 'SGD' in col or 'P&L' in col or 'Balance' in col or 'NAV' in col:
+                df[col] = df[col].apply(lambda x: f"{x:,.2f}" if pd.notna(x) else '-')
+            elif 'Rating' in col:
+                df[col] = df[col].apply(lambda x: f"{x:.1f}" if pd.notna(x) else '-')
+            else:
+                df[col] = df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else '-')
+    
+    return df
+
+def aggregate_by_portfolio_type(df):
+    """Aggregate portfolio data by type and calculate summary."""
+    if df.empty:
+        return pd.DataFrame()
+    
+    # Identify value column
+    value_col = None
+    for col in ['nav_in_sgd', 'nav', 'value', 'balance']:
+        if col in df.columns:
+            value_col = col
+            break
+    
+    if value_col is None:
+        return df
+    
+    # Identify type column
+    type_col = None
+    for col in ['type', 'portfolio_type', 'name']:
+        if col in df.columns:
+            type_col = col
+            break
+    
+    if type_col is None:
+        return df
+    
+    # Aggregate by type
+    agg_df = df.groupby(type_col).agg({
+        value_col: 'sum'
+    }).reset_index()
+    
+    # Calculate allocation
+    total = agg_df[value_col].sum()
+    agg_df['allocation'] = agg_df[value_col] / total if total > 0 else 0
+    
+    # Add classification and objective
+    agg_df['classification'] = agg_df[type_col].map(PORTFOLIO_CLASSIFICATION).fillna('Other')
+    agg_df['objective'] = agg_df[type_col].map(PORTFOLIO_OBJECTIVE).fillna('Other')
+    
+    # Sort by value descending
+    agg_df = agg_df.sort_values(value_col, ascending=False)
+    
+    return agg_df
+
+def create_exposure_pie_chart(data, title, colors=None):
+    """Create a pie chart with Syfe styling."""
+    import plotly.graph_objects as go
+    
+    if data is None or (isinstance(data, pd.Series) and data.empty):
+        return None
+    
+    if isinstance(data, dict):
+        data = pd.Series(data)
+    
+    # Filter small values and limit to top 10
+    data = data[data > 0.001]
+    if len(data) > 10:
+        top_data = data.head(9)
+        others = data.iloc[9:].sum()
+        if others > 0:
+            top_data['Others'] = others
+        data = top_data
+    
+    if colors is None:
+        colors = SYFE_CHART_COLORS
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=data.index,
+        values=data.values,
+        hole=0.4,
+        marker=dict(colors=colors[:len(data)]),
+        textinfo='percent+label',
+        textposition='outside',
+        textfont=dict(size=9),
+    )])
+    
+    fig.update_layout(
+        title=dict(text=f'<b>{title}</b>', font=dict(size=12, color='#172B4D'), x=0.5),
+        showlegend=True,
+        legend=dict(orientation='v', yanchor='middle', y=0.5, xanchor='right', x=1.3, font=dict(size=8)),
+        margin=dict(l=20, r=100, t=50, b=20),
+        paper_bgcolor='white',
+        plot_bgcolor='white',
+        width=500,
+        height=350
+    )
+    
+    return fig
+
 def generate_report_content(modules):
     """Gather data and charts based on selected modules."""
     content_blocks = []
@@ -213,58 +429,179 @@ def generate_report_content(modules):
     # 1. Client Data Source
     if "1. Client Data Source" in modules:
         content_blocks.append({'type': 'header', 'title': '1. Client Data Source'})
-        if 'metabase_client_info' in st.session_state:
-             info = st.session_state['metabase_client_info']
-             df_info = pd.DataFrame([info])
-             content_blocks.append({'type': 'table', 'df': df_info, 'title': 'Client Profile (Metabase)'})
         
+        # Client Info
+        if 'metabase_client_info' in st.session_state:
+            info = st.session_state['metabase_client_info']
+            # Clean up the info display
+            clean_info = {}
+            for k, v in info.items():
+                clean_key = format_column_name(k)
+                clean_info[clean_key] = v if v is not None else '-'
+            df_info = pd.DataFrame([clean_info])
+            content_blocks.append({'type': 'table', 'df': df_info, 'title': 'Client Profile'})
+        
+        # Portfolio Data - Aggregate by Type
         if 'metabase_client_df' in st.session_state:
-             df_port = st.session_state['metabase_client_df']
-             if not df_port.empty:
-                # Limit columns for PDF width
-                disp_cols = ['portfolio_name', 'name', 'code', 'nav_in_sgd', 'allocation']
-                existing_cols = [c for c in disp_cols if c in df_port.columns]
-                content_blocks.append({'type': 'table', 'df': df_port[existing_cols].head(20), 'title': 'Current Holdings (Top 20)'})
+            df_port = st.session_state['metabase_client_df'].copy()
+            if not df_port.empty:
+                # Aggregate by portfolio type
+                agg_df = aggregate_by_portfolio_type(df_port)
+                
+                if not agg_df.empty:
+                    # Select and rename columns for display
+                    display_cols = []
+                    for col in ['type', 'portfolio_type', 'name']:
+                        if col in agg_df.columns:
+                            display_cols.append(col)
+                            break
+                    
+                    for col in ['nav_in_sgd', 'nav', 'value', 'balance']:
+                        if col in agg_df.columns:
+                            display_cols.append(col)
+                            break
+                    
+                    if 'allocation' in agg_df.columns:
+                        display_cols.append('allocation')
+                    if 'classification' in agg_df.columns:
+                        display_cols.append('classification')
+                    if 'objective' in agg_df.columns:
+                        display_cols.append('objective')
+                    
+                    df_display = format_dataframe_for_pdf(agg_df[display_cols])
+                    
+                    # Add total row
+                    total_row = {col: '' for col in df_display.columns}
+                    total_row[df_display.columns[0]] = 'Total'
+                    
+                    value_col = df_display.columns[1] if len(df_display.columns) > 1 else None
+                    if value_col:
+                        # Sum the original numeric values
+                        orig_val_col = [c for c in agg_df.columns if 'nav' in c.lower() or 'value' in c.lower() or 'balance' in c.lower()]
+                        if orig_val_col:
+                            total_val = agg_df[orig_val_col[0]].sum()
+                            total_row[value_col] = f"{total_val:,.2f}"
+                    
+                    if 'Allocation (%)' in total_row:
+                        total_row['Allocation (%)'] = '100.00%'
+                    
+                    df_display = pd.concat([df_display, pd.DataFrame([total_row])], ignore_index=True)
+                    
+                    content_blocks.append({'type': 'table', 'df': df_display, 'title': 'Portfolio Summary by Type'})
+                    
+                    # --- Exposure Charts ---
+                    charts = []
+                    
+                    # By Portfolio Type
+                    type_col = [c for c in agg_df.columns if c in ['type', 'portfolio_type', 'name']][0] if any(c in agg_df.columns for c in ['type', 'portfolio_type', 'name']) else None
+                    val_col = [c for c in agg_df.columns if 'nav' in c.lower() or 'value' in c.lower()][0] if any('nav' in c.lower() or 'value' in c.lower() for c in agg_df.columns) else None
+                    
+                    if type_col and val_col:
+                        type_exposure = agg_df.set_index(type_col)[val_col]
+                        type_exposure = type_exposure / type_exposure.sum()
+                        fig_type = create_exposure_pie_chart(type_exposure, 'By Portfolio Type')
+                        if fig_type:
+                            charts.append(fig_type)
+                    
+                    # By Classification
+                    if 'classification' in agg_df.columns and val_col:
+                        class_exposure = agg_df.groupby('classification')[val_col].sum()
+                        class_exposure = class_exposure / class_exposure.sum()
+                        fig_class = create_exposure_pie_chart(class_exposure, 'By Asset Class')
+                        if fig_class:
+                            charts.append(fig_class)
+                    
+                    # By Objective
+                    if 'objective' in agg_df.columns and val_col:
+                        obj_exposure = agg_df.groupby('objective')[val_col].sum()
+                        obj_exposure = obj_exposure / obj_exposure.sum()
+                        fig_obj = create_exposure_pie_chart(obj_exposure, 'By Investment Objective')
+                        if fig_obj:
+                            charts.append(fig_obj)
+                    
+                    if charts:
+                        content_blocks.append({'type': 'charts', 'charts': charts})
 
-    # 4. Analysis Results (Re-using logic from render_analysis)
+    # 4. Analysis Results
     if "4. Analysis Results" in modules:
-         content_blocks.append({'type': 'header', 'title': '4. Analysis Results'})
-         
-         if 'optimization_results' in st.session_state:
-             res_data = st.session_state['optimization_results']
-             if res_data:
-                 ret_all = res_data.get('ret_all')
-                 ret_bm = res_data.get('ret_bm')
-             else:
-                 ret_all = None
-                 ret_bm = None
-             
-             if ret_all is not None:
-                 # Charts
-                 charts = []
-                 # Cumulative
-                 cum_ret = (1 + ret_all).cumprod()
-                 fig_cum = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
-                 charts.append(fig_cum)
-                 
-                 # Risk/Return
-                 fig_risk = plot_scatter_risk_return(ret_all, benchmark_ret=ret_bm)
-                 charts.append(fig_risk)
-                 
-                 # Drawdown
-                 fig_dd = plot_drawdowns(ret_all)
-                 charts.append(fig_dd)
-                 
-                 content_blocks.append({'type': 'charts', 'charts': charts})
+        content_blocks.append({'type': 'header', 'title': '4. Analysis Results'})
+        
+        if 'optimization_results' in st.session_state:
+            res_data = st.session_state['optimization_results']
+            if res_data:
+                ret_all = res_data.get('ret_all')
+                ret_bm = res_data.get('ret_bm')
+            else:
+                ret_all = None
+                ret_bm = None
+            
+            if ret_all is not None:
+                charts = []
+                cum_ret = (1 + ret_all).cumprod()
+                fig_cum = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
+                charts.append(fig_cum)
+                
+                fig_risk = plot_scatter_risk_return(ret_all, benchmark_ret=ret_bm)
+                charts.append(fig_risk)
+                
+                fig_dd = plot_drawdowns(ret_all)
+                charts.append(fig_dd)
+                
+                content_blocks.append({'type': 'charts', 'charts': charts})
 
     # 5. Exposure Analysis
     if "5. Exposure Analysis" in modules:
         content_blocks.append({'type': 'header', 'title': '5. Exposure Analysis'})
-        # We need sector/country data to re-gen charts. Passing empty dicts if not readily available in simple session var
-        # Assuming DataFrames are re-loaded or passed globally? 
-        # For safety/speed in this context, we check if we can get aggregator weights
-        pass # Complexity: Requires Access to massive dfs (df_sector, etc) which are passed deeply. 
-             # SKIP for now unless requested to fetch them.
+        
+        charts = []
+        
+        # Check for exposure data from PDF parsing
+        pdf_key = None
+        for key in ['exist_pdf_parsed_data', 'client_pv_parsed_data', 'parsed_portfolio_data']:
+            if key in st.session_state:
+                pdf_key = key
+                break
+        
+        if pdf_key and pdf_key in st.session_state:
+            data = st.session_state[pdf_key]
+            
+            # Country Exposure
+            country_exp = data.get('country_exp', {})
+            if country_exp:
+                country_series = pd.Series(country_exp)
+                fig_country = create_exposure_pie_chart(country_series, 'Country Exposure')
+                if fig_country:
+                    charts.append(fig_country)
+            
+            # Sector Exposure
+            sector_exp = data.get('sector_exp', {})
+            if sector_exp:
+                sector_series = pd.Series(sector_exp)
+                fig_sector = create_exposure_pie_chart(sector_series, 'Sector Exposure')
+                if fig_sector:
+                    charts.append(fig_sector)
+            
+            # Top Holdings Table
+            holdings_df = data.get('holdings_df', pd.DataFrame())
+            if not holdings_df.empty:
+                # Show top 10 holdings
+                top_holdings = holdings_df.head(10).copy()
+                top_holdings = format_dataframe_for_pdf(top_holdings)
+                content_blocks.append({'type': 'table', 'df': top_holdings, 'title': 'Top 10 Holdings'})
+        
+        # Check for exposure from client upload
+        if 'client_exposure_charts' in st.session_state:
+            exp_charts = st.session_state['client_exposure_charts']
+            
+            if 'sector_pie' in exp_charts:
+                charts.append(exp_charts['sector_pie'])
+            if 'country_pie' in exp_charts:
+                charts.append(exp_charts['country_pie'])
+            if 'asset_pie' in exp_charts:
+                charts.append(exp_charts['asset_pie'])
+        
+        if charts:
+            content_blocks.append({'type': 'charts', 'charts': charts})
 
     return content_blocks
 
@@ -306,3 +643,185 @@ def render_export_ui(modules_selected):
             # Cleanup
             if os.path.exists(temp_filename): os.remove(temp_filename)
             if os.path.exists(final_filename): os.remove(final_filename)
+
+
+def render_portfolio_summary_export_ui(key_prefix="portfolio_summary"):
+    """
+    Renders a Streamlit UI for generating Portfolio Summary PDFs similar to the 
+    Syfe Portfolio Summary format with tables and exposure charts.
+    
+    This function should be called from the main app or a page where client
+    portfolio data is available in session state.
+    """
+    st.markdown("### 📄 Generate Portfolio Summary PDF")
+    
+    with st.expander("PDF Report Options", expanded=False):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            client_id = st.text_input(
+                "Client ID",
+                value=st.session_state.get('client_id', 'Client'),
+                key=f"{key_prefix}_client_id"
+            )
+            
+            report_date = st.date_input(
+                "Report Date",
+                value=date.today(),
+                key=f"{key_prefix}_report_date"
+            )
+        
+        with col2:
+            include_cover = st.checkbox("Include Cover Page", value=True, key=f"{key_prefix}_cover")
+            include_disclaimers = st.checkbox("Include Disclaimers", value=True, key=f"{key_prefix}_disclaimers")
+            include_growth = st.checkbox("Include Growth Portfolios Page", value=True, key=f"{key_prefix}_growth")
+            include_income = st.checkbox("Include Income & Preservation Page", value=True, key=f"{key_prefix}_income")
+    
+    if st.button("🖨️ Generate Portfolio Summary PDF", key=f"{key_prefix}_gen_btn"):
+        # Check for data in session state
+        portfolio_data = None
+        exposure_data = None
+        
+        # Try to get data from various session state keys
+        if 'metabase_client_df' in st.session_state:
+            portfolio_data = st.session_state['metabase_client_df']
+        elif 'portfolio_summary_df' in st.session_state:
+            portfolio_data = st.session_state['portfolio_summary_df']
+        elif 'client_portfolios' in st.session_state:
+            portfolio_data = st.session_state['client_portfolios']
+        
+        if portfolio_data is None or (isinstance(portfolio_data, pd.DataFrame) and portfolio_data.empty):
+            st.error("No portfolio data found. Please load client data first.")
+            return
+        
+        with st.spinner("Generating Portfolio Summary PDF..."):
+            try:
+                # Prepare the data
+                df_summary = prepare_portfolio_summary_df(portfolio_data)
+                
+                # Get exposure data if available
+                exposure_dict = {}
+                if 'asset_class_exposure' in st.session_state:
+                    exposure_dict['asset_class'] = st.session_state['asset_class_exposure']
+                if 'country_exposure' in st.session_state:
+                    exposure_dict['country'] = st.session_state['country_exposure']
+                if 'sector_exposure' in st.session_state:
+                    exposure_dict['sector'] = st.session_state['sector_exposure']
+                
+                # Prepare growth and income DataFrames if separate data exists
+                df_growth = None
+                df_income = None
+                
+                if include_growth and 'growth_portfolios_df' in st.session_state:
+                    df_growth = st.session_state['growth_portfolios_df']
+                
+                if include_income and 'income_portfolios_df' in st.session_state:
+                    df_income = prepare_income_portfolio_df(st.session_state['income_portfolios_df'])
+                
+                # Generate the report
+                generator = PortfolioReportGenerator(
+                    client_id=client_id,
+                    report_date=report_date,
+                    data_path='Data/'
+                )
+                
+                output_filename = f"Client_{client_id}_Portfolio_Summary_{report_date.strftime('%Y%m%d')}.pdf"
+                
+                generated_file = generator.generate_report(
+                    df_portfolio_summary=df_summary,
+                    df_growth_portfolios=df_growth if include_growth else None,
+                    df_income_portfolios=df_income if include_income else None,
+                    exposure_data=exposure_dict if exposure_dict else None,
+                    output_filename=output_filename,
+                    include_cover=include_cover,
+                    include_disclaimers=include_disclaimers
+                )
+                
+                # Read the generated file for download
+                with open(generated_file, "rb") as f:
+                    pdf_data = f.read()
+                
+                st.success(f"PDF generated successfully!")
+                
+                # Download button
+                st.download_button(
+                    label="📥 Download Portfolio Summary PDF",
+                    data=pdf_data,
+                    file_name=output_filename,
+                    mime="application/pdf",
+                    key=f"{key_prefix}_download_btn"
+                )
+                
+                # Cleanup
+                if os.path.exists(generated_file):
+                    os.remove(generated_file)
+                    
+            except Exception as e:
+                st.error(f"Error generating PDF: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+
+
+def generate_portfolio_summary_pdf_from_data(
+    client_id,
+    df_portfolios,
+    asset_class_exposure=None,
+    country_exposure=None,
+    sector_exposure=None,
+    report_date=None,
+    data_path='Data/'
+):
+    """
+    Programmatic function to generate a Portfolio Summary PDF.
+    
+    Args:
+        client_id: Client identifier
+        df_portfolios: DataFrame with portfolio data
+        asset_class_exposure: Series with asset class weights
+        country_exposure: Series with country weights
+        sector_exposure: Series with sector weights
+        report_date: Report date (defaults to today)
+        data_path: Path to data folder with templates
+    
+    Returns:
+        bytes: PDF file content
+    """
+    if report_date is None:
+        report_date = date.today()
+    
+    # Prepare data
+    df_summary = prepare_portfolio_summary_df(df_portfolios)
+    
+    # Build exposure dict
+    exposure_data = {}
+    if asset_class_exposure is not None:
+        exposure_data['asset_class'] = asset_class_exposure
+    if country_exposure is not None:
+        exposure_data['country'] = country_exposure
+    if sector_exposure is not None:
+        exposure_data['sector'] = sector_exposure
+    
+    # Generate report
+    generator = PortfolioReportGenerator(
+        client_id=client_id,
+        report_date=report_date,
+        data_path=data_path
+    )
+    
+    output_filename = f"temp_Client_{client_id}_{report_date.strftime('%Y%m%d')}.pdf"
+    
+    generated_file = generator.generate_report(
+        df_portfolio_summary=df_summary,
+        exposure_data=exposure_data if exposure_data else None,
+        output_filename=output_filename
+    )
+    
+    # Read and return bytes
+    with open(generated_file, "rb") as f:
+        pdf_data = f.read()
+    
+    # Cleanup
+    if os.path.exists(generated_file):
+        os.remove(generated_file)
+    
+    return pdf_data
