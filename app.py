@@ -146,6 +146,10 @@ with st.container():
         help="Select sections to include in the generated PDF report."
     )
     
+    # --- PDF Export Button ---
+    from utils.pdf_gen import render_export_ui
+    render_export_ui(export_modules)
+    
     # --- Client Type Selection ---
     client_type = st.radio(
         "Select Client Type",
