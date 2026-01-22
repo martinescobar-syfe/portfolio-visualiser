@@ -28,6 +28,7 @@ from utils.portfolio_report_generator import (
     PortfolioReportGenerator,
     prepare_holdings_dataframe,
     prepare_returns_data,
+    prepare_cashflow_data,
     generate_client_report
 )
 
@@ -744,6 +745,7 @@ def render_export_ui(modules_selected):
                         prepare_holdings_dataframe,
                         prepare_returns_data,
                         prepare_dividends_data,
+                        prepare_cashflow_data,
                         calculate_portfolio_exposure
                     )
                     from utils.data_loader import load_static_data, get_data_path
@@ -869,37 +871,47 @@ def render_export_ui(modules_selected):
                         for k in client_weights:
                             client_weights[k] /= total_nav
                     
-                    # Format weights for exposure calculation (add _wgt suffix)
-                    weights_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
-                    
-                    # Calculate exposures using the exposure matrices
+                    # ============================================
+                    # USE EXPOSURE DATA FROM SESSION STATE (same as app display)
+                    # ============================================
                     exposure_data = {}
                     
-                    # Asset Class Exposure
-                    if df_asset_class is not None and not df_asset_class.empty:
-                        asset_exp = calculate_exposure(weights_series, df_asset_class)
-                        if not asset_exp.empty:
-                            asset_exp = group_tail(asset_exp, top_n=8)
-                            exposure_data['asset_class'] = asset_exp
+                    # First, try to use the stored exposure data from the app display
+                    if 'asset_class_exposure' in st.session_state and st.session_state['asset_class_exposure'] is not None:
+                        exposure_data['asset_class'] = st.session_state['asset_class_exposure']
                     
-                    # Country Exposure
-                    if df_country is not None and not df_country.empty:
-                        country_exp = calculate_exposure(weights_series, df_country)
-                        if not country_exp.empty:
-                            country_exp = group_tail(country_exp, top_n=8)
-                            exposure_data['country'] = country_exp
+                    if 'country_exposure' in st.session_state and st.session_state['country_exposure'] is not None:
+                        exposure_data['country'] = st.session_state['country_exposure']
                     
-                    # Sector Exposure
-                    if df_sector is not None and not df_sector.empty:
-                        sector_exp = calculate_exposure(weights_series, df_sector)
-                        if not sector_exp.empty:
-                            sector_exp = group_tail(sector_exp, top_n=8)
-                            exposure_data['sector'] = sector_exp
+                    if 'sector_exposure' in st.session_state and st.session_state['sector_exposure'] is not None:
+                        exposure_data['sector'] = st.session_state['sector_exposure']
                     
-                    # If no exposure matrices worked, use portfolio type breakdown
+                    # Fallback: Calculate exposures if not available in session_state
                     if not exposure_data:
-                        type_exp = pd.Series(client_weights)
-                        exposure_data['asset_class'] = group_tail(type_exp, top_n=8)
+                        weights_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
+                        
+                        if df_asset_class is not None and not df_asset_class.empty:
+                            asset_exp = calculate_exposure(weights_series, df_asset_class)
+                            if not asset_exp.empty:
+                                asset_exp = group_tail(asset_exp, top_n=8)
+                                exposure_data['asset_class'] = asset_exp
+                        
+                        if df_country is not None and not df_country.empty:
+                            country_exp = calculate_exposure(weights_series, df_country)
+                            if not country_exp.empty:
+                                country_exp = group_tail(country_exp, top_n=8)
+                                exposure_data['country'] = country_exp
+                        
+                        if df_sector is not None and not df_sector.empty:
+                            sector_exp = calculate_exposure(weights_series, df_sector)
+                            if not sector_exp.empty:
+                                sector_exp = group_tail(sector_exp, top_n=8)
+                                exposure_data['sector'] = sector_exp
+                        
+                        # If still nothing, use portfolio type breakdown
+                        if not exposure_data:
+                            type_exp = pd.Series(client_weights)
+                            exposure_data['asset_class'] = group_tail(type_exp, top_n=8)
                     
                     # Generate report
                     generator = PortfolioReportGenerator(
@@ -910,11 +922,23 @@ def render_export_ui(modules_selected):
                     
                     final_filename = f"Client_{client_id}_Portfolio_Summary_{date.today().strftime('%Y%m%d')}.pdf"
                     
+                    # Calculate cash flow data from CSV (using yields)
+                    print(f"[DEBUG] Preparing cash flow data from CSV...")
+                    cashflow_data = prepare_cashflow_data(df_port, df_fi_metrics)
+                    cashflow_currency = 'SGD'
+                    
+                    if cashflow_data:
+                        print(f"[DEBUG] Cash flow data generated with {len(cashflow_data)} portfolios")
+                    else:
+                        print(f"[DEBUG] No cash flow data generated")
+                    
                     generated_file = generator.generate_report(
                         df_holdings=df_holdings,
                         exposure_data=exposure_data if exposure_data else None,
                         returns_data=returns_data,
                         dividends_data=dividends_data if dividends_data is not None and len(dividends_data) > 0 else None,
+                        cashflow_data=cashflow_data,
+                        cashflow_currency=cashflow_currency,
                         output_filename=final_filename,
                         include_cover=True,
                         include_appendix=True

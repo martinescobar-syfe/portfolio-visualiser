@@ -137,13 +137,10 @@ def create_donut_chart_drawing(data, title="", width=280, height=220):
     data = data / total
     data = data.sort_values(ascending=False)
     
-    # Limit to top 7 + Others
-    if len(data) > 7:
-        top_data = data.head(6)
-        others = data.iloc[6:].sum()
-        if others > 0:
-            top_data = pd.concat([top_data, pd.Series({'Others': others})])
-        data = top_data
+    # Don't add more "Others" - use data as-is from the app
+    # Just limit to top 8 items if there are too many
+    if len(data) > 8:
+        data = data.head(8)
     
     d = Drawing(width, height)
     
@@ -399,9 +396,9 @@ def create_dividends_bar_chart_drawing(data, title="", width=380, height=220):
                      fillColor=SYFE_COLORS['text_dark'],
                      textAnchor='start'))
     
-    # Title: "Portfolio Dividends"
+    # Title: "Portfolio Dividends (Since Inception)"
     if not title:
-        title = "Portfolio Dividends"
+        title = "Portfolio Dividends (Since Inception)"
     
     # Add title at bottom center - same y position and font size as Sector Exposure
     d.add(String(width // 2, 10, title,
@@ -422,6 +419,122 @@ extended_colors = EXTENDED_COLORS + [
     colors.HexColor("#5d6d7e"),
     colors.HexColor("#85929e"),
 ]
+
+
+def create_cashflow_chart_drawing(cashflow_data, currency="SGD", width=760, height=280):
+    """
+    Creates a stacked bar chart for monthly cash flow projections.
+    
+    Args:
+        cashflow_data: dict with keys like "Portfolio - Ticker" and values as arrays of 12 monthly amounts
+        currency: Currency symbol to display
+        width, height: Drawing dimensions
+    
+    Returns:
+        Drawing object or None
+    """
+    if cashflow_data is None or len(cashflow_data) == 0:
+        return None
+    
+    d = Drawing(width, height)
+    
+    items = list(cashflow_data.items())
+    num_items = len(items)
+    
+    # Layout dimensions
+    y_axis_values_width = 55  # Space for "S$17.4k" etc
+    chart_bars_width = 420  # Width of the actual bar chart
+    legend_width = 110
+    
+    # CENTER the chart bars visually on the page (legend hangs to the right)
+    # The visual center is based on y_axis + chart_bars only
+    visual_content_width = y_axis_values_width + chart_bars_width
+    left_pad = (width - visual_content_width - legend_width) / 2
+    
+    chart_x = left_pad + y_axis_values_width
+    chart_y = 55  # Space for title at bottom and month labels
+    chart_width = chart_bars_width
+    chart_height = height - 100  # Leave more room at top and bottom
+    
+    # Get max value for scaling - add 15% headroom so bars don't touch top
+    monthly_totals = [0] * 12
+    for key, values in cashflow_data.items():
+        for i, v in enumerate(values):
+            monthly_totals[i] += v
+    
+    max_val = max(monthly_totals) if monthly_totals else 1
+    max_val = max(max_val * 1.15, 1)  # Add 15% headroom at top
+    
+    bar_width = (chart_width - 20) / 12 - 4
+    
+    # Draw y-axis grid lines and labels
+    for i in range(6):
+        y_pos = chart_y + (i / 5) * chart_height
+        d.add(Line(chart_x, y_pos, chart_x + chart_width, y_pos,
+                   strokeColor=SYFE_COLORS['medium_grey'], strokeWidth=0.5))
+        # Y-axis value labels (S$17.4k, etc) - right-aligned before chart
+        grid_val = max_val * i / 5
+        ccy_symbol = "S$" if currency == "SGD" else "$"
+        d.add(String(chart_x - 8, y_pos - 2, f"{ccy_symbol}{grid_val/1000:.1f}k",
+                     fontName='Helvetica', fontSize=7,
+                     fillColor=SYFE_COLORS['text_grey'],
+                     textAnchor='end'))
+    
+    # Draw stacked bars for each month
+    for month in range(12):
+        bar_x = chart_x + 10 + month * (bar_width + 4)
+        cumulative_y = chart_y
+        
+        for i, (key, values) in enumerate(items):
+            value = values[month] if month < len(values) else 0
+            if value > 0:
+                bar_height = (value / max_val) * chart_height
+                
+                # Draw bar segment
+                d.add(Rect(bar_x, cumulative_y, bar_width, bar_height,
+                           fillColor=EXTENDED_COLORS[i % len(EXTENDED_COLORS)],
+                           strokeColor=colors.white, strokeWidth=0.5))
+                
+                cumulative_y += bar_height
+        
+        # Month label
+        d.add(String(bar_x + bar_width / 2, chart_y - 12, str(month + 1),
+                     fontName='Helvetica', fontSize=7,
+                     fillColor=SYFE_COLORS['text_dark'],
+                     textAnchor='middle'))
+    
+    # X-axis label "Month" - CENTERED on page
+    d.add(String(width / 2, chart_y - 30, "Month",
+                 fontName='Helvetica', fontSize=8,
+                 fillColor=SYFE_COLORS['text_dark'],
+                 textAnchor='middle'))
+    
+    # Title at BOTTOM CENTER - CENTERED on page
+    d.add(String(width / 2, 10, f"Monthly Cash Flow Projections ({currency})",
+                 fontName='Helvetica-Bold', fontSize=13,
+                 fillColor=SYFE_COLORS['text_dark'],
+                 textAnchor='middle'))
+    
+    # Legend on the RIGHT - show ALL items
+    legend_x = chart_x + chart_width + 25
+    legend_start_y = chart_y + chart_height - 5
+    line_height = min(14, (chart_height - 10) / max(num_items, 1))  # Adjust spacing based on items
+    
+    for i, (key, values) in enumerate(items):
+        y_pos = legend_start_y - (i * line_height)
+        # Color box
+        d.add(Rect(legend_x, y_pos - 4, 10, 10,
+                   fillColor=EXTENDED_COLORS[i % len(EXTENDED_COLORS)],
+                   strokeColor=None))
+        # Label - show portfolio type, truncate if needed
+        label = key.split(' - ')[-1] if ' - ' in key else key
+        label = label[:18] if len(label) > 18 else label
+        d.add(String(legend_x + 14, y_pos - 2, label,
+                     fontName='Helvetica', fontSize=7,
+                     fillColor=SYFE_COLORS['text_dark']))
+    
+    return d
+
 
 # ==========================================
 # PORTFOLIO SUMMARY TABLE (grouped format)
@@ -466,18 +579,28 @@ def create_grouped_portfolio_table(df_raw, page_width):
     # Calculate allocation
     total_nav = df['nav_in_sgd'].sum() if 'nav_in_sgd' in df.columns else 0
     
-    # Classification mapping
+    # Asset Class mapping - matches the exposure chart categories
     def get_classification(portfolio_type):
         ptype = str(portfolio_type).upper()
-        if any(x in ptype for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA']):
-            return 'Core'
-        if any(x in ptype for x in ['INCOME', 'ENHANCE', 'BLACKROCK', 'MONROE']):
-            return 'Income+'
+        # Equity portfolios
+        if any(x in ptype for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'DISRUPTIVE']):
+            return 'Equity'
+        # Fixed Income portfolios
+        if any(x in ptype for x in ['INCOME_ENHANCE', 'INCOME_PRESERVE', 'BLACKROCK', 'MONROE', 'BOND']):
+            return 'Fixed Income'
+        # Check for generic INCOME after specific ones
+        if 'INCOME' in ptype:
+            return 'Fixed Income'
+        # REITs
         if 'REIT' in ptype:
             return 'REITs'
+        # Cash / MMF
         if any(x in ptype for x in ['CASH', 'MMF', 'FLEXI']):
             return 'Cash / MMF'
-        return 'Core'
+        # Specialized / alternatives (custom, thematic that don't fit above)
+        if any(x in ptype for x in ['CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
+            return 'Specialized / alternatives'
+        return 'Equity'  # Default to Equity
     
     # Risk rating mapping
     def get_risk_rating(portfolio_type):
@@ -502,9 +625,9 @@ def create_grouped_portfolio_table(df_raw, page_width):
         return any(x in upper for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 
                                         'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'GLOBAL'])
     
-    # Build table data (removed Returns Q1 column)
-    header = ['Portfolio ID', 'Portfolio Type', 'Classification', 'Risk rating (0-5)', 
-              'Activated date', 'Value (SGD)', 'Allocation', 'P&L Inception']
+    # Build table data - P&L with returns in brackets
+    header = ['Portfolio ID', 'Portfolio Type', 'Asset Class', 'Risk rating (0-5)', 
+              'Inception date', 'Value (SGD)', 'Allocation', 'P&L Inception']
     
     table_data = [header]
     
@@ -521,18 +644,18 @@ def create_grouped_portfolio_table(df_raw, page_width):
         classification = get_classification(port_type)
         risk = get_risk_rating(port_type)
         
-        # Get activated date
-        act_date = row.get('activated_date_sgt', row.get('activated_date', ''))
-        if pd.notna(act_date):
+        # Get inception date
+        inc_date = row.get('activated_date_sgt', row.get('activated_date', ''))
+        if pd.notna(inc_date):
             try:
-                if isinstance(act_date, str):
-                    act_date = pd.to_datetime(act_date).strftime('%B %d, %Y')
+                if isinstance(inc_date, str):
+                    inc_date = pd.to_datetime(inc_date).strftime('%b %d, %Y')
                 else:
-                    act_date = act_date.strftime('%B %d, %Y')
+                    inc_date = inc_date.strftime('%b %d, %Y')
             except:
-                act_date = str(act_date)[:15]
+                inc_date = str(inc_date)[:12]
         else:
-            act_date = ''
+            inc_date = ''
         
         nav = safe_float(row.get('nav_in_sgd', 0))
         allocation = (nav / total_nav * 100) if total_nav > 0 else 0
@@ -540,21 +663,31 @@ def create_grouped_portfolio_table(df_raw, page_width):
         # P&L Inception - the actual dollar amount from CSV
         pnl = safe_float(row.get('pnl_inception', 0))
         
+        # Calculate simple returns: PnL / (NAV - PnL) * 100
+        cost_basis = nav - pnl
+        if cost_basis > 0:
+            returns_pct = (pnl / cost_basis) * 100
+        else:
+            returns_pct = 0
+        
+        # Combine P&L dollar and returns % in one column
+        pnl_with_returns = f"${pnl:,.2f} ({returns_pct:.2f}%)"
+        
         row_data = [
             port_id,
             port_type_display,
             classification,
             f"{risk:.1f}",
-            act_date,
+            inc_date,
             f"{nav:,.2f}",
             f"{allocation:.2f}%",
-            f"{pnl:,.2f}"  # Show actual P&L in dollars
+            pnl_with_returns
         ]
         
         if is_growth_portfolio(port_type):
-            growth_rows.append((row_data, nav, allocation, pnl))
+            growth_rows.append((row_data, nav, allocation, pnl, returns_pct))
         else:
-            income_rows.append((row_data, nav, allocation, pnl))
+            income_rows.append((row_data, nav, allocation, pnl, returns_pct))
     
     # Sort by value
     growth_rows.sort(key=lambda x: -x[1])
@@ -565,57 +698,66 @@ def create_grouped_portfolio_table(df_raw, page_width):
     growth_total_alloc = sum(r[2] for r in growth_rows)
     growth_avg_risk = 4.0
     growth_total_pnl = sum(r[3] for r in growth_rows)
+    growth_cost = growth_total_nav - growth_total_pnl
+    growth_returns = (growth_total_pnl / growth_cost * 100) if growth_cost > 0 else 0
     
     income_total_nav = sum(r[1] for r in income_rows)
     income_total_alloc = sum(r[2] for r in income_rows)
     income_avg_risk = 1.4
     income_total_pnl = sum(r[3] for r in income_rows)
+    income_cost = income_total_nav - income_total_pnl
+    income_returns = (income_total_pnl / income_cost * 100) if income_cost > 0 else 0
     
     # Add growth portfolios
-    for row_data, _, _, _ in growth_rows:
+    for row_data, _, _, _, _ in growth_rows:
         table_data.append(row_data)
     
     # Add growth subtotal row
     if growth_rows:
+        growth_pnl_combined = f"${growth_total_pnl:,.2f} ({growth_returns:.2f}%)"
         table_data.append([
             'Growth Portfolios', '', '', f"{growth_avg_risk:.1f}", '',
             f"{growth_total_nav:,.2f}", f"{growth_total_alloc:.2f}%",
-            f"{growth_total_pnl:,.2f}"
+            growth_pnl_combined
         ])
     
     # Add income portfolios
-    for row_data, _, _, _ in income_rows:
+    for row_data, _, _, _, _ in income_rows:
         table_data.append(row_data)
     
     # Add income subtotal row
     if income_rows:
+        income_pnl_combined = f"${income_total_pnl:,.2f} ({income_returns:.2f}%)"
         table_data.append([
             'Income & Preservation', '', '', f"{income_avg_risk:.1f}", '',
             f"{income_total_nav:,.2f}", f"{income_total_alloc:.2f}%",
-            f"{income_total_pnl:,.2f}"
+            income_pnl_combined
         ])
     
     # Add total row
     grand_total = growth_total_nav + income_total_nav
     grand_total_pnl = growth_total_pnl + income_total_pnl
+    grand_cost = grand_total - grand_total_pnl
+    grand_returns = (grand_total_pnl / grand_cost * 100) if grand_cost > 0 else 0
     avg_risk = (growth_avg_risk * growth_total_nav + income_avg_risk * income_total_nav) / grand_total if grand_total > 0 else 0
     
+    grand_pnl_combined = f"${grand_total_pnl:,.2f} ({grand_returns:.2f}%)"
     table_data.append([
         'Total', '', '', f"{avg_risk:.1f}", '',
         f"{grand_total:,.2f}", '100.00%',
-        f"{grand_total_pnl:,.2f}"
+        grand_pnl_combined
     ])
     
-    # Calculate column widths (8 columns now)
+    # Calculate column widths (8 columns - combined P&L with returns)
     col_widths = [
-        0.12 * page_width,  # Portfolio ID
-        0.16 * page_width,  # Portfolio Type
-        0.11 * page_width,  # Classification
-        0.11 * page_width,  # Risk rating
-        0.15 * page_width,  # Activated date
+        0.10 * page_width,  # Portfolio ID
+        0.15 * page_width,  # Portfolio Type
+        0.10 * page_width,  # Classification
+        0.10 * page_width,  # Risk rating
+        0.12 * page_width,  # Inception date
         0.12 * page_width,  # Value
-        0.11 * page_width,  # Allocation
-        0.12 * page_width,  # P&L Inception
+        0.10 * page_width,  # Allocation
+        0.21 * page_width,  # P&L Inception (with returns %)
     ]
     
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
@@ -643,11 +785,9 @@ def create_grouped_portfolio_table(df_raw, page_width):
         ('TEXTCOLOR', (0, 1), (-1, -1), SYFE_COLORS['text_dark']),
         ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
         ('FONTSIZE', (0, 1), (-1, -1), 7),
-        ('ALIGN', (0, 1), (1, -1), 'LEFT'),
-        ('ALIGN', (2, 1), (-1, -1), 'CENTER'),
         
-        # Right align numeric columns
-        ('ALIGN', (5, 1), (8, -1), 'RIGHT'),
+        # CENTER align ALL columns
+        ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
         
         # Grid
         ('GRID', (0, 0), (-1, -1), 0.5, SYFE_COLORS['medium_grey']),
@@ -710,16 +850,17 @@ def merge_pdfs(pdf_list, output_path):
     with open(output_path, "wb") as f:
         writer.write(f)
 
-def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4), skip_first=True, skip_last=True, client_id=None):
+def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4), skip_first=True, skip_last=False, client_id=None):
     """
     Adds 'Page X of Y' to the bottom right, date/time and Client ID to top right of each page.
+    Now includes appendix page (skip_last=False by default).
     """
     page_width, page_height = page_size
     reader = PdfReader(input_pdf)
     writer = PdfWriter()
     total_pages = len(reader.pages)
     
-    # Calculate how many content pages (excluding cover and appendix)
+    # Calculate how many content pages (excluding cover only)
     content_pages = total_pages
     if skip_first:
         content_pages -= 1
@@ -733,8 +874,13 @@ def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4), skip_first=
     generated_datetime = datetime.now().strftime("%d %b %Y, %H:%M")
     
     for page_idx, page in enumerate(reader.pages):
-        # Skip cover page (first) and appendix (last)
-        if (skip_first and page_idx == 0) or (skip_last and page_idx == total_pages - 1):
+        # Skip cover page (first) only
+        if skip_first and page_idx == 0:
+            writer.add_page(page)
+            continue
+        
+        # Skip appendix if skip_last is True
+        if skip_last and page_idx == total_pages - 1:
             writer.add_page(page)
             continue
         
@@ -752,9 +898,9 @@ def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4), skip_first=
         text_width = can.stringWidth(text, "Helvetica", 7)
         can.drawString(page_width - 50 - text_width, 15, text)
         
-        # Date/time at top right
+        # Date/time at top right with "Generated at:" prefix
         can.setFont("Helvetica", 6)
-        gen_text = generated_datetime
+        gen_text = f"Generated at: {generated_datetime}"
         gen_text_width = can.stringWidth(gen_text, "Helvetica", 6)
         can.drawString(page_width - 50 - gen_text_width, page_height - 25, gen_text)
         
@@ -872,6 +1018,8 @@ class PortfolioReportGenerator:
         exposure_data=None,
         returns_data=None,
         dividends_data=None,
+        cashflow_data=None,
+        cashflow_currency="SGD",
         output_filename=None,
         include_cover=True,
         include_appendix=True
@@ -884,6 +1032,8 @@ class PortfolioReportGenerator:
             exposure_data: Dict with 'asset_class', 'country', 'sector' Series
             returns_data: Series with portfolio returns for bar chart
             dividends_data: Series with dividends earned by portfolio
+            cashflow_data: Dict with monthly cash flow projections
+            cashflow_currency: Currency for cash flow display
             output_filename: Output PDF filename
             include_cover: Whether to include cover page
             include_appendix: Whether to include appendix page
@@ -906,17 +1056,6 @@ class PortfolioReportGenerator:
         # ==========================================
         
         all_elements.append(Paragraph("Portfolio Summary", styles['section_header']))
-        
-        # Add Client ID below Portfolio Summary
-        client_id_style = ParagraphStyle(
-            name='ClientID',
-            fontName='Helvetica',
-            fontSize=8,
-            textColor=SYFE_COLORS['text_grey'],
-            spaceBefore=2,
-            spaceAfter=8
-        )
-        all_elements.append(Paragraph(f"Client ID: {self.client_id}", client_id_style))
         
         # Holdings Table (grouped format)
         if df_holdings is not None and not df_holdings.empty:
@@ -1019,6 +1158,24 @@ class PortfolioReportGenerator:
             all_elements.append(page2_table)
             all_elements.append(Spacer(1, 0.2 * inch))
         
+        # Cash Flow Projections Chart - CENTERED on page
+        if cashflow_data is not None and len(cashflow_data) > 0:
+            all_elements.append(Spacer(1, 0.1 * inch))
+            cashflow_chart = create_cashflow_chart_drawing(
+                cashflow_data,
+                currency=cashflow_currency,
+                width=page_width,  # Use full page width
+                height=220
+            )
+            if cashflow_chart:
+                # Wrap in a table to center it on the page
+                cashflow_table = Table([[cashflow_chart]], colWidths=[page_width])
+                cashflow_table.setStyle(TableStyle([
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                all_elements.append(cashflow_table)
+        
         # ==========================================
         # BUILD PDF
         # ==========================================
@@ -1067,13 +1224,13 @@ class PortfolioReportGenerator:
         merged_pdf = "temp_merged.pdf"
         merge_pdfs(pdfs_to_merge, merged_pdf)
         
-        # Add page numbers and client ID
+        # Add page numbers and client ID (include appendix in page numbering)
         add_page_numbers(
             merged_pdf, 
             output_filename, 
             page_size=page_size,
             skip_first=include_cover and os.path.exists(cover_path),
-            skip_last=include_appendix and os.path.exists(appendix_path),
+            skip_last=False,  # Include appendix in page numbering
             client_id=self.client_id
         )
         
@@ -1230,6 +1387,138 @@ def prepare_dividends_data(df_raw):
     
     print(f"[DEBUG] Aggregated dividends data: {aggregated.to_dict()}")
     return aggregated
+
+
+def prepare_cashflow_data(df_raw, df_fi_metrics=None):
+    """
+    Prepare monthly cash flow projections based on portfolio yields.
+    Uses est_yield column from CSV or estimates based on portfolio type.
+    
+    Returns:
+        dict: keys are portfolio types, values are arrays of 12 monthly amounts
+    """
+    if df_raw is None or df_raw.empty:
+        return None
+    
+    df = df_raw.copy()
+    df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_')
+    
+    def safe_float(val):
+        if pd.isna(val):
+            return 0.0
+        if isinstance(val, (int, float)):
+            return float(val)
+        try:
+            return float(str(val).replace(',', '').replace('%', ''))
+        except:
+            return 0.0
+    
+    # Get name/type column
+    name_col = None
+    for col in ['type', 'name', 'portfolio_type']:
+        if col in df.columns:
+            name_col = col
+            break
+    
+    if name_col is None:
+        return None
+    
+    # Find NAV column
+    nav_col = None
+    for col in ['nav_in_sgd', 'nav', 'value', 'balance']:
+        if col in df.columns:
+            nav_col = col
+            break
+    
+    if nav_col is None:
+        return None
+    
+    # Find yield column
+    yield_col = None
+    for col in ['est_yield', 'estimated_yield', 'yield', 'annual_yield']:
+        if col in df.columns:
+            yield_col = col
+            break
+    
+    # Default yields by portfolio type (annual %)
+    DEFAULT_YIELDS = {
+        'INCOME_ENHANCE': 5.5,
+        'INCOME_PRESERVE': 4.5,
+        'INCOME': 5.0,
+        'REIT': 4.0,
+        'BLACKROCK': 8.0,
+        'MONROE': 7.5,
+        'CASH': 3.5,
+        'CORE': 0,  # Core portfolios reinvest dividends
+        'GROWTH': 0,
+        'EQUITY': 0,
+        'CHINA': 0,
+        'ESG': 0,
+        'HEALTHCARE': 0,
+        'DISRUPTIVE': 0,
+        'TECHNOLOGY': 0,
+    }
+    
+    # Determine payment frequency
+    def get_payment_freq(port_type):
+        upper = str(port_type).upper()
+        if 'REIT' in upper:
+            return 'quarterly'
+        return 'monthly'
+    
+    # Get yield for portfolio
+    def get_yield(port_type, row_yield=None):
+        if row_yield and row_yield > 0:
+            # If yield is > 1, assume it's already in percentage
+            return row_yield / 100 if row_yield > 1 else row_yield
+        
+        upper = str(port_type).upper()
+        for key, default_yield in DEFAULT_YIELDS.items():
+            if key in upper:
+                return default_yield / 100
+        return 0
+    
+    # Calculate cash flows
+    cashflow_data = {}
+    
+    for _, row in df.iterrows():
+        port_type = str(row[name_col]).replace('_', ' ').title()
+        nav = safe_float(row.get(nav_col, 0))
+        
+        # Skip portfolios with no value
+        if nav < 100:
+            continue
+        
+        # Get yield
+        row_yield = safe_float(row.get(yield_col, 0)) if yield_col else 0
+        annual_yield = get_yield(row[name_col], row_yield)
+        
+        # Skip zero-yield portfolios (like Core portfolios that reinvest)
+        if annual_yield <= 0:
+            continue
+        
+        # Initialize monthly array for this portfolio
+        if port_type not in cashflow_data:
+            cashflow_data[port_type] = [0.0] * 12
+        
+        # Calculate monthly cash flow
+        payment_freq = get_payment_freq(row[name_col])
+        
+        if payment_freq == 'monthly':
+            monthly_amount = (nav * annual_yield) / 12
+            for month in range(12):
+                cashflow_data[port_type][month] += monthly_amount
+        else:  # quarterly
+            quarterly_amount = (nav * annual_yield) / 4
+            for quarter in range(4):
+                month = (quarter * 3) + 2  # Months 3, 6, 9, 12 (index 2, 5, 8, 11)
+                cashflow_data[port_type][month] += quarterly_amount
+    
+    if not cashflow_data:
+        return None
+    
+    print(f"[DEBUG] Cash flow data portfolios: {list(cashflow_data.keys())}")
+    return cashflow_data
 
 
 def generate_client_report(

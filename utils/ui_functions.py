@@ -488,6 +488,14 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 # Calculate all charts first
                 charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
                 
+                # Store exposure data in session_state for PDF export
+                if 'sector_table' in charts:
+                    st.session_state['sector_exposure'] = charts['sector_table']['Weight']
+                if 'country_table' in charts:
+                    st.session_state['country_exposure'] = charts['country_table']['Weight']
+                if 'asset_table' in charts:
+                    st.session_state['asset_class_exposure'] = charts['asset_table']['Weight']
+                
                 # --- Row 1: Asset Class + Top Holdings ---
                 col_asset, col_holdings = st.columns([1, 1])
                 
@@ -2519,6 +2527,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         monthly_cash_flows.loc[p_name, month + 1] += quarterly_payment
                                         ticker_cash_flows[ticker_key][month] += quarterly_payment
         
+            # Store cash flow data in session_state for PDF export
+            st.session_state['cashflow_data'] = ticker_cash_flows
+            st.session_state['cashflow_currency'] = display_currency
+            
             # Create stacked bar chart
             fig = go.Figure()
         
