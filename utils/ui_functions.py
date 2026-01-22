@@ -57,24 +57,40 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
         if uploaded_file:
             try:
                 df_client = pd.read_csv(uploaded_file)
+                
+                # Normalize column names to lowercase
+                df_client.columns = df_client.columns.str.lower().str.strip()
+                
                 # Standardize naming
                 if 'type' in df_client.columns:
                     df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
                     df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
                 # Filter for ACTIVE
                 if 'status' in df_client.columns:
-                    df_client = df_client[df_client['status'] == 'ACTIVE']
+                    df_client = df_client[df_client['status'].str.upper() == 'ACTIVE']
+                
+                # Extract client_id from portfolio_id column if available
+                client_id = 'CSV_Client'
+                if 'portfolio_id' in df_client.columns and len(df_client) > 0:
+                    # Try to extract from first portfolio_id or use filename
+                    first_id = str(df_client['portfolio_id'].iloc[0])
+                    if first_id and len(first_id) > 3:
+                        client_id = first_id[:10]  # Use first 10 chars
                 
                 # Store in session state for PDF export
                 st.session_state['csv_client_df'] = df_client
                 st.session_state['metabase_client_df'] = df_client  # Also set this for compatibility
                 st.session_state['metabase_client_info'] = {
-                    'client_id': 'CSV Upload',
+                    'client_id': client_id,
                     'name': uploaded_file.name.replace('.csv', ''),
                     'age': None,
                     'risk_score': None
                 }
-                st.success(f"Loaded {len(df_client)} portfolios from CSV")
+                
+                # Store raw CSV data for PDF generation
+                st.session_state['csv_raw_data'] = df_client.copy()
+                
+                st.success(f"Loaded {len(df_client)} portfolios from CSV (Client: {client_id})")
                 
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
@@ -115,7 +131,12 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         
                         # --- Auto-Generate AI Analysis ---
                         with st.spinner("Generating AI Analysis..."):
-                            holdings_list = fetched_df[['name', 'type', 'nav_in_sgd']].to_dict('records')
+                            # Determine which columns to use for holdings list
+                            holdings_cols = []
+                            for col in ['name', 'type', 'nav_in_sgd']:
+                                if col in fetched_df.columns:
+                                    holdings_cols.append(col)
+                            holdings_list = fetched_df[holdings_cols].to_dict('records') if holdings_cols else []
                             ai_analysis = analyze_portfolio_appropriateness(
                                 "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0", # Hardcoded key
                                 st.session_state['client_profile'],
@@ -144,7 +165,17 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             
             # Display Portfolios
             if not df_display.empty:
-                st.dataframe(df_display[['name', 'type', 'nav_in_sgd', 'pnl_inception']], use_container_width=True)
+                # Determine which columns to display (handle varying column names)
+                display_cols = []
+                for col in ['name', 'type', 'portfolio_type', 'nav_in_sgd', 'nav', 'value', 'pnl_inception', 'pnl', 'returns']:
+                    if col in df_display.columns and col not in display_cols:
+                        display_cols.append(col)
+                
+                # If no standard columns found, display all columns
+                if not display_cols:
+                    display_cols = list(df_display.columns)
+                
+                st.dataframe(df_display[display_cols], use_container_width=True)
                 df_client = df_display # Set for downstream processing
             else:
                 st.warning("Client has no ACTIVE portfolios.")

@@ -26,8 +26,8 @@ from utils.exposure import get_exposure_charts
 # Import the new portfolio report generator
 from utils.portfolio_report_generator import (
     PortfolioReportGenerator,
-    prepare_portfolio_summary_df,
-    prepare_income_portfolio_df,
+    prepare_holdings_dataframe,
+    prepare_returns_data,
     generate_client_report
 )
 
@@ -633,30 +633,30 @@ def generate_report_content(modules):
 
     # 4. Analysis Results
     if "4. Analysis Results" in modules:
-        content_blocks.append({'type': 'header', 'title': '4. Analysis Results'})
-        
-        if 'optimization_results' in st.session_state:
-            res_data = st.session_state['optimization_results']
-            if res_data:
-                ret_all = res_data.get('ret_all')
-                ret_bm = res_data.get('ret_bm')
-            else:
-                ret_all = None
-                ret_bm = None
-            
-            if ret_all is not None:
-                charts = []
-                cum_ret = (1 + ret_all).cumprod()
-                fig_cum = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
-                charts.append(fig_cum)
-                
-                fig_risk = plot_scatter_risk_return(ret_all, benchmark_ret=ret_bm)
-                charts.append(fig_risk)
-                
-                fig_dd = plot_drawdowns(ret_all)
-                charts.append(fig_dd)
-                
-                content_blocks.append({'type': 'charts', 'charts': charts})
+         content_blocks.append({'type': 'header', 'title': '4. Analysis Results'})
+         
+         if 'optimization_results' in st.session_state:
+             res_data = st.session_state['optimization_results']
+             if res_data:
+                 ret_all = res_data.get('ret_all')
+                 ret_bm = res_data.get('ret_bm')
+             else:
+                 ret_all = None
+                 ret_bm = None
+             
+             if ret_all is not None:
+                 charts = []
+                 cum_ret = (1 + ret_all).cumprod()
+                 fig_cum = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
+                 charts.append(fig_cum)
+                 
+                 fig_risk = plot_scatter_risk_return(ret_all, benchmark_ret=ret_bm)
+                 charts.append(fig_risk)
+                 
+                 fig_dd = plot_drawdowns(ret_all)
+                 charts.append(fig_dd)
+                 
+                 content_blocks.append({'type': 'charts', 'charts': charts})
 
     # 5. Exposure Analysis
     if "5. Exposure Analysis" in modules:
@@ -738,86 +738,206 @@ def render_export_ui(modules_selected):
             has_client_data = df_port is not None and not df_port.empty
             
             if has_client_data and "1. Client Data Source" in modules_selected:
-                # Use the PortfolioReportGenerator for proper formatting
                 try:
-                    client_id = str(client_info.get('client_id', 'Client')).replace(' ', '_')
+                    from utils.portfolio_report_generator import (
+                        PortfolioReportGenerator, 
+                        prepare_holdings_dataframe,
+                        prepare_returns_data,
+                        prepare_dividends_data,
+                        calculate_portfolio_exposure
+                    )
+                    from utils.data_loader import load_static_data, get_data_path
+                    from utils.exposure import calculate_exposure, group_tail
                     
-                    # Aggregate by portfolio type
-                    agg_df = aggregate_by_portfolio_type(df_port)
-                    
-                    if not agg_df.empty:
-                        # Prepare summary dataframe
-                        df_summary = format_dataframe_for_pdf(agg_df)
-                        
-                        # Build exposure data for charts
-                        exposure_data = {}
-                        val_col = None
-                        for c in agg_df.columns:
-                            if 'nav' in c.lower() or 'value' in c.lower() or 'balance' in c.lower():
-                                val_col = c
-                                break
-                        
-                        if val_col:
-                            # By Classification (Asset Class)
-                            if 'classification' in agg_df.columns:
-                                class_exp = agg_df.groupby('classification')[val_col].sum()
-                                class_exp = class_exp / class_exp.sum()
-                                exposure_data['asset_class'] = class_exp
-                            
-                            # By Objective (using country slot)
-                            if 'objective' in agg_df.columns:
-                                obj_exp = agg_df.groupby('objective')[val_col].sum()
-                                obj_exp = obj_exp / obj_exp.sum()
-                                exposure_data['country'] = obj_exp
-                            
-                            # By Portfolio Type (using sector slot)
-                            type_col = None
-                            for c in ['type', 'portfolio_type', 'name']:
-                                if c in agg_df.columns:
-                                    type_col = c
-                                    break
-                            if type_col:
-                                type_exp = agg_df.groupby(type_col)[val_col].sum()
-                                type_exp = type_exp / type_exp.sum()
-                                exposure_data['sector'] = type_exp
-                        
-                        # Generate report using the generator
-                        generator = PortfolioReportGenerator(
-                            client_id=client_id,
-                            report_date=date.today(),
-                            data_path='Data/'
-                        )
-                        
-                        final_filename = f"Client_{client_id}_Portfolio_Summary_{date.today().strftime('%Y%m%d')}.pdf"
-                        
-                        generated_file = generator.generate_report(
-                            df_portfolio_summary=df_summary,
-                            exposure_data=exposure_data if exposure_data else None,
-                            output_filename=final_filename,
-                            include_cover=True,
-                            include_appendix=True
-                        )
-                        
-                        # Read for download
-                        with open(generated_file, "rb") as f:
-                            pdf_data = f.read()
-                        
-                        st.success("PDF generated successfully with Cover and Appendix!")
-                        
-                        st.download_button(
-                            label="📥 Download Portfolio Summary PDF",
-                            data=pdf_data,
-                            file_name=final_filename,
-                            mime="application/pdf"
-                        )
-                        
-                        # Cleanup
-                        if os.path.exists(generated_file):
-                            os.remove(generated_file)
-                        
-                        return
+                    # Extract client_id from CSV's client_id column
+                    df_temp = df_port.copy()
+                    df_temp.columns = df_temp.columns.str.lower().str.strip()
+                    if 'client_id' in df_temp.columns:
+                        # Get first non-null client_id from CSV
+                        client_id_values = df_temp['client_id'].dropna().unique()
+                        if len(client_id_values) > 0:
+                            client_id = str(client_id_values[0])
+                        else:
+                            client_id = str(client_info.get('client_id', 'Client'))
                     else:
-                        st.warning("Could not aggregate portfolio data.")
+                        client_id = str(client_info.get('client_id', 'Client'))
+                    
+                    client_id = client_id.replace(' ', '_')
+                    
+                    # Load exposure matrices from Inv_Data_Hardcoded.xlsx
+                    data_path = get_data_path()
+                    df_sec_list, df_asset_class, df_sector, df_country, df_fi_metrics, df_fx, df_daily_ret, df_risk_rating, df_underlying = load_static_data(data_path)
+                    
+                    # Prepare holdings table
+                    df_holdings = prepare_holdings_dataframe(df_port)
+                    
+                    # Prepare returns data for bar chart
+                    returns_data = prepare_returns_data(df_port)
+                    
+                    # Prepare dividends data for bar chart
+                    print(f"[DEBUG] CSV columns: {list(df_port.columns)}")
+                    dividends_data = prepare_dividends_data(df_port)
+                    print(f"[DEBUG] Dividends data length: {len(dividends_data) if dividends_data is not None else 0}")
+                    
+                    # ============================================
+                    # CALCULATE EXPOSURES USING SUMPRODUCT LOGIC
+                    # ============================================
+                    
+                    # Portfolio type to ticker mapping (matches ui_functions.py)
+                    PORTFOLIO_TICKER_MAP = {
+                        # Core Portfolios
+                        'GLOBAL_EQUITY_100': 'Core Equity100',
+                        'GLOBAL_EQUITY': 'Core Equity100',
+                        'CORE_EQUITY100': 'Core Equity100',
+                        'CORE_EQUITY_100': 'Core Equity100',
+                        'EQUITY100': 'Core Equity100',
+                        'CORE_GROWTH': 'Core Growth',
+                        'CORE_BALANCED': 'Core Balanced',
+                        'CORE_DEFENSIVE': 'Core Defensive',
+                        'DOWNSIDE_PROTECTED': 'Downside protected',
+                        # Thematic Portfolios
+                        'CHINA_GROWTH': 'China Growth',
+                        'DISRUPTIVE_TECHNOLOGY': 'Disruptive Technology',
+                        'DISRUPTIVE_TECH': 'Disruptive Technology',
+                        'ESG_AND_CLEAN_ENERGY': 'ESG & Clean Energy',
+                        'ESG_CLEAN_ENERGY': 'ESG & Clean Energy',
+                        'HEALTHCARE_INNOVATION': 'Healthcare Innovation',
+                        # Income Portfolios
+                        'INCOME_ENHANCE': 'Income Enhance',
+                        'INCOME_ENHANCED': 'Income Enhance',
+                        'INCOME_PRESERVE': 'Income Preserve',
+                        # REIT Portfolios
+                        'REIT': 'REIT 100',
+                        'REIT_100': 'REIT 100',
+                        'REIT_RISK_MANAGED': 'REIT Risk Managed',
+                        'REIT_RM': 'REIT Risk Managed',
+                        # Private Credit / AI Products
+                        'BLACKROCK': 'Blackrock Private Credit Fund',
+                        'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
+                        'BLACKROCK_PCF': 'Blackrock Private Credit Fund',
+                        'MONROE': 'Monroe Income Plus Fund',
+                        'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
+                        'MONROE_CAPITAL': 'Monroe Income Plus Fund',
+                        'SILVERDALE': 'Silverdale Fund (Nov 2027)',
+                        # Cash Management
+                        'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
+                        'CASH_PLUS_GUARANTEED': 'Cash SGD guaranteed',
+                        'CASH_GUARANTEED': 'Cash SGD guaranteed',
+                        'CASH_PLUS_USD': 'Cash USD flexi',
+                        'CASH_USD': 'Cash USD flexi',
+                        'CASH_PLUS': 'Cash SGD flexi',
+                        'CASH_SGD': 'Cash SGD flexi',
+                        'CASH_PLUS_SGD': 'Cash SGD flexi',
+                        # SRS Portfolios
+                        'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
+                        'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
+                        'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
+                        'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
+                        'SRS_CASH': 'SRS Cash SGD flexi',
+                        'SRS_GLOBAL_EQUITY_100': 'SRS Equity100',
+                    }
+                    
+                    # Build weights from CSV data
+                    client_weights = {}
+                    total_nav = 0.0
+                    
+                    def safe_float(val):
+                        """Convert value to float, handling comma-separated numbers."""
+                        if pd.isna(val):
+                            return 0.0
+                        if isinstance(val, (int, float)):
+                            return float(val)
+                        # Remove commas from string representation
+                        return float(str(val).replace(',', ''))
+                    
+                    if 'nav_in_sgd' in df_port.columns and 'type' in df_port.columns:
+                        for _, row in df_port.iterrows():
+                            port_type = str(row.get('type', '')).upper().strip()
+                            nav = safe_float(row.get('nav_in_sgd', 0))
+                            
+                            if nav < 50:
+                                continue
+                            
+                            # Map to internal ticker or use type directly
+                            ticker = PORTFOLIO_TICKER_MAP.get(port_type, port_type)
+                            
+                            client_weights[ticker] = client_weights.get(ticker, 0) + nav
+                            total_nav += nav
+                    
+                    # Normalize weights
+                    if total_nav > 0:
+                        for k in client_weights:
+                            client_weights[k] /= total_nav
+                    
+                    # Format weights for exposure calculation (add _wgt suffix)
+                    weights_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
+                    
+                    # Calculate exposures using the exposure matrices
+                    exposure_data = {}
+                    
+                    # Asset Class Exposure
+                    if df_asset_class is not None and not df_asset_class.empty:
+                        asset_exp = calculate_exposure(weights_series, df_asset_class)
+                        if not asset_exp.empty:
+                            asset_exp = group_tail(asset_exp, top_n=8)
+                            exposure_data['asset_class'] = asset_exp
+                    
+                    # Country Exposure
+                    if df_country is not None and not df_country.empty:
+                        country_exp = calculate_exposure(weights_series, df_country)
+                        if not country_exp.empty:
+                            country_exp = group_tail(country_exp, top_n=8)
+                            exposure_data['country'] = country_exp
+                    
+                    # Sector Exposure
+                    if df_sector is not None and not df_sector.empty:
+                        sector_exp = calculate_exposure(weights_series, df_sector)
+                        if not sector_exp.empty:
+                            sector_exp = group_tail(sector_exp, top_n=8)
+                            exposure_data['sector'] = sector_exp
+                    
+                    # If no exposure matrices worked, use portfolio type breakdown
+                    if not exposure_data:
+                        type_exp = pd.Series(client_weights)
+                        exposure_data['asset_class'] = group_tail(type_exp, top_n=8)
+                    
+                    # Generate report
+                    generator = PortfolioReportGenerator(
+                        client_id=client_id,
+                        report_date=date.today(),
+                        data_path='Data/'
+                    )
+                    
+                    final_filename = f"Client_{client_id}_Portfolio_Summary_{date.today().strftime('%Y%m%d')}.pdf"
+                    
+                    generated_file = generator.generate_report(
+                        df_holdings=df_holdings,
+                        exposure_data=exposure_data if exposure_data else None,
+                        returns_data=returns_data,
+                        dividends_data=dividends_data if dividends_data is not None and len(dividends_data) > 0 else None,
+                        output_filename=final_filename,
+                        include_cover=True,
+                        include_appendix=True
+                    )
+                    
+                    # Read for download
+                    with open(generated_file, "rb") as f:
+                        pdf_data = f.read()
+                    
+                    st.success(f"PDF generated successfully! Client: {client_id}")
+                    
+                    st.download_button(
+                        label="📥 Download Portfolio Summary PDF",
+                        data=pdf_data,
+                        file_name=final_filename,
+                        mime="application/pdf"
+                    )
+                    
+                    # Cleanup
+                    if os.path.exists(generated_file):
+                        os.remove(generated_file)
+                    
+                    return
                         
                 except Exception as e:
                     st.error(f"Error generating PDF: {e}")
