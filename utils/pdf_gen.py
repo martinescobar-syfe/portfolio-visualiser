@@ -937,15 +937,25 @@ def render_export_ui(modules_selected):
                     
                     final_filename = f"Client_{client_id}_Portfolio_Summary_{date.today().strftime('%Y%m%d')}.pdf"
                     
-                    # Calculate cash flow data from CSV (using yields)
-                    print(f"[DEBUG] Preparing cash flow data from CSV...")
-                    cashflow_data = prepare_cashflow_data(df_port, df_fi_metrics)
+                    # Use cash flow data from session_state (calculated in app's Section 7) if available
+                    # This ensures consistency with app display and uses yields from df_fi_metrics
+                    cashflow_data = None
                     cashflow_currency = 'SGD'
                     
-                    if cashflow_data:
-                        print(f"[DEBUG] Cash flow data generated with {len(cashflow_data)} portfolios")
+                    if 'cashflow_data' in st.session_state and st.session_state['cashflow_data']:
+                        print(f"[DEBUG] Using cash flow data from session_state")
+                        cashflow_data = st.session_state['cashflow_data']
+                        cashflow_currency = st.session_state.get('cashflow_currency', 'SGD')
+                        print(f"[DEBUG] Cash flow data has {len(cashflow_data)} portfolios")
                     else:
-                        print(f"[DEBUG] No cash flow data generated")
+                        # Fallback: Calculate cash flow data from CSV (using yields from df_fi_metrics)
+                        print(f"[DEBUG] Preparing cash flow data from CSV...")
+                        cashflow_data = prepare_cashflow_data(df_port, df_fi_metrics)
+                        
+                        if cashflow_data:
+                            print(f"[DEBUG] Cash flow data generated with {len(cashflow_data)} portfolios")
+                        else:
+                            print(f"[DEBUG] No cash flow data generated")
                     
                     generated_file = generator.generate_report(
                         df_holdings=df_holdings,

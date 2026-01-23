@@ -906,8 +906,10 @@ def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4), skip_first=
     # Track which content page we're on
     content_page_num = 0
     
-    # Get current date/time for generation timestamp
-    generated_datetime = datetime.now().strftime("%d %b %Y, %H:%M")
+    # Get current date/time for generation timestamp in SGT (Singapore Time, UTC+8)
+    from zoneinfo import ZoneInfo
+    sgt = ZoneInfo('Asia/Singapore')
+    generated_datetime = datetime.now(sgt).strftime("%d %b %Y, %H:%M")
     
     for page_idx, page in enumerate(reader.pages):
         # Skip cover page (first) only
@@ -1212,18 +1214,18 @@ class PortfolioReportGenerator:
                 ]))
                 all_elements.append(cashflow_table)
         else:
-            # No cash flow generating portfolios - show message
+            # No cash flow generating portfolios - show message (left-aligned)
             all_elements.append(Spacer(1, 0.2 * inch))
             no_cashflow_style = ParagraphStyle(
                 name='NoCashflow',
                 fontName='Helvetica',
                 fontSize=11,
                 textColor=SYFE_COLORS['text_grey'],
-                alignment=1,  # Center
+                alignment=0,  # Left-aligned
                 spaceBefore=20,
                 spaceAfter=20
             )
-            all_elements.append(Paragraph("No Cashflow Generating Portfolios", no_cashflow_style))
+            all_elements.append(Paragraph("Client has no cashflow generating portfolios", no_cashflow_style))
         
         # ==========================================
         # BUILD PDF
@@ -1441,8 +1443,10 @@ def prepare_dividends_data(df_raw):
 
 def prepare_cashflow_data(df_raw, df_fi_metrics=None):
     """
-    Prepare monthly cash flow projections based on portfolio yields.
-    Uses est_yield column from CSV or estimates based on portfolio type.
+    Prepare monthly cash flow projections based on portfolio yields from df_fi_metrics.
+    
+    INCLUDES: REITs, Income portfolios, Alternatives (Blackrock, Monroe)
+    EXCLUDES: Cash/MMF, ALL Growth portfolios, CUSTOM portfolios
     
     Returns:
         dict: keys are portfolio types, values are arrays of 12 monthly amounts
@@ -1483,67 +1487,138 @@ def prepare_cashflow_data(df_raw, df_fi_metrics=None):
     if nav_col is None:
         return None
     
-    # Find yield column
-    yield_col = None
-    for col in ['est_yield', 'estimated_yield', 'yield', 'annual_yield']:
-        if col in df.columns:
-            yield_col = col
-            break
-    
-    # Default yields by portfolio type (annual %)
-    DEFAULT_YIELDS = {
-        'INCOME_ENHANCE': 5.5,
-        'INCOME_PRESERVE': 4.5,
-        'INCOME': 5.0,
-        'REIT': 4.0,
-        'BLACKROCK': 8.0,
-        'MONROE': 7.5,
-        'CASH': 3.5,
-        'CORE': 0,  # Core portfolios reinvest dividends
-        'GROWTH': 0,
-        'EQUITY': 0,
-        'CHINA': 0,
-        'ESG': 0,
-        'HEALTHCARE': 0,
-        'DISRUPTIVE': 0,
-        'TECHNOLOGY': 0,
+    # Portfolio type to ticker mapping for yield lookup
+    PORTFOLIO_TICKER_MAP = {
+        'INCOME_ENHANCE': 'Income Enhance',
+        'INCOME_ENHANCED': 'Income Enhance',
+        'INCOME_PRESERVE': 'Income Preserve',
+        'INCOME': 'Income Enhance',
+        'REIT': 'REIT 100',
+        'REIT_100': 'REIT 100',
+        'REIT_RISK_MANAGED': 'REIT Risk Managed',
+        'BLACKROCK': 'Blackrock Private Credit Fund',
+        'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
+        'MONROE': 'Monroe Income Plus Fund',
+        'MONROE_CAPITAL': 'Monroe Income Plus Fund',
+        'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
+        'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
+        'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
     }
     
-    # Determine payment frequency
+    # Portfolio types to EXCLUDE from cash flow (no cash flow analysis)
+    EXCLUDED_PATTERNS = [
+        'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF
+        'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios
+        'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # More growth
+        'CUSTOM', 'STRATEGIC',  # Custom portfolios excluded
+    ]
+    
+    def should_exclude(port_type):
+        """Check if portfolio should be excluded from cash flow analysis"""
+        upper = str(port_type).upper()
+        for pattern in EXCLUDED_PATTERNS:
+            if pattern in upper:
+                return True
+        return False
+    
+    def should_include(port_type):
+        """Check if portfolio should be included in cash flow analysis"""
+        upper = str(port_type).upper()
+        # Include: REITs, Income, Blackrock, Monroe
+        include_patterns = ['REIT', 'INCOME', 'BLACKROCK', 'MONROE']
+        for pattern in include_patterns:
+            if pattern in upper:
+                return True
+        return False
+    
+    def get_ticker(port_type):
+        """Map portfolio type to ticker for yield lookup"""
+        upper = str(port_type).upper().replace(' ', '_').replace('-', '_')
+        # Remove common suffixes
+        for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED']:
+            if upper.endswith(suffix):
+                upper = upper[:-len(suffix)]
+        
+        # Try exact match first
+        if upper in PORTFOLIO_TICKER_MAP:
+            return PORTFOLIO_TICKER_MAP[upper]
+        
+        # Try contains match for Blackrock/Monroe
+        if 'BLACKROCK' in upper:
+            return 'Blackrock Private Credit Fund'
+        if 'MONROE' in upper:
+            return 'Monroe Income Plus Fund'
+        if 'REIT' in upper:
+            return 'REIT 100'
+        if 'INCOME_ENHANCE' in upper or 'INCOME ENHANCE' in upper:
+            return 'Income Enhance'
+        if 'INCOME' in upper:
+            return 'Income Enhance'
+        
+        return None
+    
+    def get_yield_from_fi_metrics(ticker):
+        """Get annual yield from df_fi_metrics (yields are in % format)"""
+        if df_fi_metrics is None or ticker is None:
+            return 0.0
+        
+        if ticker not in df_fi_metrics.columns:
+            return 0.0
+        
+        annual_yield = 0.0
+        
+        # First try T12M dividend yield
+        if 'T12M dividend yield' in df_fi_metrics.index:
+            yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
+            if pd.notna(yield_val) and yield_val != 0:
+                annual_yield = float(yield_val) / 100  # Convert % to decimal
+        
+        # Fall back to YTM / est. yield if no dividend yield
+        if annual_yield == 0 and 'YTM / est. yield' in df_fi_metrics.index:
+            yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
+            if pd.notna(yield_val) and yield_val != 0:
+                annual_yield = float(yield_val) / 100  # Convert % to decimal
+        
+        return annual_yield
+    
     def get_payment_freq(port_type):
+        """Determine payment frequency"""
         upper = str(port_type).upper()
         if 'REIT' in upper:
             return 'quarterly'
         return 'monthly'
     
-    # Get yield for portfolio
-    def get_yield(port_type, row_yield=None):
-        if row_yield and row_yield > 0:
-            # If yield is > 1, assume it's already in percentage
-            return row_yield / 100 if row_yield > 1 else row_yield
-        
-        upper = str(port_type).upper()
-        for key, default_yield in DEFAULT_YIELDS.items():
-            if key in upper:
-                return default_yield / 100
-        return 0
-    
     # Calculate cash flows
     cashflow_data = {}
     
     for _, row in df.iterrows():
-        port_type = str(row[name_col]).replace('_', ' ').title()
+        raw_type = str(row[name_col])
+        port_type = raw_type.replace('_', ' ').title()
         nav = safe_float(row.get(nav_col, 0))
         
         # Skip portfolios with no value
         if nav < 100:
             continue
         
-        # Get yield
-        row_yield = safe_float(row.get(yield_col, 0)) if yield_col else 0
-        annual_yield = get_yield(row[name_col], row_yield)
+        # Check if portfolio should be excluded
+        if should_exclude(raw_type):
+            print(f"[DEBUG] Excluding {raw_type} from cash flow (excluded pattern)")
+            continue
         
-        # Skip zero-yield portfolios (like Core portfolios that reinvest)
+        # Check if portfolio should be included
+        if not should_include(raw_type):
+            print(f"[DEBUG] Skipping {raw_type} from cash flow (not in include list)")
+            continue
+        
+        # Get ticker for yield lookup
+        ticker = get_ticker(raw_type)
+        
+        # Get yield from FI metrics
+        annual_yield = get_yield_from_fi_metrics(ticker)
+        
+        print(f"[DEBUG] Portfolio {raw_type} -> ticker {ticker} -> yield {annual_yield:.4f}")
+        
+        # Skip zero-yield portfolios
         if annual_yield <= 0:
             continue
         
@@ -1552,7 +1627,7 @@ def prepare_cashflow_data(df_raw, df_fi_metrics=None):
             cashflow_data[port_type] = [0.0] * 12
         
         # Calculate monthly cash flow
-        payment_freq = get_payment_freq(row[name_col])
+        payment_freq = get_payment_freq(raw_type)
         
         if payment_freq == 'monthly':
             monthly_amount = (nav * annual_yield) / 12
