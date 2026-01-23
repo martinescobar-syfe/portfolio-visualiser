@@ -893,25 +893,25 @@ def render_export_ui(modules_selected):
                         if df_asset_class is not None and not df_asset_class.empty:
                             asset_exp = calculate_exposure(weights_series, df_asset_class)
                             if not asset_exp.empty:
-                                asset_exp = group_tail(asset_exp, top_n=8)
+                                asset_exp = group_tail(asset_exp, top_n=15)  # Show more items
                                 exposure_data['asset_class'] = asset_exp
                         
                         if df_country is not None and not df_country.empty:
                             country_exp = calculate_exposure(weights_series, df_country)
                             if not country_exp.empty:
-                                country_exp = group_tail(country_exp, top_n=8)
+                                country_exp = group_tail(country_exp, top_n=15)  # Show more items
                                 exposure_data['country'] = country_exp
                         
                         if df_sector is not None and not df_sector.empty:
                             sector_exp = calculate_exposure(weights_series, df_sector)
                             if not sector_exp.empty:
-                                sector_exp = group_tail(sector_exp, top_n=8)
+                                sector_exp = group_tail(sector_exp, top_n=15)  # Show more items
                                 exposure_data['sector'] = sector_exp
                         
                         # If still nothing, use portfolio type breakdown
                         if not exposure_data:
                             type_exp = pd.Series(client_weights)
-                            exposure_data['asset_class'] = group_tail(type_exp, top_n=8)
+                            exposure_data['asset_class'] = group_tail(type_exp, top_n=15)
                     
                     # Generate report
                     generator = PortfolioReportGenerator(

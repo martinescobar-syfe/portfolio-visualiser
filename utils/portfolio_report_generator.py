@@ -137,10 +137,7 @@ def create_donut_chart_drawing(data, title="", width=280, height=220):
     data = data / total
     data = data.sort_values(ascending=False)
     
-    # Don't add more "Others" - use data as-is from the app
-    # Just limit to top 8 items if there are too many
-    if len(data) > 8:
-        data = data.head(8)
+    # Show ALL items from the data - no truncation
     
     d = Drawing(width, height)
     
@@ -178,10 +175,12 @@ def create_donut_chart_drawing(data, title="", width=280, height=220):
                      fillColor=SYFE_COLORS['text_dark'],
                      textAnchor='middle'))
     
-    # Add legend on the right side
+    # Add legend on the right side - dynamic spacing based on number of items
     legend_x = 180
-    legend_y = height - 25
-    legend_line_height = 18
+    legend_y = height - 20
+    num_items = len(data)
+    # Adjust line height based on number of items (min 12, max 18)
+    legend_line_height = min(18, max(12, (height - 40) / max(num_items, 1)))
     
     for i, (label, value) in enumerate(data.items()):
         y_pos = legend_y - (i * legend_line_height)
