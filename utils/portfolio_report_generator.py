@@ -527,12 +527,109 @@ def create_cashflow_chart_drawing(cashflow_data, currency="SGD", width=760, heig
                    strokeColor=None))
         # Label - show portfolio type, truncate if needed
         label = key.split(' - ')[-1] if ' - ' in key else key
-        label = label[:18] if len(label) > 18 else label
+        label = label[:25] if len(label) > 25 else label
         d.add(String(legend_x + 14, y_pos - 2, label,
-                     fontName='Helvetica', fontSize=7,
+                     fontName='Helvetica', fontSize=6,
                      fillColor=SYFE_COLORS['text_dark']))
     
     return d
+
+
+def create_cashflow_table(cashflow_data, currency="SGD", page_width=750):
+    """
+    Creates a table showing monthly cash flows by portfolio type.
+    Uses month names (Jan, Feb, etc.) instead of "Month 1", "Month 2".
+    
+    Args:
+        cashflow_data: dict with keys as portfolio types and values as arrays of 12 monthly amounts
+        currency: Currency symbol
+        page_width: Page width for table sizing
+    
+    Returns:
+        ReportLab Table object or None
+    """
+    if cashflow_data is None or len(cashflow_data) == 0:
+        return None
+    
+    # Month names
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    
+    # Currency symbol
+    ccy_symbol = "S$" if currency == "SGD" else ("HK$" if currency == "HKD" else "$")
+    
+    # Build table data
+    header = ['Portfolio Type'] + months + ['Total Annual']
+    table_data = [header]
+    
+    grand_totals = [0.0] * 12
+    
+    for port_type, monthly_values in cashflow_data.items():
+        # Clean up portfolio type name
+        display_name = port_type.split(' - ')[-1] if ' - ' in port_type else port_type
+        display_name = display_name[:30] if len(display_name) > 30 else display_name
+        
+        row = [display_name]
+        annual_total = 0.0
+        
+        for i, val in enumerate(monthly_values):
+            row.append(f"{ccy_symbol}{val:,.0f}" if val >= 1 else "-")
+            annual_total += val
+            grand_totals[i] += val
+        
+        row.append(f"{ccy_symbol}{annual_total:,.0f}")
+        table_data.append(row)
+    
+    # Add total row
+    total_row = ['Total']
+    grand_annual = 0.0
+    for val in grand_totals:
+        total_row.append(f"{ccy_symbol}{val:,.0f}" if val >= 1 else "-")
+        grand_annual += val
+    total_row.append(f"{ccy_symbol}{grand_annual:,.0f}")
+    table_data.append(total_row)
+    
+    # Calculate column widths
+    first_col_width = 130  # Wider for longer portfolio names
+    month_col_width = (page_width - first_col_width - 60) / 13  # 12 months + total
+    col_widths = [first_col_width] + [month_col_width] * 13
+    
+    # Create table
+    table = Table(table_data, colWidths=col_widths)
+    
+    # Style the table
+    style_cmds = [
+        # Header row
+        ('BACKGROUND', (0, 0), (-1, 0), SYFE_COLORS['dark_navy']),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 6),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        
+        # Data rows
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 6),
+        ('ALIGN', (0, 1), (-1, -1), 'CENTER'),  # Center-align all data
+        
+        # Total row
+        ('BACKGROUND', (0, -1), (-1, -1), SYFE_COLORS['light_blue']),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        
+        # Grid
+        ('GRID', (0, 0), (-1, -1), 0.5, SYFE_COLORS['medium_grey']),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]
+    
+    # Alternate row colors for data rows
+    for i in range(1, len(table_data) - 1):
+        if i % 2 == 0:
+            style_cmds.append(('BACKGROUND', (0, i), (-1, i), colors.Color(0.97, 0.97, 0.97)))
+    
+    table.setStyle(TableStyle(style_cmds))
+    
+    return table
 
 
 # ==========================================
@@ -659,8 +756,8 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_r
                 month = date_match.group(1).title()
                 year = date_match.group(2)
                 return f'Silverdale Fund {month}{year}'  # Match Excel format: "Silverdale Fund Feb2029"
-            # Default to a Silverdale fund if no date found
-            return 'NONE'
+            # Default to the original name if no date pattern found
+            return str(portfolio_type).replace('_', ' ').title()
         if 'REIT' in upper:
             return 'REIT 100'
         if 'INCOME_ENHANCE' in upper:
@@ -751,7 +848,7 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_r
                 except:
                     pass
         
-        return "None"
+        return 0.0  # Return 0 if not found
     
     # Categorize portfolios into 3 groups
     def get_portfolio_category(ptype, asset_class=None):
@@ -1366,6 +1463,30 @@ class PortfolioReportGenerator:
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ]))
                 all_elements.append(cashflow_table)
+            
+            # Add Cash Flow Summary Table below the chart
+            all_elements.append(Spacer(1, 0.15 * inch))
+            
+            # Table title
+            cashflow_table_title = ParagraphStyle(
+                name='CashflowTableTitle',
+                fontName='Helvetica-Bold',
+                fontSize=10,
+                textColor=SYFE_COLORS['text_dark'],
+                alignment=1,  # Center
+                spaceBefore=5,
+                spaceAfter=8
+            )
+            all_elements.append(Paragraph("Monthly Cash Flow Summary by Portfolio", cashflow_table_title))
+            
+            # Create the table
+            cf_summary_table = create_cashflow_table(
+                cashflow_data,
+                currency=cashflow_currency,
+                page_width=page_width - 20  # Slight margin
+            )
+            if cf_summary_table:
+                all_elements.append(cf_summary_table)
         else:
             # No cash flow generating portfolios - show message (left-aligned)
             all_elements.append(Spacer(1, 0.2 * inch))
@@ -1677,8 +1798,8 @@ def prepare_cashflow_data(df_raw, df_fi_metrics=None):
     def should_include(port_type):
         """Check if portfolio should be included in cash flow analysis"""
         upper = str(port_type).upper()
-        # Include: REITs, Income, Blackrock, Monroe
-        include_patterns = ['REIT', 'INCOME', 'BLACKROCK', 'MONROE']
+        # Include: REITs, Income, Blackrock, Monroe, Silverdale
+        include_patterns = ['REIT', 'INCOME', 'BLACKROCK', 'MONROE', 'SILVER', 'SILVERDALE']
         for pattern in include_patterns:
             if pattern in upper:
                 return True
@@ -1696,11 +1817,20 @@ def prepare_cashflow_data(df_raw, df_fi_metrics=None):
         if upper in PORTFOLIO_TICKER_MAP:
             return PORTFOLIO_TICKER_MAP[upper]
         
-        # Try contains match for Blackrock/Monroe
+        # Try contains match for Blackrock/Monroe/Silverdale
         if 'BLACKROCK' in upper:
             return 'Blackrock Private Credit Fund'
         if 'MONROE' in upper:
             return 'Monroe Income Plus Fund'
+        if 'SILVER' in upper or 'SILVERDALE' in upper:
+            # Extract date from name (e.g., "Silver Dale Usd Feb2029" -> "Silverdale Fund Feb2029")
+            import re
+            date_match = re.search(r'(NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*(\d{4})', upper)
+            if date_match:
+                month = date_match.group(1).title()
+                year = date_match.group(2)
+                return f'Silverdale Fund {month}{year}'  # Match Excel format: "Silverdale Fund Feb2029"
+            return 'Silverdale Fund'
         if 'REIT' in upper:
             return 'REIT 100'
         if 'INCOME_ENHANCE' in upper or 'INCOME ENHANCE' in upper:
@@ -1753,13 +1883,14 @@ def prepare_cashflow_data(df_raw, df_fi_metrics=None):
         if nav < 100:
             continue
         
-        # Check if portfolio should be excluded
-        if should_exclude(raw_type):
-            print(f"[DEBUG] Excluding {raw_type} from cash flow (excluded pattern)")
-            continue
+        # Check if portfolio should be included FIRST (takes priority)
+        included = should_include(raw_type)
         
-        # Check if portfolio should be included
-        if not should_include(raw_type):
+        # If not explicitly included, check if excluded
+        if not included:
+            if should_exclude(raw_type):
+                print(f"[DEBUG] Excluding {raw_type} from cash flow (excluded pattern)")
+                continue
             print(f"[DEBUG] Skipping {raw_type} from cash flow (not in include list)")
             continue
         
