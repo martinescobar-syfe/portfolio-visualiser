@@ -305,11 +305,15 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     ticker = 'Cash SGD flexi'
             elif normalized_type in CLIENT_PORTFOLIO_MAPPING:
                 ticker = CLIENT_PORTFOLIO_MAPPING[normalized_type]
-            # Fallback: "contains" matching for Blackrock and Monroe (handles various CSV naming conventions)
+            # Fallback: "contains" matching for Blackrock, Monroe, Custom, Downside (handles various CSV naming conventions)
             elif 'BLACKROCK' in normalized_type:
                 ticker = 'Blackrock Private Credit Fund'
             elif 'MONROE' in normalized_type:
                 ticker = 'Monroe Income Plus Fund'
+            elif 'CUSTOM' in normalized_type:
+                ticker = 'Custom Usd'  # Map to a recognizable name for alternatives
+            elif 'DOWNSIDE' in normalized_type:
+                ticker = 'Downside Protected'
         
             if ticker:
                 client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
@@ -334,9 +338,10 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         if aw > 0:
                             asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
                 else:
-                    # Check if it's an AI investment (Blackrock, Monroe)
-                    if 'blackrock' in ticker.lower() or 'monroe' in ticker.lower():
-                        asset_allocation['Alternative Investments'] = asset_allocation.get('Alternative Investments', 0.0) + weight
+                    # Check if it's a Specialized/alternatives investment (Blackrock, Monroe, Custom, Downside)
+                    ticker_lower = ticker.lower()
+                    if any(x in ticker_lower for x in ['blackrock', 'monroe', 'custom', 'downside']):
+                        asset_allocation['Specialized / alternatives'] = asset_allocation.get('Specialized / alternatives', 0.0) + weight
                     else:
                         # Fallback for other unknown tickers
                         asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight

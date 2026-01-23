@@ -8,6 +8,10 @@ def calculate_exposure(weights, df_exposure):
     Calculates aggregate exposure by category (Sector, Country) using matrix multiplication.
     weights: Series with ticker index and weight values
     df_exposure: DataFrame with Category index and Ticker columns (Exposure Matrix)
+    
+    Tickers not found in df_exposure are handled:
+    - For asset class: Custom, Downside, Blackrock, Monroe -> 'Specialized / alternatives'
+    - For sector/country: Custom, Downside, Blackrock, Monroe -> 'Others'
     """
     # Ensure weights is a Series
     if isinstance(weights, pd.DataFrame):
@@ -32,22 +36,57 @@ def calculate_exposure(weights, df_exposure):
     if len(weights) == 0:
         return pd.Series()
     
+    # Identify tickers not in df_exposure (missing tickers)
+    all_tickers = set(weights.index)
+    known_tickers = set(df_exposure.columns)
+    missing_tickers = all_tickers - known_tickers
+    
     # Align tickers
     common_tickers = weights.index.intersection(df_exposure.columns)
     
-    if len(common_tickers) == 0:
-        return pd.Series()
-
-    # Filter and align
-    weights_aligned = weights[common_tickers]
-    exposure_matrix = df_exposure[common_tickers]
+    # Start with exposure from known tickers
+    agg_exposure = pd.Series(dtype=float)
     
-    # Ensure exposure matrix values are numeric
-    exposure_matrix = exposure_matrix.apply(pd.to_numeric, errors='coerce').fillna(0)
+    if len(common_tickers) > 0:
+        # Filter and align
+        weights_aligned = weights[common_tickers]
+        exposure_matrix = df_exposure[common_tickers]
+        
+        # Ensure exposure matrix values are numeric
+        exposure_matrix = exposure_matrix.apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        # Calculate weighted exposure: (Categories x Tickers) @ (Tickers x 1) -> (Categories x 1)
+        agg_exposure = exposure_matrix.dot(weights_aligned)
     
-    # Calculate weighted exposure: (Categories x Tickers) @ (Tickers x 1) -> (Categories x 1)
-    # We use dot product
-    agg_exposure = exposure_matrix.dot(weights_aligned)
+    # Handle missing tickers - assign to fallback categories
+    if missing_tickers:
+        # Check if this is an asset class matrix (has 'Specialized / alternatives' or 'Equity' in index)
+        is_asset_class = 'Specialized / alternatives' in df_exposure.index or 'Equity' in df_exposure.index
+        
+        # Collect fallback weights by category
+        fallback_weights = {}
+        
+        for ticker in missing_tickers:
+            weight = weights[ticker]
+            ticker_lower = ticker.lower()
+            
+            # Alternatives: custom, downside, blackrock, monroe
+            if any(x in ticker_lower for x in ['custom', 'downside', 'blackrock', 'monroe']):
+                if is_asset_class:
+                    fallback_cat = 'Specialized / alternatives'
+                else:
+                    fallback_cat = 'Others'
+            else:
+                fallback_cat = 'Others'
+            
+            fallback_weights[fallback_cat] = fallback_weights.get(fallback_cat, 0) + weight
+        
+        # Add fallback weights to agg_exposure (handle as dict to avoid index issues)
+        agg_dict = agg_exposure.to_dict()
+        for cat, weight in fallback_weights.items():
+            agg_dict[cat] = agg_dict.get(cat, 0) + weight
+        
+        agg_exposure = pd.Series(agg_dict)
     
     # Sort by weight
     agg_exposure = agg_exposure.sort_values(ascending=False)
@@ -57,6 +96,7 @@ def calculate_exposure(weights, df_exposure):
 def group_tail(series, top_n=9):
     """
     Groups the tail of the series into an 'Others' category.
+    If 'Others' already exists, adds to it instead of creating duplicate.
     """
     if len(series) <= top_n:
         return series
@@ -64,10 +104,15 @@ def group_tail(series, top_n=9):
     top = series.head(top_n)
     others_val = series.iloc[top_n:].sum()
     
-    # Create a new series for Others
-    others = pd.Series({'Others': others_val})
-    
-    return pd.concat([top, others])
+    # Check if 'Others' already exists in top - if so, add to it
+    if 'Others' in top.index:
+        top_dict = top.to_dict()
+        top_dict['Others'] += others_val
+        return pd.Series(top_dict)
+    else:
+        # Create a new series for Others
+        others = pd.Series({'Others': others_val})
+        return pd.concat([top, others])
 
 def clean_holding_name(name):
     """
