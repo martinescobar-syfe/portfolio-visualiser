@@ -1216,7 +1216,8 @@ class PortfolioReportGenerator:
         
         pdfs_to_merge.append(templated_pdf)
         
-        appendix_path = self._get_template_path("Portfolio_Visualiser_Appendix.pdf")
+        # Use the new appendix from PDF Format folder
+        appendix_path = "PDF Format/Portfolio_Visualiser_Appendix.pdf"
         if include_appendix and os.path.exists(appendix_path):
             pdfs_to_merge.append(appendix_path)
         
