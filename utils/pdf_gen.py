@@ -861,7 +861,22 @@ def render_export_ui(modules_selected):
                                 continue
                             
                             # Map to internal ticker or use type directly
-                            ticker = PORTFOLIO_TICKER_MAP.get(port_type, port_type)
+                            # Try exact match first
+                            ticker = PORTFOLIO_TICKER_MAP.get(port_type, None)
+                            
+                            # If no exact match, try case-insensitive and flexible matching
+                            if ticker is None:
+                                port_upper = port_type.upper().replace(' ', '_').replace('-', '_')
+                                ticker = PORTFOLIO_TICKER_MAP.get(port_upper, None)
+                                
+                                # Special handling for Blackrock and Monroe
+                                if ticker is None:
+                                    if 'BLACKROCK' in port_upper:
+                                        ticker = 'Blackrock Private Credit Fund'
+                                    elif 'MONROE' in port_upper:
+                                        ticker = 'Monroe Income Plus Fund'
+                                    else:
+                                        ticker = port_type  # Fallback to original
                             
                             client_weights[ticker] = client_weights.get(ticker, 0) + nav
                             total_nav += nav

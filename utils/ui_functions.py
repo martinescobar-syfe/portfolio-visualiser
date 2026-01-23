@@ -305,6 +305,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     ticker = 'Cash SGD flexi'
             elif normalized_type in CLIENT_PORTFOLIO_MAPPING:
                 ticker = CLIENT_PORTFOLIO_MAPPING[normalized_type]
+            # Fallback: "contains" matching for Blackrock and Monroe (handles various CSV naming conventions)
+            elif 'BLACKROCK' in normalized_type:
+                ticker = 'Blackrock Private Credit Fund'
+            elif 'MONROE' in normalized_type:
+                ticker = 'Monroe Income Plus Fund'
         
             if ticker:
                 client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav

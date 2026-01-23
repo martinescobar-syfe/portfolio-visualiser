@@ -395,9 +395,9 @@ def create_dividends_bar_chart_drawing(data, title="", width=380, height=220):
                      fillColor=SYFE_COLORS['text_dark'],
                      textAnchor='start'))
     
-    # Title: "Portfolio Dividends (Since Inception)"
+    # Title: "Portfolio Dividends (Reinvested)"
     if not title:
-        title = "Portfolio Dividends (Since Inception)"
+        title = "Portfolio Dividends (Reinvested)"
     
     # Add title at bottom center - same y position and font size as Sector Exposure
     d.add(String(width // 2, 10, title,
@@ -581,11 +581,14 @@ def create_grouped_portfolio_table(df_raw, page_width):
     # Asset Class mapping - matches the exposure chart categories
     def get_classification(portfolio_type):
         ptype = str(portfolio_type).upper()
+        # Specialized / alternatives - Blackrock and Monroe are private credit funds
+        if any(x in ptype for x in ['BLACKROCK', 'MONROE', 'CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
+            return 'Specialized / alternatives'
         # Equity portfolios
         if any(x in ptype for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'DISRUPTIVE']):
             return 'Equity'
         # Fixed Income portfolios
-        if any(x in ptype for x in ['INCOME_ENHANCE', 'INCOME_PRESERVE', 'BLACKROCK', 'MONROE', 'BOND']):
+        if any(x in ptype for x in ['INCOME_ENHANCE', 'INCOME_PRESERVE', 'BOND']):
             return 'Fixed Income'
         # Check for generic INCOME after specific ones
         if 'INCOME' in ptype:
@@ -596,9 +599,6 @@ def create_grouped_portfolio_table(df_raw, page_width):
         # Cash / MMF
         if any(x in ptype for x in ['CASH', 'MMF', 'FLEXI']):
             return 'Cash / MMF'
-        # Specialized / alternatives (custom, thematic that don't fit above)
-        if any(x in ptype for x in ['CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
-            return 'Specialized / alternatives'
         return 'Equity'  # Default to Equity
     
     # Risk rating mapping
@@ -618,20 +618,28 @@ def create_grouped_portfolio_table(df_raw, page_width):
             return 0.5
         return 2.0
     
-    # Categorize portfolios
-    def is_growth_portfolio(ptype):
+    # Categorize portfolios into 3 groups
+    def get_portfolio_category(ptype):
         upper = str(ptype).upper()
-        return any(x in upper for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 
-                                        'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'GLOBAL'])
+        # Growth: Equity, Core, Thematic
+        if any(x in upper for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 
+                                    'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'GLOBAL', 'DISRUPTIVE']):
+            return 'growth'
+        # Alternatives: Blackrock, Monroe, Custom, Strategic
+        if any(x in upper for x in ['BLACKROCK', 'MONROE', 'CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
+            return 'alternatives'
+        # Income & Preservation: REITs, Income, Cash/MMF
+        return 'income'
     
     # Build table data - P&L with returns in brackets
     header = ['Portfolio ID', 'Portfolio Type', 'Asset Class', 'Risk rating (0-5)', 
-              'Inception date', 'Value (SGD)', 'Allocation', 'P&L Inception']
+              'Inception date', 'Current Value (SGD)', 'Allocation', 'P&L Inception']
     
     table_data = [header]
     
     growth_rows = []
     income_rows = []
+    alternatives_rows = []
     
     for _, row in df.iterrows():
         port_id = str(row.get('portfolio_id', ''))[:12]
@@ -683,16 +691,20 @@ def create_grouped_portfolio_table(df_raw, page_width):
             pnl_with_returns
         ]
         
-        if is_growth_portfolio(port_type):
+        category = get_portfolio_category(port_type)
+        if category == 'growth':
             growth_rows.append((row_data, nav, allocation, pnl, returns_pct))
+        elif category == 'alternatives':
+            alternatives_rows.append((row_data, nav, allocation, pnl, returns_pct))
         else:
             income_rows.append((row_data, nav, allocation, pnl, returns_pct))
     
-    # Sort by value
+    # Sort each group by value
     growth_rows.sort(key=lambda x: -x[1])
     income_rows.sort(key=lambda x: -x[1])
+    alternatives_rows.sort(key=lambda x: -x[1])
     
-    # Calculate subtotals
+    # Calculate Growth subtotals
     growth_total_nav = sum(r[1] for r in growth_rows)
     growth_total_alloc = sum(r[2] for r in growth_rows)
     growth_avg_risk = 4.0
@@ -700,6 +712,7 @@ def create_grouped_portfolio_table(df_raw, page_width):
     growth_cost = growth_total_nav - growth_total_pnl
     growth_returns = (growth_total_pnl / growth_cost * 100) if growth_cost > 0 else 0
     
+    # Calculate Income & Preservation subtotals
     income_total_nav = sum(r[1] for r in income_rows)
     income_total_alloc = sum(r[2] for r in income_rows)
     income_avg_risk = 1.4
@@ -707,11 +720,16 @@ def create_grouped_portfolio_table(df_raw, page_width):
     income_cost = income_total_nav - income_total_pnl
     income_returns = (income_total_pnl / income_cost * 100) if income_cost > 0 else 0
     
-    # Add growth portfolios
-    for row_data, _, _, _, _ in growth_rows:
-        table_data.append(row_data)
+    # Calculate Alternatives subtotals
+    alt_total_nav = sum(r[1] for r in alternatives_rows)
+    alt_total_alloc = sum(r[2] for r in alternatives_rows)
+    alt_avg_risk = 2.0
+    alt_total_pnl = sum(r[3] for r in alternatives_rows)
+    alt_cost = alt_total_nav - alt_total_pnl
+    alt_returns = (alt_total_pnl / alt_cost * 100) if alt_cost > 0 else 0
     
-    # Add growth subtotal row
+    # === GROWTH PORTFOLIOS SECTION ===
+    # Add subtotal row FIRST (at top of section)
     if growth_rows:
         growth_pnl_combined = f"${growth_total_pnl:,.2f} ({growth_returns:.2f}%)"
         table_data.append([
@@ -719,12 +737,25 @@ def create_grouped_portfolio_table(df_raw, page_width):
             f"{growth_total_nav:,.2f}", f"{growth_total_alloc:.2f}%",
             growth_pnl_combined
         ])
-    
-    # Add income portfolios
-    for row_data, _, _, _, _ in income_rows:
+    # Then add individual growth portfolios
+    for row_data, _, _, _, _ in growth_rows:
         table_data.append(row_data)
     
-    # Add income subtotal row
+    # === ALTERNATIVES SECTION ===
+    # Add subtotal row FIRST (at top of section)
+    if alternatives_rows:
+        alt_pnl_combined = f"${alt_total_pnl:,.2f} ({alt_returns:.2f}%)"
+        table_data.append([
+            'Alternatives', '', '', f"{alt_avg_risk:.1f}", '',
+            f"{alt_total_nav:,.2f}", f"{alt_total_alloc:.2f}%",
+            alt_pnl_combined
+        ])
+    # Then add individual alternatives portfolios
+    for row_data, _, _, _, _ in alternatives_rows:
+        table_data.append(row_data)
+    
+    # === INCOME & PRESERVATION SECTION ===
+    # Add subtotal row FIRST (at top of section)
     if income_rows:
         income_pnl_combined = f"${income_total_pnl:,.2f} ({income_returns:.2f}%)"
         table_data.append([
@@ -732,13 +763,18 @@ def create_grouped_portfolio_table(df_raw, page_width):
             f"{income_total_nav:,.2f}", f"{income_total_alloc:.2f}%",
             income_pnl_combined
         ])
+    # Then add individual income portfolios
+    for row_data, _, _, _, _ in income_rows:
+        table_data.append(row_data)
     
-    # Add total row
-    grand_total = growth_total_nav + income_total_nav
-    grand_total_pnl = growth_total_pnl + income_total_pnl
+    # Add total row (includes all 3 sections)
+    grand_total = growth_total_nav + income_total_nav + alt_total_nav
+    grand_total_pnl = growth_total_pnl + income_total_pnl + alt_total_pnl
     grand_cost = grand_total - grand_total_pnl
     grand_returns = (grand_total_pnl / grand_cost * 100) if grand_cost > 0 else 0
-    avg_risk = (growth_avg_risk * growth_total_nav + income_avg_risk * income_total_nav) / grand_total if grand_total > 0 else 0
+    # Weighted average risk
+    risk_weighted = (growth_avg_risk * growth_total_nav + income_avg_risk * income_total_nav + alt_avg_risk * alt_total_nav)
+    avg_risk = risk_weighted / grand_total if grand_total > 0 else 0
     
     grand_pnl_combined = f"${grand_total_pnl:,.2f} ({grand_returns:.2f}%)"
     table_data.append([
@@ -792,10 +828,11 @@ def create_grouped_portfolio_table(df_raw, page_width):
         ('GRID', (0, 0), (-1, -1), 0.5, SYFE_COLORS['medium_grey']),
     ]
     
-    # Find and style subtotal/total rows
+    # Find and style subtotal/total rows (section headers)
     for i, row in enumerate(table_data[1:], start=1):
         first_cell = str(row[0])
-        if 'Growth Portfolios' in first_cell or 'Income & Preservation' in first_cell:
+        # Section headers: Growth, Alternatives, Income & Preservation - all get light blue
+        if first_cell in ['Growth Portfolios', 'Alternatives', 'Income & Preservation']:
             style_cmds.append(('BACKGROUND', (0, i), (-1, i), SYFE_COLORS['light_blue']))
             style_cmds.append(('FONTNAME', (0, i), (-1, i), 'Helvetica-Bold'))
             style_cmds.append(('FONTSIZE', (0, i), (-1, i), 7))
@@ -1174,6 +1211,19 @@ class PortfolioReportGenerator:
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ]))
                 all_elements.append(cashflow_table)
+        else:
+            # No cash flow generating portfolios - show message
+            all_elements.append(Spacer(1, 0.2 * inch))
+            no_cashflow_style = ParagraphStyle(
+                name='NoCashflow',
+                fontName='Helvetica',
+                fontSize=11,
+                textColor=SYFE_COLORS['text_grey'],
+                alignment=1,  # Center
+                spaceBefore=20,
+                spaceAfter=20
+            )
+            all_elements.append(Paragraph("No Cashflow Generating Portfolios", no_cashflow_style))
         
         # ==========================================
         # BUILD PDF
