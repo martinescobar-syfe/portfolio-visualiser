@@ -966,7 +966,8 @@ def render_export_ui(modules_selected):
                         cashflow_currency=cashflow_currency,
                         output_filename=final_filename,
                         include_cover=True,
-                        include_appendix=True
+                        include_appendix=True,
+                        df_asset_class=df_asset_class
                     )
                     
                     # Read for download

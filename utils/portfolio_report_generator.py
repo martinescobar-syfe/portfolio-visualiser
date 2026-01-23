@@ -539,7 +539,7 @@ def create_cashflow_chart_drawing(cashflow_data, currency="SGD", width=760, heig
 # PORTFOLIO SUMMARY TABLE (grouped format)
 # ==========================================
 
-def create_grouped_portfolio_table(df_raw, page_width):
+def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None):
     """
     Creates a grouped portfolio summary table matching the screenshot format.
     
@@ -578,28 +578,129 @@ def create_grouped_portfolio_table(df_raw, page_width):
     # Calculate allocation
     total_nav = df['nav_in_sgd'].sum() if 'nav_in_sgd' in df.columns else 0
     
-    # Asset Class mapping - matches the exposure chart categories
+    # Portfolio type to ticker mapping for asset class lookup
+    PORTFOLIO_TICKER_MAP = {
+        'INCOME_ENHANCE': 'Income Enhance',
+        'INCOME_ENHANCED': 'Income Enhance',
+        'INCOME_PRESERVE': 'Income Preserve',
+        'REIT': 'REIT 100',
+        'REIT_100': 'REIT 100',
+        'REIT_RISK_MANAGED': 'REIT Risk Managed',
+        'BLACKROCK': 'Blackrock Private Credit Fund',
+        'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
+        'MONROE': 'Monroe Income Plus Fund',
+        'MONROE_CAPITAL': 'Monroe Income Plus Fund',
+        'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
+        'CORE_EQUITY100': 'Core Equity100',
+        'CORE_EQUITY_100': 'Core Equity100',
+        'GLOBAL_EQUITY_100': 'Core Equity100',
+        'GLOBAL_EQUITY': 'Core Equity100',
+        'CORE_GROWTH': 'Core Growth',
+        'CORE_BALANCED': 'Core Balanced',
+        'CORE_DEFENSIVE': 'Core Defensive',
+        'CHINA_GROWTH': 'China Growth',
+        'CHINA': 'China Growth',
+        'ESG_AND_CLEAN_ENERGY': 'ESG & Clean Energy',
+        'ESG_CLEAN_ENERGY': 'ESG & Clean Energy',
+        'ESG': 'ESG & Clean Energy',
+        'HEALTHCARE_INNOVATION': 'Healthcare Innovation',
+        'HEALTHCARE': 'Healthcare Innovation',
+        'DISRUPTIVE_TECHNOLOGY': 'Disruptive Technology',
+        'DISRUPTIVE_TECH': 'Disruptive Technology',
+        'DISRUPTIVE': 'Disruptive Technology',
+        'CASH_PLUS_SGD': 'Cash SGD flexi',
+        'CASH_SGD': 'Cash SGD flexi',
+        'CASH_PLUS': 'Cash SGD flexi',
+        'CASH_PLUS_USD': 'Cash USD flexi',
+        'CASH_USD': 'Cash USD flexi',
+        'CASH_PLUS_GUARANTEED': 'Cash SGD guaranteed',
+        'CASH_GUARANTEED': 'Cash SGD guaranteed',
+        'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
+        'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
+        'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
+        'SRS_EQUITY100': 'SRS Equity100',
+        'SRS_EQUITY_100': 'SRS Equity100',
+        'SRS_CASH_PLUS': 'SRS Cash SGD flexi',
+        'SRS_CASH': 'SRS Cash SGD flexi',
+        'DOWNSIDE_PROTECTED': 'Downside Protected',
+        'DOWNSIDE': 'Downside Protected',
+        'CUSTOM_USD': 'Custom USD',
+        'CUSTOM': 'Custom USD',
+    }
+    
+    def get_ticker(port_type):
+        """Map portfolio type to ticker for asset class lookup"""
+        upper = str(port_type).upper().replace(' ', '_').replace('-', '_')
+        # Remove common suffixes
+        for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED']:
+            if upper.endswith(suffix):
+                upper = upper[:-len(suffix)]
+        
+        # Try exact match first
+        if upper in PORTFOLIO_TICKER_MAP:
+            return PORTFOLIO_TICKER_MAP[upper]
+        
+        # Try contains match
+        if 'BLACKROCK' in upper:
+            return 'Blackrock Private Credit Fund'
+        if 'MONROE' in upper:
+            return 'Monroe Income Plus Fund'
+        if 'DOWNSIDE' in upper:
+            return 'Downside Protected'
+        if 'REIT' in upper:
+            return 'REIT 100'
+        if 'INCOME_ENHANCE' in upper:
+            return 'Income Enhance'
+        if 'INCOME_PRESERVE' in upper:
+            return 'Income Preserve'
+        if 'INCOME' in upper:
+            return 'Income Enhance'
+        if 'CHINA' in upper:
+            return 'China Growth'
+        if 'ESG' in upper:
+            return 'ESG & Clean Energy'
+        if 'HEALTHCARE' in upper:
+            return 'Healthcare Innovation'
+        if 'DISRUPTIVE' in upper:
+            return 'Disruptive Technology'
+        if 'EQUITY100' in upper or 'EQUITY_100' in upper:
+            return 'Core Equity100'
+        if 'CORE' in upper:
+            return 'Core Equity100'
+        if 'CASH' in upper:
+            return 'Cash SGD flexi'
+        
+        # Try the original type as ticker name
+        return port_type.replace('_', ' ').title()
+    
     def get_classification(portfolio_type):
-        ptype = str(portfolio_type).upper()
-        # Specialized / alternatives - Blackrock and Monroe are private credit funds
-        if any(x in ptype for x in ['BLACKROCK', 'MONROE', 'CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
+        """Look up asset class from df_asset_class Excel sheet. Returns 'Unknown' if not found."""
+        if df_asset_class is None or df_asset_class.empty:
+            return 'Unknown'
+        
+        # Get ticker name for lookup
+        ticker = get_ticker(portfolio_type)
+        
+        # Check if ticker exists in asset class columns
+        if ticker in df_asset_class.columns:
+            # Find which asset class has value 1 for this ticker
+            asset_classes = df_asset_class.index[df_asset_class[ticker] == 1].tolist()
+            if asset_classes:
+                return asset_classes[0]  # Return the first matching asset class
+        
+        # Try original type name directly
+        orig_name = str(portfolio_type).replace('_', ' ').title()
+        if orig_name in df_asset_class.columns:
+            asset_classes = df_asset_class.index[df_asset_class[orig_name] == 1].tolist()
+            if asset_classes:
+                return asset_classes[0]
+        
+        # Fallback for types not in Excel: CUSTOM should be Specialized / alternatives
+        upper = str(portfolio_type).upper()
+        if any(x in upper for x in ['CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
             return 'Specialized / alternatives'
-        # Equity portfolios
-        if any(x in ptype for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'DISRUPTIVE']):
-            return 'Equity'
-        # Fixed Income portfolios
-        if any(x in ptype for x in ['INCOME_ENHANCE', 'INCOME_PRESERVE', 'BOND']):
-            return 'Fixed Income'
-        # Check for generic INCOME after specific ones
-        if 'INCOME' in ptype:
-            return 'Fixed Income'
-        # REITs
-        if 'REIT' in ptype:
-            return 'REITs'
-        # Cash / MMF
-        if any(x in ptype for x in ['CASH', 'MMF', 'FLEXI']):
-            return 'Cash / MMF'
-        return 'Equity'  # Default to Equity
+        
+        return 'Unknown'
     
     # Risk rating mapping
     def get_risk_rating(portfolio_type):
@@ -619,15 +720,23 @@ def create_grouped_portfolio_table(df_raw, page_width):
         return 2.0
     
     # Categorize portfolios into 3 groups
-    def get_portfolio_category(ptype):
+    def get_portfolio_category(ptype, asset_class=None):
+        """Categorize portfolio based on asset class (from Excel) or portfolio type name."""
         upper = str(ptype).upper()
+        
+        # First check asset class - if it's Specialized/alternatives, always put in alternatives
+        if asset_class and 'alternative' in str(asset_class).lower():
+            return 'alternatives'
+        
         # Growth: Equity, Core, Thematic
         if any(x in upper for x in ['EQUITY', 'GROWTH', 'BALANCED', 'DEFENSIVE', 
                                     'TECHNOLOGY', 'HEALTHCARE', 'ESG', 'CHINA', 'GLOBAL', 'DISRUPTIVE']):
             return 'growth'
-        # Alternatives: Blackrock, Monroe, Custom, Strategic
-        if any(x in upper for x in ['BLACKROCK', 'MONROE', 'CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
+        
+        # Alternatives: Blackrock, Monroe, Custom, Strategic, Downside
+        if any(x in upper for x in ['BLACKROCK', 'MONROE', 'CUSTOM', 'STRATEGIC', 'ALTERNATIVE', 'DOWNSIDE']):
             return 'alternatives'
+        
         # Income & Preservation: REITs, Income, Cash/MMF
         return 'income'
     
@@ -691,7 +800,8 @@ def create_grouped_portfolio_table(df_raw, page_width):
             pnl_with_returns
         ]
         
-        category = get_portfolio_category(port_type)
+        # Pass asset class to categorization so Specialized/alternatives goes to Alternatives section
+        category = get_portfolio_category(port_type, classification)
         if category == 'growth':
             growth_rows.append((row_data, nav, allocation, pnl, returns_pct))
         elif category == 'alternatives':
@@ -741,19 +851,6 @@ def create_grouped_portfolio_table(df_raw, page_width):
     for row_data, _, _, _, _ in growth_rows:
         table_data.append(row_data)
     
-    # === ALTERNATIVES SECTION ===
-    # Add subtotal row FIRST (at top of section)
-    if alternatives_rows:
-        alt_pnl_combined = f"${alt_total_pnl:,.2f} ({alt_returns:.2f}%)"
-        table_data.append([
-            'Alternatives', '', '', f"{alt_avg_risk:.1f}", '',
-            f"{alt_total_nav:,.2f}", f"{alt_total_alloc:.2f}%",
-            alt_pnl_combined
-        ])
-    # Then add individual alternatives portfolios
-    for row_data, _, _, _, _ in alternatives_rows:
-        table_data.append(row_data)
-    
     # === INCOME & PRESERVATION SECTION ===
     # Add subtotal row FIRST (at top of section)
     if income_rows:
@@ -765,6 +862,19 @@ def create_grouped_portfolio_table(df_raw, page_width):
         ])
     # Then add individual income portfolios
     for row_data, _, _, _, _ in income_rows:
+        table_data.append(row_data)
+    
+    # === ALTERNATIVES SECTION ===
+    # Add subtotal row FIRST (at top of section)
+    if alternatives_rows:
+        alt_pnl_combined = f"${alt_total_pnl:,.2f} ({alt_returns:.2f}%)"
+        table_data.append([
+            'Alternatives', '', '', f"{alt_avg_risk:.1f}", '',
+            f"{alt_total_nav:,.2f}", f"{alt_total_alloc:.2f}%",
+            alt_pnl_combined
+        ])
+    # Then add individual alternatives portfolios
+    for row_data, _, _, _, _ in alternatives_rows:
         table_data.append(row_data)
     
     # Add total row (includes all 3 sections)
@@ -1060,7 +1170,8 @@ class PortfolioReportGenerator:
         cashflow_currency="SGD",
         output_filename=None,
         include_cover=True,
-        include_appendix=True
+        include_appendix=True,
+        df_asset_class=None
     ):
         """
         Generate the complete portfolio report PDF.
@@ -1075,6 +1186,7 @@ class PortfolioReportGenerator:
             output_filename: Output PDF filename
             include_cover: Whether to include cover page
             include_appendix: Whether to include appendix page
+            df_asset_class: DataFrame with asset class matrix from Excel
         
         Returns:
             str: Path to generated PDF file
@@ -1097,7 +1209,7 @@ class PortfolioReportGenerator:
         
         # Holdings Table (grouped format)
         if df_holdings is not None and not df_holdings.empty:
-            table = create_grouped_portfolio_table(df_holdings, page_width)
+            table = create_grouped_portfolio_table(df_holdings, page_width, df_asset_class)
             if table:
                 all_elements.append(table)
         
