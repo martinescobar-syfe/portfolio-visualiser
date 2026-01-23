@@ -47,7 +47,7 @@ def load_static_data(data_path):
         df_sector = get_sheet('Sector', index_col=0)
         df_fi_metrics = get_sheet('FI Metrics', index_col=0)
         df_asset_class = get_sheet('Asset Class', index_col=0)
-        df_risk_rating = get_sheet('Risk Rating', index_col=0)
+        df_risk_rating = get_sheet('Risk', index_col=0)
         df_underlying = get_sheet('Underlying', index_col=None) # For concentration analysis, wide format, no meaningful index
 
         # We need to reconstruct df_sec_list which was used for Ticker, Name, Remarks, Base currency, Exchange

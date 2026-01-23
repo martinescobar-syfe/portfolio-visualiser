@@ -758,7 +758,12 @@ def render_export_ui(modules_selected):
                         # Get first non-null client_id from CSV
                         client_id_values = df_temp['client_id'].dropna().unique()
                         if len(client_id_values) > 0:
-                            client_id = str(client_id_values[0])
+                            # Convert to int first to remove decimal, then to string
+                            raw_id = client_id_values[0]
+                            try:
+                                client_id = str(int(float(raw_id)))
+                            except (ValueError, TypeError):
+                                client_id = str(raw_id)
                         else:
                             client_id = str(client_info.get('client_id', 'Client'))
                     else:
@@ -967,7 +972,8 @@ def render_export_ui(modules_selected):
                         output_filename=final_filename,
                         include_cover=True,
                         include_appendix=True,
-                        df_asset_class=df_asset_class
+                        df_asset_class=df_asset_class,
+                        df_risk_rating=df_risk_rating
                     )
                     
                     # Read for download

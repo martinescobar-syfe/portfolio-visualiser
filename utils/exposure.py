@@ -70,8 +70,8 @@ def calculate_exposure(weights, df_exposure):
             weight = weights[ticker]
             ticker_lower = ticker.lower()
             
-            # Alternatives: custom, downside, blackrock, monroe
-            if any(x in ticker_lower for x in ['custom', 'downside', 'blackrock', 'monroe']):
+            # Only CUSTOM is hardcoded as alternatives (others should be in Excel)
+            if 'custom' in ticker_lower:
                 if is_asset_class:
                     fallback_cat = 'Specialized / alternatives'
                 else:

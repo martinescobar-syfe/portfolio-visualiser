@@ -539,7 +539,7 @@ def create_cashflow_chart_drawing(cashflow_data, currency="SGD", width=760, heig
 # PORTFOLIO SUMMARY TABLE (grouped format)
 # ==========================================
 
-def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None):
+def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_risk_rating=None):
     """
     Creates a grouped portfolio summary table matching the screenshot format.
     
@@ -626,6 +626,9 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None):
         'DOWNSIDE': 'Downside Protected',
         'CUSTOM_USD': 'Custom USD',
         'CUSTOM': 'Custom USD',
+        # Silverdale Funds - various maturity dates
+        'SILVERDALE': 'Silverdale Fund',
+        'SILVER_DALE': 'Silverdale Fund',
     }
     
     def get_ticker(port_type):
@@ -647,6 +650,17 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None):
             return 'Monroe Income Plus Fund'
         if 'DOWNSIDE' in upper:
             return 'Downside Protected'
+        if 'SILVER' in upper or 'SILVERDALE' in upper:
+            # Extract date from name (e.g., "Silver Dale Usd Feb2029" -> "Silverdale Fund Feb2029")
+            import re
+            # Try to find month and year pattern
+            date_match = re.search(r'(NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*(\d{4})', upper)
+            if date_match:
+                month = date_match.group(1).title()
+                year = date_match.group(2)
+                return f'Silverdale Fund {month}{year}'  # Match Excel format: "Silverdale Fund Feb2029"
+            # Default to a Silverdale fund if no date found
+            return 'NONE'
         if 'REIT' in upper:
             return 'REIT 100'
         if 'INCOME_ENHANCE' in upper:
@@ -702,22 +716,42 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None):
         
         return 'Unknown'
     
-    # Risk rating mapping
+    # Risk rating - look up from df_risk_rating (Risk sheet in Excel)
     def get_risk_rating(portfolio_type):
-        ptype = str(portfolio_type).upper()
-        if any(x in ptype for x in ['EQUITY100', 'GLOBAL_EQUITY', 'CHINA', 'TECHNOLOGY', 'HEALTHCARE', 'ESG']):
-            return 4.0
-        if 'GROWTH' in ptype:
-            return 3.5
-        if 'BALANCED' in ptype:
-            return 3.0
-        if 'DEFENSIVE' in ptype:
-            return 2.5
-        if any(x in ptype for x in ['INCOME', 'REIT']):
-            return 2.0
-        if any(x in ptype for x in ['CASH', 'MMF', 'FLEXI', 'PRESERVE']):
-            return 0.5
-        return 2.0
+        """Look up risk rating from df_risk_rating Excel sheet. Returns 2.0 if not found."""
+        if df_risk_rating is None or df_risk_rating.empty:
+            return 2.0  # Default fallback
+        
+        # Get ticker name for lookup (same mapping as asset class)
+        ticker = get_ticker(portfolio_type)
+        
+        # Check if ticker exists in risk rating index
+        if ticker in df_risk_rating.index:
+            try:
+                risk_val = float(df_risk_rating.loc[ticker, 'Risk'])
+                return round(risk_val, 1)
+            except:
+                pass
+        
+        # Try original type name directly (with title case)
+        orig_name = str(portfolio_type).replace('_', ' ').title()
+        if orig_name in df_risk_rating.index:
+            try:
+                risk_val = float(df_risk_rating.loc[orig_name, 'Risk'])
+                return round(risk_val, 1)
+            except:
+                pass
+        
+        # Try lowercase matching
+        for idx in df_risk_rating.index:
+            if idx.lower() == ticker.lower() or idx.lower() == orig_name.lower():
+                try:
+                    risk_val = float(df_risk_rating.loc[idx, 'Risk'])
+                    return round(risk_val, 1)
+                except:
+                    pass
+        
+        return "None"
     
     # Categorize portfolios into 3 groups
     def get_portfolio_category(ptype, asset_class=None):
@@ -751,7 +785,12 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None):
     alternatives_rows = []
     
     for _, row in df.iterrows():
-        port_id = str(row.get('portfolio_id', ''))[:12]
+        # Convert portfolio_id to int first to remove decimal, then to string
+        raw_port_id = row.get('portfolio_id', '')
+        try:
+            port_id = str(int(float(raw_port_id)))[:12]
+        except (ValueError, TypeError):
+            port_id = str(raw_port_id)[:12]
         port_type = row.get('type', row.get('name', ''))
         
         # Clean up portfolio type name
@@ -1171,7 +1210,8 @@ class PortfolioReportGenerator:
         output_filename=None,
         include_cover=True,
         include_appendix=True,
-        df_asset_class=None
+        df_asset_class=None,
+        df_risk_rating=None
     ):
         """
         Generate the complete portfolio report PDF.
@@ -1187,6 +1227,7 @@ class PortfolioReportGenerator:
             include_cover: Whether to include cover page
             include_appendix: Whether to include appendix page
             df_asset_class: DataFrame with asset class matrix from Excel
+            df_risk_rating: DataFrame with risk ratings from Excel
         
         Returns:
             str: Path to generated PDF file
@@ -1209,7 +1250,7 @@ class PortfolioReportGenerator:
         
         # Holdings Table (grouped format)
         if df_holdings is not None and not df_holdings.empty:
-            table = create_grouped_portfolio_table(df_holdings, page_width, df_asset_class)
+            table = create_grouped_portfolio_table(df_holdings, page_width, df_asset_class, df_risk_rating)
             if table:
                 all_elements.append(table)
         

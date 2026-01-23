@@ -314,6 +314,16 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 ticker = 'Custom Usd'  # Map to a recognizable name for alternatives
             elif 'DOWNSIDE' in normalized_type:
                 ticker = 'Downside Protected'
+            elif 'SILVER' in normalized_type or 'SILVERDALE' in normalized_type:
+                # Extract date from name (e.g., "SILVER_DALE_USD_FEB2029" -> "Silverdale Fund Feb2029")
+                import re
+                date_match = re.search(r'(NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*(\d{4})', normalized_type)
+                if date_match:
+                    month = date_match.group(1).title()
+                    year = date_match.group(2)
+                    ticker = f'Silverdale Fund {month}{year}'  # Match Excel format
+                else:
+                    ticker = 'Silverdale Fund Feb2029'  # Default
         
             if ticker:
                 client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
@@ -338,9 +348,9 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         if aw > 0:
                             asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
                 else:
-                    # Check if it's a Specialized/alternatives investment (Blackrock, Monroe, Custom, Downside)
+                    # Only CUSTOM is hardcoded as Specialized/alternatives (others should be in Excel)
                     ticker_lower = ticker.lower()
-                    if any(x in ticker_lower for x in ['blackrock', 'monroe', 'custom', 'downside']):
+                    if 'custom' in ticker_lower:
                         asset_allocation['Specialized / alternatives'] = asset_allocation.get('Specialized / alternatives', 0.0) + weight
                     else:
                         # Fallback for other unknown tickers
