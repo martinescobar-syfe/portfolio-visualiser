@@ -897,14 +897,18 @@ def render_export_ui(modules_selected):
                     exposure_data = {}
                     
                     # First, try to use the stored exposure data from the app display
+                    # Apply group_tail to limit to top 9 + Others (matching app display)
                     if 'asset_class_exposure' in st.session_state and st.session_state['asset_class_exposure'] is not None:
-                        exposure_data['asset_class'] = st.session_state['asset_class_exposure']
+                        asset_exp = st.session_state['asset_class_exposure']
+                        exposure_data['asset_class'] = group_tail(asset_exp, top_n=9)
                     
                     if 'country_exposure' in st.session_state and st.session_state['country_exposure'] is not None:
-                        exposure_data['country'] = st.session_state['country_exposure']
+                        country_exp = st.session_state['country_exposure']
+                        exposure_data['country'] = group_tail(country_exp, top_n=9)
                     
                     if 'sector_exposure' in st.session_state and st.session_state['sector_exposure'] is not None:
-                        exposure_data['sector'] = st.session_state['sector_exposure']
+                        sector_exp = st.session_state['sector_exposure']
+                        exposure_data['sector'] = group_tail(sector_exp, top_n=9)
                     
                     # Fallback: Calculate exposures if not available in session_state
                     if not exposure_data:
@@ -913,25 +917,25 @@ def render_export_ui(modules_selected):
                         if df_asset_class is not None and not df_asset_class.empty:
                             asset_exp = calculate_exposure(weights_series, df_asset_class)
                             if not asset_exp.empty:
-                                asset_exp = group_tail(asset_exp, top_n=15)  # Show more items
+                                asset_exp = group_tail(asset_exp, top_n=9)  # Top 9 + Others
                                 exposure_data['asset_class'] = asset_exp
                         
                         if df_country is not None and not df_country.empty:
                             country_exp = calculate_exposure(weights_series, df_country)
                             if not country_exp.empty:
-                                country_exp = group_tail(country_exp, top_n=15)  # Show more items
+                                country_exp = group_tail(country_exp, top_n=9)  # Top 9 + Others
                                 exposure_data['country'] = country_exp
                         
                         if df_sector is not None and not df_sector.empty:
                             sector_exp = calculate_exposure(weights_series, df_sector)
                             if not sector_exp.empty:
-                                sector_exp = group_tail(sector_exp, top_n=15)  # Show more items
+                                sector_exp = group_tail(sector_exp, top_n=9)  # Top 9 + Others
                                 exposure_data['sector'] = sector_exp
                         
                         # If still nothing, use portfolio type breakdown
                         if not exposure_data:
                             type_exp = pd.Series(client_weights)
-                            exposure_data['asset_class'] = group_tail(type_exp, top_n=15)
+                            exposure_data['asset_class'] = group_tail(type_exp, top_n=9)
                     
                     # Generate report
                     generator = PortfolioReportGenerator(

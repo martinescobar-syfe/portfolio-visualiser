@@ -816,6 +816,11 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_r
     # Risk rating - look up from df_risk_rating (Risk sheet in Excel)
     def get_risk_rating(portfolio_type):
         """Look up risk rating from df_risk_rating Excel sheet. Returns 2.0 if not found."""
+        # Special case for CUSTOM_USD - hardcoded to 3.0
+        upper = str(portfolio_type).upper()
+        if 'CUSTOM_USD' in upper or 'CUSTOM USD' in upper:
+            return 3.0
+        
         if df_risk_rating is None or df_risk_rating.empty:
             return 2.0  # Default fallback
         
