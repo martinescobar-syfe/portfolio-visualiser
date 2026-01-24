@@ -97,8 +97,8 @@ def get_active_portfolios(client_id):
     params = [{"type": "number", "value": client_id, "target": ["variable", ["template-tag", "client_id"]]}]
     rows = run_card(1470, params)
     
-    # Filter for ACTIVE portfolios only
-    active_rows = [r for r in rows if r.get('status') == 'ACTIVE']
+    # Filter for ACTIVE and ACTIVE_NEW portfolios only
+    active_rows = [r for r in rows if r.get('status') in ['ACTIVE', 'ACTIVE_NEW']]
     
     if not active_rows:
         return pd.DataFrame()

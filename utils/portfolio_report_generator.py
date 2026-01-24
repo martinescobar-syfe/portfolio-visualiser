@@ -732,7 +732,7 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_r
         """Map portfolio type to ticker for asset class lookup"""
         upper = str(port_type).upper().replace(' ', '_').replace('-', '_')
         # Remove common suffixes
-        for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED']:
+        for suffix in ['_ACTIVE_NEW', '_ACTIVE', '_INACTIVE', '_CLOSED']:
             if upper.endswith(suffix):
                 upper = upper[:-len(suffix)]
         
@@ -1809,7 +1809,7 @@ def prepare_cashflow_data(df_raw, df_fi_metrics=None):
         """Map portfolio type to ticker for yield lookup"""
         upper = str(port_type).upper().replace(' ', '_').replace('-', '_')
         # Remove common suffixes
-        for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED']:
+        for suffix in ['_ACTIVE_NEW', '_ACTIVE', '_INACTIVE', '_CLOSED']:
             if upper.endswith(suffix):
                 upper = upper[:-len(suffix)]
         

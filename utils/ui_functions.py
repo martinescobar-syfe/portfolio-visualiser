@@ -65,9 +65,9 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 if 'type' in df_client.columns:
                     df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
                     df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
-                # Filter for ACTIVE
+                # Filter for ACTIVE and ACTIVE_NEW
                 if 'status' in df_client.columns:
-                    df_client = df_client[df_client['status'].str.upper() == 'ACTIVE']
+                    df_client = df_client[df_client['status'].str.upper().isin(['ACTIVE', 'ACTIVE_NEW'])]
                 
                 # Extract client_id from portfolio_id column if available
                 client_id = 'CSV_Client'
@@ -178,7 +178,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 st.dataframe(df_display[display_cols], use_container_width=True)
                 df_client = df_display # Set for downstream processing
             else:
-                st.warning("Client has no ACTIVE portfolios.")
+                st.warning("Client has no ACTIVE or ACTIVE_NEW portfolios.")
 
     # --- Common Processing (runs if df_client is populated from either source) ---
     if df_client is not None and not df_client.empty:
@@ -245,7 +245,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             # Uppercase, remove _ACTIVE suffix, strip whitespace
             normalized = p_type.upper().strip()
             # Remove common suffixes
-            for suffix in ['_ACTIVE', '_INACTIVE', '_CLOSED', '_PENDING']:
+            for suffix in ['_ACTIVE_NEW', '_ACTIVE', '_INACTIVE', '_CLOSED', '_PENDING']:
                 if normalized.endswith(suffix):
                     normalized = normalized[:-len(suffix)]
             return normalized
