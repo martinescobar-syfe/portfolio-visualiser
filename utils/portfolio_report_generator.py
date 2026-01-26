@@ -792,7 +792,7 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_r
         # Get ticker name for lookup
         ticker = get_ticker(portfolio_type)
         
-        # Check if ticker exists in asset class columns
+        # Check if ticker exists in asset class columns (exact match)
         if ticker in df_asset_class.columns:
             # Find which asset class has value 1 for this ticker
             asset_classes = df_asset_class.index[df_asset_class[ticker] == 1].tolist()
@@ -806,10 +806,40 @@ def create_grouped_portfolio_table(df_raw, page_width, df_asset_class=None, df_r
             if asset_classes:
                 return asset_classes[0]
         
+        # Try case-insensitive and partial matching
+        ticker_lower = ticker.lower() if ticker else ''
+        orig_lower = orig_name.lower()
+        
+        for col in df_asset_class.columns:
+            col_lower = col.lower()
+            # Check if ticker or orig_name matches column (case-insensitive)
+            if col_lower == ticker_lower or col_lower == orig_lower:
+                asset_classes = df_asset_class.index[df_asset_class[col] == 1].tolist()
+                if asset_classes:
+                    return asset_classes[0]
+            # Check if column contains or is contained by the ticker (partial match)
+            if ticker_lower and (ticker_lower in col_lower or col_lower in ticker_lower):
+                asset_classes = df_asset_class.index[df_asset_class[col] == 1].tolist()
+                if asset_classes:
+                    return asset_classes[0]
+        
         # Fallback for types not in Excel: CUSTOM should be Specialized / alternatives
         upper = str(portfolio_type).upper()
         if any(x in upper for x in ['CUSTOM', 'STRATEGIC', 'ALTERNATIVE']):
             return 'Specialized / alternatives'
+        
+        # Growth portfolios default to Equity
+        if any(x in upper for x in ['GROWTH', 'CORE', 'EQUITY', 'BALANCED', 'DEFENSIVE', 
+                                     'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY']):
+            return 'Equity'
+        
+        # REIT portfolios
+        if 'REIT' in upper:
+            return 'REITs'
+        
+        # Income portfolios
+        if 'INCOME' in upper:
+            return 'Fixed income'
         
         return 'Unknown'
     
