@@ -24,7 +24,6 @@ import statsmodels.formula.api as smf
 TOLERANCE = 1e-11
 
 def apply_style_heatmap(df):
-    # styled_df = df.style.background_gradient(cmap='Blues')
     return df.style.background_gradient(cmap='Blues', axis=None)
 
 def apply_2dp_percentage(df):
@@ -40,7 +39,6 @@ def freeze(df):
             {'selector': 'tbody th',
              'props': [('position', 'sticky'), ('left', '0'), ('background', 'white')]}]
     
-    # styled_df = df.style.set_table_styles(table_styles)
     return df.style.set_table_styles(table_styles)
 
 def apply_style_heatmap_ret(df, subset=None):
@@ -142,11 +140,7 @@ def max_sum_constraint(weights, max_sum_allocation, etf_names, returns):
     return sum_allocation
 
 def _allocation_risk(weights, covariances):
-
-    # calculate the risk of the weights distribution
     portfolio_risk = np.sqrt((weights * covariances * weights.T))[0, 0]
-
-    # returns the risk of the weights distribution
     return portfolio_risk
 
 
@@ -224,37 +218,35 @@ def max_sharpe_rebal_wgt(returns_data, start_date, end_date, constraints_dict, s
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
     reb_flag = pd.DataFrame(0,index=weights.index, columns=['reb_flag'])
     
-    # param for exp covar
+    # exp covar params
     alpha = 1 - math.exp(math.log(0.5) / (halflife* annualized))
     span = (2 / alpha) - 1
              
-    # rebalance first week of April and October
+    # rebal first week of Apr and Oct
     for i in range(0, len(ret_data_filtered)):
 
-        # for first datapont or on rebalance dates, get optimized weight
+        # first datapoint or rebal date -> get optimized weights
         if (weights.index[i].month in rebal_months and weights.index[i-1].month != weights.index[i].month) or i==0:
             
             curr_date = ret_data_filtered.iloc[i].name
             
-            # shrink covariance matrix
+            # shrinkage covar
             if shrink_covar:
                 shrink_covar_matrix_model = LedoitWolf().fit(ret_data_all.loc[first_date:curr_date])
-                # display(shrink_covar_matrix_model.shrinkage_)
                 shrink_covar_matrix = shrink_covar_matrix_model.covariance_
                 covar_ann = shrink_covar_matrix * annualized
-                
-            # exponentially weighted covariance matrix    
+            # ewma covar
             else:
                 exp_cov_matrix = ret_data_all.loc[first_date:curr_date].ewm(span=span).cov(pairwise=True).iloc[-len(ret_data_all.columns):]
                 covar_ann = exp_cov_matrix * annualized
             
-            # mean returns = avg annualized return from first data point up to rebal date
+            # mean returns up to rebal date
             mean_ret = (ret_data_all.loc[first_date:curr_date].mean() * annualized)
 
             new_wgt = get_maxSharpe_wgt(mean_ret, covar_ann, rf=0, constraints=constraints_dict)
             weights.iloc[i] = new_wgt
             reb_flag.iloc[i] = True
-        # non-rebalance dates: weight will drift according to asset's daily returns
+        # off rebal dates: let weights drift with daily returns
         else:
             weights.iloc[i] = weights.iloc[i-1] * (1+ ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
@@ -300,7 +292,7 @@ def min_vol_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shri
             weights.iloc[i] = new_wgt
             reb_flag.iloc[i] = True
             
-        # non-rebalance dates: weight will drift according to asset's daily returns
+        # off rebal dates: let weights drift with daily returns
         else:
             weights.iloc[i] = weights.iloc[i-1] * (1+ ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
@@ -349,18 +341,18 @@ def equal_weight_rebal_wgt(returns_data, start_date, end_date, rebal_months=[4, 
     reb_flag = pd.DataFrame(0, index=weights.index, columns=['reb_flag'])
     
     num_assets = len(weights.columns)
-    equal_weight = 1.0 / num_assets  # Each asset receives an equal share
+    equal_weight = 1.0 / num_assets
 
     for i in range(0, len(ret_data_filtered)):
-        # Check if it's the first data point or a rebalance date
+        # first datapoint or rebal date
         if (weights.index[i].month in rebal_months and weights.index[i-1].month != weights.index[i].month) or i == 0:
-            weights.iloc[i] = equal_weight  # Set equal weights
+            weights.iloc[i] = equal_weight
             reb_flag.iloc[i] = True
         else:
-            # Non-rebalance dates: weight drifts according to asset's daily returns
+            # off rebal - let weights drift
             weights.iloc[i] = weights.iloc[i-1] * (1 + ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
-            weights.iloc[i] /= weights_sum  # Normalize to maintain a total weight of 1
+            weights.iloc[i] /= weights_sum
             reb_flag.iloc[i] = False
 
     weights = weights.rename(columns={c: c + '_wgt' for c in weights.columns})
@@ -368,45 +360,30 @@ def equal_weight_rebal_wgt(returns_data, start_date, end_date, rebal_months=[4, 
     return weights
 
 def fixed_weight_rebal_wgt(returns_data, start_date, end_date, fixed_weights, rebal_months=[4, 10]):
-    """
-    Function to create a fixed-weight portfolio with rebalancing at specified months.
-    
-    Parameters:
-    - returns_data: DataFrame containing asset returns
-    - start_date: Start date for the backtest
-    - end_date: End date for the backtest
-    - fixed_weights: Dictionary of fixed weights, e.g., {'SPY': 0.2, 'EFA': 0.3, ...}
-    - rebal_months: List of months for rebalancing
-    
-    Returns:
-    - DataFrame with weights over time
-    """
-    # Ensure weights sum to 1
+    """fixed weight portfolio with periodic rebalancing"""
+    # weights must sum to 1
     if round(sum(fixed_weights.values()),6) != 1:
         raise ValueError("Fixed weights must sum to 1.")
     
-    # Filter data for the specified date range
     ret_data_filtered = returns_data.loc[start_date:end_date]
     weights = pd.DataFrame(0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
     reb_flag = pd.DataFrame(0, index=weights.index, columns=['reb_flag'])
 
-    # Loop through the data and assign fixed weights on rebalance dates
     for i in range(0, len(ret_data_filtered)):
-        # Check if it's the first data point or a rebalance date
+        # first datapoint or rebal date
         if (weights.index[i].month in rebal_months and weights.index[i-1].month != weights.index[i].month) or i == 0:
-            # Set fixed weights for each ticker
             for ticker, wgt in fixed_weights.items():
                 weights.at[weights.index[i], ticker] = wgt
             reb_flag.iloc[i] = True
         else:
-            # Non-rebalance dates: weight drifts according to asset's daily returns
+            # off rebal - drift with returns
             weights.iloc[i] = weights.iloc[i-1] * (1 + ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
-            weights.iloc[i] /= weights_sum  # Normalize to maintain a total weight of 1
+            weights.iloc[i] /= weights_sum
             reb_flag.iloc[i] = False
 
-    # Rename columns to include '_wgt' suffix for clarity
+    # add _wgt suffix
     weights = weights.rename(columns={c: c + '_wgt' for c in weights.columns})
     weights = pd.concat([reb_flag, weights], axis=1)
     return weights
@@ -424,7 +401,7 @@ def equity_alloc_constraint(weights, equity_allocations, max_equity_allocation):
     return max_equity_allocation - combined_allocation
 
 
-########## PERFORMANCE / METRICS ##########
+# --- performance / metrics ---
 
 def rename_port_cols(name, portfolio_perf_df):
     portfolio_perf_df = portfolio_perf_df.rename(columns={'port_return': name + '_port_ret',
@@ -535,7 +512,6 @@ def portfolio_turnover(*args, start_date=None, end_date=None, rebal_per_yr=2):
     df_turnover.index = pd.to_datetime(df_turnover.index).strftime('%Y-%m-%d')
     df_turnover.loc['Avg_turnover'] = df_turnover.mean()
     df_turnover.loc['Ann_turnover'] = df_turnover.loc['Avg_turnover'] * rebal_per_yr
-    # df_turnover = df_turnover.applymap('{:.2%}'.format)
     
     ann_turnover_row = df_turnover.loc['Ann_turnover']
     df_turnover = df_turnover.drop(['Avg_turnover', 'Ann_turnover'], axis=0)
@@ -561,9 +537,6 @@ def performance_summary(portfolio_returns, portfolio_weights, benchmark_rel_perf
         annualized = 52
     if frequency=='monthly':
         annualized=12
-    # else:
-    #     print('input a valid frequency: daily, weekly, monthly')
-    #     return None
     
     if type(start_date)==int:
         start_date = datetime.strptime(str(start_date), '%Y%m%d').strftime('%Y-%m-%d')
@@ -683,9 +656,6 @@ def calculate_relative_per(portfolio_ret, benchmark_ret):
     results_df.loc['Median'] = results_df.median(axis=0)
     results_df.loc['Min'] = results_df.min(axis=0)
     
-    # results_df = results_df.style.format("{:.2%}")
-    # results_df = results_df.background_gradient(cmap='RdYlGn', subset=results_df.columns[1:])
-
     return results_df
 
 def performance_summary_yearly(*args, freq='daily', rf=0):
@@ -703,11 +673,6 @@ def performance_summary_yearly(*args, freq='daily', rf=0):
     results_df = pd.DataFrame(results, columns=['Year', 'Annual Return', 'Annual Volatility', 'Sharpe Ratio', 'Sortino Ratio', 'Max Drawdown'])
     results_df.set_index('Year', inplace=True)
 
-    # results_df['Annual Return'] = results_df['Annual Return'].map('{:.2%}'.format)
-    # results_df['Annual Volatility'] = results_df['Annual Volatility'].map('{:.2%}'.format)
-    # results_df['Sharpe Ratio'] = results_df['Sharpe Ratio'].map('{:.2f}'.format)
-    # results_df['Sortino Ratio'] = results_df['Sortino Ratio'].map('{:.2f}'.format)
-    # results_df['Max Drawdown'] = results_df['Max Drawdown'].map('{:.2%}'.format)
     return results_df
 
 def cumulative_ret_attribution(weights, returns, start_date=None, end_date=None):
@@ -788,7 +753,6 @@ def exposure_analysis(portfolio_weights, exposure_data, latest_data=True, start_
     exposure_analysis = exposure_data_filtered.multiply(np.array(portfolio_weights), axis='columns').sum(axis=1)
     exposure_analysis = pd.DataFrame(exposure_analysis)
     exposure_analysis.columns = ['Exposure %']
-    # exposure_analysis = exposure_analysis.sort_values(ascending=False, by='Exposure %')
     return exposure_analysis
 
 def compare_alloc_diff(df_all_port_weights, benchmark_name, portfolio_names, latest_data=True, start_date=None, end_date=None):
@@ -838,8 +802,6 @@ def compare_exposure_diff(exposure_portfolio, exposure_benchmark, portfolio_name
     df_exp_diff = df_exp_diff.loc[:, (df_exp_diff != 0).any(axis=0)]
     df_exp_diff = df_exp_diff * 100
     df_exp_diff = df_exp_diff.map(lambda x: '{:.2f}'.format(x))
-    # df_exp_diff = df_exp_diff.background_gradient(cmap='RdYlGn', subset=df_exp_diff.columns[1:])
-
     return df_exp_diff
 
 
@@ -858,8 +820,6 @@ def forward_regression(X, y, initial_list=[], threshold_in=0.05, threshold_out=0
             best_feature = new_pval.idxmin()  # Use idxmin to get the index of the minimum value
             included.append(best_feature)
             changed = True
-            # if verbose:
-                # print(f'Add {best_feature} with p-value {best_pval}')
         if not changed:
             break
     return included
@@ -877,18 +837,15 @@ def factor_regression(portfolio_returns, factors_data, threshold_in=0.05, start_
     
     start_index = data.index[0]
     end_index = data.index[-1]
-    # display(start_index, end_index)
-    # display(factors_data.loc[start_index:end_index], data['excess_ret'])
     
     col_factors = [col for col in factors_data.columns if col not in ['excess_ret', 'RF']]
-    # display( data)
     factors = forward_regression(factors_data.loc[start_index:end_index][col_factors], data.loc[start_index:end_index]['excess_ret'], threshold_in=threshold_in)
     
     data.rename(columns={'Mkt-RF': 'Mkt'}, inplace=True)
     
-    # Handle empty factors (if no factor meets threshold)
+    # fallback to market if no factor passes threshold
     if not factors:
-        factors = ['Mkt'] # Default to Market factor
+        factors = ['Mkt']
         
     formula = 'excess_ret ~ ' + ' + '.join(factors)
     # print(formula)
@@ -1051,14 +1008,8 @@ def median_credit_quality(df_wgt, credit_qual_breakdown, bonds_list):
     return median
 
 def calc_avg_credit_rating(portfolio_weights, bond_ratings, latest_data=True, start_date=None, end_date=None):
-    """
-    Calculate the average credit rating of a portfolio.
-
-    Parameters:
-        portfolio_allocations (list): List of portfolio weights for each bond (e.g., [0.4, 0.3, 0.2, 0.1]).
-        bond_ratings (list): List of S&P ratings corresponding to each bond (e.g., ['A', 'BBB', 'BB+', 'AA-']).
-    """
-    # Define a mapping from S&P ratings to numerical scores
+    """calc weighted avg credit rating for portfolio"""
+    # S&P ratings -> numeric scores
     rating_scale = {
         'AAA': 1, 'AA+': 2, 'AA': 3, 'AA-': 4, 'A+': 5, 'A': 6, 'A-': 7, 'BBB+': 8, 'BBB': 9, 'BBB-': 10, 'BB+': 11, 'BB': 12, 'BB-': 13,
         'B+': 14, 'B': 15, 'B-': 16, 'CCC+': 17, 'CCC': 18, 'CCC-': 19, 'CC': 20, 'C': 21, 'D': 22}
@@ -1079,33 +1030,24 @@ def calc_avg_credit_rating(portfolio_weights, bond_ratings, latest_data=True, st
 
     bond_ratings = bond_ratings.reindex(columns=tickers_fi)
 
-    # Reverse mapping to convert numerical scores back to ratings
+    # reverse lookup
     reverse_rating_scale = {v: k for k, v in rating_scale.items()}
 
-    # Validate input lengths
     if len(portfolio_weights) != len(bond_ratings):
         raise ValueError("Length of portfolio_allocations and bond_ratings must match.")
     
-    # Create a DataFrame for processing
     portfolio_df = pd.DataFrame({
     'Weight': portfolio_weights[tickers_fi].values[0],
     'Rating': bond_ratings[tickers_fi].values[0]})
 
-    # Map S&P ratings to numerical scores
     portfolio_df['Rating Score'] = portfolio_df['Rating'].map(rating_scale)
 
-    # Check for invalid ratings
     if portfolio_df['Rating Score'].isna().any():
         invalid_ratings = portfolio_df[portfolio_df['Rating Score'].isna()]['Rating'].tolist()
-        raise ValueError(f"Invalid S&P ratings detected: {invalid_ratings}")
+        raise ValueError(f"Invalid S&P ratings: {invalid_ratings}")
 
-    # Ensure weights sum to 1
     portfolio_df['Normalized Weight'] = portfolio_df['Weight'] / portfolio_df['Weight'].sum()
-
-    # Calculate weighted average score
     weighted_average_score = (portfolio_df['Rating Score'] * portfolio_df['Normalized Weight']).sum()
-
-    # Find the closest rating for the weighted average score
     closest_rating = reverse_rating_scale[round(weighted_average_score)]
     return closest_rating
 
@@ -1132,19 +1074,18 @@ def exposure_dcm(df_all_port_weights, etf_dcm, etf_credit_quality, bonds_additio
 def forecast_portfolio(df_ret):
     port_name = df_ret.columns
     
-    # Initialize NAV DataFrame
+    # init NAV
     df_nav = pd.DataFrame(0, columns=df_ret.columns, index=df_ret.index)
     df_nav.iloc[0] = 100
 
-    # Calculate NAV series
     for i in range(1, len(df_ret)):
         df_nav.iloc[i] = df_nav.iloc[i - 1] * (1 + df_ret.iloc[i])
 
-    geo_ret = np.log(df_nav / df_nav.shift(1))  # Calculate geometric returns
+    geo_ret = np.log(df_nav / df_nav.shift(1))  # log returns
 
-    # Calculate average returns and standard deviations
-    avg_ret_list = geo_ret.mean() * 261  # Annualized mean return
-    stdev_list = geo_ret.std() * np.sqrt(261)  # Annualized standard deviation
+    # annualized stats
+    avg_ret_list = geo_ret.mean() * 261
+    stdev_list = geo_ret.std() * np.sqrt(261)
 
     conf_interval = [0.1, 0.25, 0.5, 0.75, 0.9]
     all_simulations = pd.DataFrame()
@@ -1174,18 +1115,13 @@ def forecast_portfolio(df_ret):
 
 def plot_cumulative_returns(*args, start_date=None, end_date=None, title='Cumulative Return', 
                             x_axis_title='Date', y_axis_title='Cumulative Return %', width=1000, height=600, show_data=True):
-    '''
-    input: returns data
-    plots cumulative return over time
-    '''
+    """plot cum returns from returns data"""
     df_combined = pd.concat(args, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
     df_combined.iloc[0] = 0
     df_combined = (1 + df_combined).cumprod() - 1
     df_combined = df_combined.fillna(method='ffill')
     
-    # Resample to weekly intervals
-    # df_combined = df_combined.resample('W-Mon').last()
     
     start_date = str(df_combined.index[0].date())
     end_date = str(df_combined.index[-1].date())
@@ -1207,8 +1143,7 @@ def plot_cumulative_returns(*args, start_date=None, end_date=None, title='Cumula
         return df_combined
 
 def plot_outperformance_vs_benchmark(portfolio_returns, benchmark_returns, start_date=None, end_date=None, title='Relative Performance vs Benchmark',width=1000, height=600,show_data=True):
-    
-    # input: returns data. plots relative performance of portfolio vs benchmark
+    """plot relative perf vs benchmark"""
     
     portfolio_returns = portfolio_returns.loc[start_date:end_date]
     benchmark_returns = benchmark_returns.loc[start_date:end_date]
@@ -1242,7 +1177,6 @@ def plot_outperformance_vs_benchmark(portfolio_returns, benchmark_returns, start
     
 def plot_annual_returns(*args, start_date=None, end_date=None, width=1000, height=600, show_data=True):
     
-    # combine series to a single df
     dfs = [df.groupby(df.index.year).sum() for df in args]
     df_combined = pd.concat(dfs, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
@@ -1303,8 +1237,7 @@ def plot_weights_and_turnover(weights, start_date=None, end_date=None, show_data
 
     
 def plot_drawdowns(*args, start_date=None, end_date=None, title='Drawdown', show_data=True):
-
-    # input: returns data. plots cumulative drawdown and max drawdown line
+    """plot drawdowns from returns"""
     
     df_combined = pd.concat(args, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
@@ -1326,10 +1259,6 @@ def plot_drawdowns(*args, start_date=None, end_date=None, title='Drawdown', show
         drawdown_color = px.colors.qualitative.Plotly[i % len(px.colors.qualitative.Plotly)]
         fig.add_trace(drawdown_area, row=1, col=1)
         
-#         # Plot MDD Line
-#         mdd_line = go.Scatter(x=mdd.index, y=-mdd, mode='lines', line=dict(color=drawdown_color), name=f'MDD {col}: {mdd.max():.2%}')
-#         fig.add_trace(mdd_line, row=1, col=1)
-
     fig.update_layout(xaxis=dict(title='Date'), yaxis=dict(title='Drawdown'), yaxis_tickformat='.2%',
                       title_text=title, showlegend=True, height=500,width=1000)
     fig.show()
@@ -1341,9 +1270,7 @@ def plot_drawdowns(*args, start_date=None, end_date=None, title='Drawdown', show
         return df_mdd.map('{:.2%}'.format)
     
 def plot_returns_distribution_histogram(*args, start_date=None, end_date=None, title='Returns Distribution', width=1000, height=600):
-    
-    # input: returns data. Plot returns distribution histogram    
-
+    """histogram of returns distribution"""
     df_combined = pd.concat(args, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
     df_melted = df_combined.melt(var_name='Asset', value_name='Returns')
@@ -1353,9 +1280,7 @@ def plot_returns_distribution_histogram(*args, start_date=None, end_date=None, t
     fig.show()
     
 def plot_returns_distribution_boxplot(*args, start_date=None, end_date=None, title='Returns Distribution', width=1000, height=600):
-    
-    # input: returns data. Plot returns distribution using boxplot
-
+    """boxplot of returns distribution"""
     df_combined = pd.concat(args, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
     df_melted = df_combined.melt(var_name='Asset', value_name='Returns')
@@ -1365,9 +1290,7 @@ def plot_returns_distribution_boxplot(*args, start_date=None, end_date=None, tit
     fig.show()
 
 def plot_rolling_volatility(*args, start_date=None, end_date=None, window=261, title='Rolling Volatility', width=1000, height=600):
-
-    # input: returns data. Plot rolling volatility
-
+    """rolling vol chart"""
     df_combined = pd.concat(args, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
     df_combined = df_combined.fillna(0)
@@ -1379,9 +1302,7 @@ def plot_rolling_volatility(*args, start_date=None, end_date=None, window=261, t
     fig.show()
     
 def plot_correlation_heatmap(*args, start_date=None, end_date=None, title='Correlation Heatmap', width=1000, height=600):
-    
-    # input: returns data. Plot correlation matrix as a heatmap.
-    
+    """correlation heatmap"""
     df_combined = pd.concat(args, axis=1)
     df_combined = df_combined.loc[start_date:end_date]
     correlation_matrix = df_combined.corr().round(3)
@@ -1440,33 +1361,28 @@ def plot_pie_chart(series, title=None, width=1000, height=600, colors=None):
         'hole': 0.3
     }
 
-    # Add marker with custom colors if provided
     if colors:
         pie_data['marker'] = dict(colors=colors)
     
-    fig = go.Figure(data=[go.Pie(**pie_data)]) # Unpack pie_data into go.Pie
+    fig = go.Figure(data=[go.Pie(**pie_data)])
     fig.update_layout(title=title, width=width, height=height, showlegend=True, font=dict(family="Arial", size=12, color='black'))
     fig.show()
     
 def plot_pie_chart_topX(series, title, topX=10, width=1000, height=600, colors=None):
-    # Filter for values greater than 0
+    """pie chart for top X items"""
     series = series[series > 0]
 
-    # Proceed only if there are values to plot
     if not series.empty:
         top_x = series.sort_values(ascending=False).head(topX)
         other_sum = series.sum() - top_x.sum()
 
-        # Filter labels and values based on positive values
         labels = list(top_x.index) 
         values = list(top_x)
         
-        # Add 'Others' only if other_sum is greater than 0
         if other_sum > 0.01:
             labels.append('Others')
             values.append(other_sum)
 
-        # Create the Pie trace data
         pie_data = {
             'labels': labels, 
             'values': values, 
@@ -1475,11 +1391,10 @@ def plot_pie_chart_topX(series, title, topX=10, width=1000, height=600, colors=N
             'textposition': 'outside',  
         }
 
-        # Add marker with custom colors if provided
         if colors:
             pie_data['marker'] = dict(colors=colors)
 
-        fig = go.Figure(data=[go.Pie(**pie_data)])  # Unpack pie_data into go.Pie
+        fig = go.Figure(data=[go.Pie(**pie_data)])
         fig.update_layout(title=title, width=width, height=height, showlegend=False, font=dict(family="Arial", size=12, color='black'))
         return fig
     else:
@@ -1487,30 +1402,22 @@ def plot_pie_chart_topX(series, title, topX=10, width=1000, height=600, colors=N
         return None
 
 def plot_bar_chart_topX(series, title, topX=10, width=1000, height=600, colors=None):
-
-
-    # Filter for values greater than 0
+    """bar chart for top X items"""
     series = series[series > 0]
-
-    # Proceed only if there are values to plot
     if not series.empty:
         top_x = series.sort_values(ascending=False).head(topX)
         other_sum = series.sum() - top_x.sum()
 
-        # Filter labels and values based on positive values
         labels = list(top_x.index)
         values = list(top_x)
 
-        # Add 'Others' only if other_sum is greater than 0
         if other_sum > 0:
             labels.append('Others')
             values.append(other_sum)
 
-        # Calculate percentages and format labels
         total_sum = sum(values)
-        text_labels = [f'{round(value / total_sum * 100, 2)}%' for value in values]  # Only percentage
+        text_labels = [f'{round(value / total_sum * 100, 2)}%' for value in values]
 
-        # Create the Bar trace data
         bar_data = {
             'x': labels,
             'y': values,
@@ -1519,11 +1426,10 @@ def plot_bar_chart_topX(series, title, topX=10, width=1000, height=600, colors=N
             'textangle': 0
         }
 
-        # Add marker with the first custom color if provided
         if colors:
-            bar_data['marker'] = dict(color=colors[0])  # Use the first color from the list
+            bar_data['marker'] = dict(color=colors[0])
 
-        fig = go.Figure(data=[go.Bar(**bar_data)])  # Unpack bar_data into go.Bar
+        fig = go.Figure(data=[go.Bar(**bar_data)])
         fig.update_layout(title=title, width=width, height=height, showlegend=False, yaxis_tickformat=".0%", font=dict(family="Arial", size=12, color='black'))
         return fig
     else:
@@ -1736,16 +1642,11 @@ def plot_return_risk_scatter_maxrange(returns_df, freq='daily', show_data=True, 
 
 
 def monthly_performance_table(portfolio_returns):
-       # Resample returns to monthly frequency and calculate returns
-       monthly_rets = portfolio_returns.resample('M').apply(lambda x: (x + 1).prod() - 1)
-       
-       # Pivot the table to have years as rows and months as columns
-       monthly_rets_table = monthly_rets.pivot_table(index=monthly_rets.index.year, columns=monthly_rets.index.month, values=monthly_rets.columns[0]) 
-       
-       # Rename columns to represent months
-       monthly_rets_table.columns = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-       
-       return monthly_rets_table
+    """monthly returns as pivot table (year x month)"""
+    monthly_rets = portfolio_returns.resample('M').apply(lambda x: (x + 1).prod() - 1)
+    monthly_rets_table = monthly_rets.pivot_table(index=monthly_rets.index.year, columns=monthly_rets.index.month, values=monthly_rets.columns[0]) 
+    monthly_rets_table.columns = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    return monthly_rets_table
         
 def plot_factor_exposure(df_factor_port_exp, df_factor_benchmark_exp, portfolio_name, benchmark_ticker='URTH', show_data=True, width=1000, height=600):
 
@@ -1858,7 +1759,6 @@ def exposure_over_time(df_weight, df_exposure, start_date=None, end_date=None, f
         exposure_analysis = exposure_analysis.resample('Y').mean()
 
     exposure_analysis = exposure_analysis[exposure_analysis.columns[exposure_analysis.iloc[0].argsort()[::-1]]]
-    # exposure_analysis = exposure_analysis.applymap(lambda x: '{:.2%}'.format(x))
     return exposure_analysis
 
 def relative_exposure_over_time(df_weight, df_exposure, benchmark_exposure, start_date=None, end_date=None, frequency=None):
@@ -1872,8 +1772,6 @@ def relative_exposure_over_time(df_weight, df_exposure, benchmark_exposure, star
     relative_exposure = pd.concat([benchmark_exposure, relative_exposure])
 
     relative_exposure = relative_exposure[relative_exposure.columns[relative_exposure.iloc[0].argsort()[::-1]]]
-    # relative_exposure = relative_exposure.applymap(lambda x: '{:.2%}'.format(x))
-
     return relative_exposure
 
 def plot_exposure_over_time(df_weight, df_exposure, start_date=None, end_date=None, frequency=None, show_rebal=False, height=800, width=1200):

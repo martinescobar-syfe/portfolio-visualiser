@@ -24,22 +24,15 @@ import zipfile
 import io
 
 def get_portfolio_objective(portfolio_name):
-    """Determine objective based on portfolio name keywords."""
+    """get objective from portfolio name"""
     name_lower = portfolio_name.lower()
     
-    # Wealth Growth (Thematics + Equity)
     if any(keyword in name_lower for keyword in ['china', 'disruptive', 'esg', 'clean', 'healthcare', 'equity', 'growth']):
         return 'Wealth Growth'
-    
-    # Income Generation (includes AI investments like Blackrock, Monroe)
     if any(keyword in name_lower for keyword in ['income', 'enhance', 'reit', 'blackrock', 'monroe']):
         return 'Income Generation'
-    
-    # Capital Preservation
     if any(keyword in name_lower for keyword in ['preserve', 'cash', 'guaranteed']):
         return 'Capital Preservation'
-    
-    # Default to Wealth Growth for unclassified
     return 'Wealth Growth'
 
 
@@ -51,33 +44,24 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
     
     df_client = None
     
-    # --- Tab 1: CSV Upload ---
     with tab_csv:
         uploaded_file = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key=f"{key_prefix}_file_uploader")
         if uploaded_file:
             try:
                 df_client = pd.read_csv(uploaded_file)
                 
-                # Normalize column names to lowercase
                 df_client.columns = df_client.columns.str.lower().str.strip()
-                
-                # Standardize naming
                 if 'type' in df_client.columns:
                     df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
                     df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
-                # Filter for ACTIVE and ACTIVE_NEW
                 if 'status' in df_client.columns:
                     df_client = df_client[df_client['status'].str.upper().isin(['ACTIVE', 'ACTIVE_NEW'])]
                 
-                # Extract client_id from portfolio_id column if available
                 client_id = 'CSV_Client'
                 if 'portfolio_id' in df_client.columns and len(df_client) > 0:
-                    # Try to extract from first portfolio_id or use filename
                     first_id = str(df_client['portfolio_id'].iloc[0])
                     if first_id and len(first_id) > 3:
-                        client_id = first_id[:10]  # Use first 10 chars
-                
-                # Store in session state for PDF export
+                        client_id = first_id[:10]
                 st.session_state['csv_client_df'] = df_client
                 st.session_state['metabase_client_df'] = df_client  # Also set this for compatibility
                 st.session_state['metabase_client_info'] = {
@@ -86,8 +70,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     'age': None,
                     'risk_score': None
                 }
-                
-                # Store raw CSV data for PDF generation
                 st.session_state['csv_raw_data'] = df_client.copy()
                 
                 st.success(f"Loaded {len(df_client)} portfolios from CSV (Client: {client_id})")
@@ -95,31 +77,24 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
 
-    # --- Tab 2: Metabase Lookup ---
     with tab_metabase:
         c_id, c_btn = st.columns([3, 1])
         with c_id:
             client_id_input = st.text_input("Client ID", key=f"{key_prefix}_meta_id")
         with c_btn:
-            st.write("") # Spacer
-            st.write("") 
+            st.write("")
+            st.write("")
             lookup_clicked = st.button("Fetch Client", key=f"{key_prefix}_meta_btn")
             
         if lookup_clicked and client_id_input:
             with st.spinner("Fetching client data from Metabase..."):
                 try:
-                    # Clean input
                     client_id_str = client_id_input.strip()
-                    client_id = int(client_id_str) # Convert to int for logic
-                    
-                    # 1. Get Client Info
+                    client_id = int(client_id_str)
                     client_info = get_client_info_by_id(client_id)
                     
                     if client_info.get('client_id'):
-                        # 2. Get Portfolios
                         fetched_df = get_active_portfolios(client_info.get('client_id'))
-                        
-                        # Store in session state
                         st.session_state['metabase_client_info'] = client_info
                         st.session_state['metabase_client_df'] = fetched_df
                         st.session_state['client_profile'] = {
@@ -129,9 +104,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                             'email': client_info.get('email')
                         }
                         
-                        # --- Auto-Generate AI Analysis ---
                         with st.spinner("Generating AI Analysis..."):
-                            # Determine which columns to use for holdings list
                             holdings_cols = []
                             for col in ['name', 'type', 'nav_in_sgd']:
                                 if col in fetched_df.columns:
@@ -143,8 +116,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                                 holdings_list
                             )
                             st.session_state['metabase_ai_analysis'] = ai_analysis
-                            
-                        st.success(f"Found client: {client_info.get('name')} (ID: {client_info.get('client_id')})") # Temporary success message
+                        st.success(f"Found client: {client_info.get('name')} (ID: {client_info.get('client_id')})")
 
                     else:
                         st.error("Client not found or invalid ID.")
@@ -152,26 +124,19 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 except Exception as e:
                     st.error(f"Error fetching data: {e}")
 
-        # --- Persisted Display Logic (Runs if data exists in session state) ---
         if st.session_state.get('metabase_client_info') and st.session_state.get('metabase_client_df') is not None:
             c_info = st.session_state['metabase_client_info']
             df_display = st.session_state['metabase_client_df']
-            
-            # Display Client Profile
             c1, c2, c3 = st.columns(3)
             c1.metric("Name", c_info.get('name'))
             c2.metric("Age", c_info.get('age'))
             c3.metric("Risk Score", c_info.get('risk_score'))
             
-            # Display Portfolios
             if not df_display.empty:
-                # Determine which columns to display (handle varying column names)
                 display_cols = []
                 for col in ['name', 'type', 'portfolio_type', 'nav_in_sgd', 'nav', 'value', 'pnl_inception', 'pnl', 'returns']:
                     if col in df_display.columns and col not in display_cols:
                         display_cols.append(col)
-                
-                # If no standard columns found, display all columns
                 if not display_cols:
                     display_cols = list(df_display.columns)
                 
@@ -180,11 +145,8 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             else:
                 st.warning("Client has no ACTIVE or ACTIVE_NEW portfolios.")
 
-    # --- Common Processing (runs if df_client is populated from either source) ---
     if df_client is not None and not df_client.empty:
-        # Mapping logic - handles various naming conventions
         CLIENT_PORTFOLIO_MAPPING = {
-            # Core Portfolios
             'GLOBAL_EQUITY_100': 'Core Equity100',
             'GLOBAL_EQUITY': 'Core Equity100',
             'CORE_EQUITY100': 'Core Equity100',
@@ -194,23 +156,19 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             'CORE_BALANCED': 'Core Balanced',
             'CORE_DEFENSIVE': 'Core Defensive',
             'DOWNSIDE_PROTECTED': 'Downside protected',
-            # Thematic Portfolios
             'CHINA_GROWTH': 'China Growth',
             'DISRUPTIVE_TECHNOLOGY': 'Disruptive Technology',
             'DISRUPTIVE_TECH': 'Disruptive Technology',
             'ESG_AND_CLEAN_ENERGY': 'ESG & Clean Energy',
             'ESG_CLEAN_ENERGY': 'ESG & Clean Energy',
             'HEALTHCARE_INNOVATION': 'Healthcare Innovation',
-            # Income Portfolios
             'INCOME_ENHANCE': 'Income Enhance',
             'INCOME_ENHANCED': 'Income Enhance',
             'INCOME_PRESERVE': 'Income Preserve',
-            # REIT Portfolios
             'REIT': 'REIT 100',
             'REIT_100': 'REIT 100',
             'REIT_RISK_MANAGED': 'REIT Risk Managed',
             'REIT_RM': 'REIT Risk Managed',
-            # Private Credit / AI Products
             'BLACKROCK': 'Blackrock Private Credit Fund',
             'BLACKROCK_PRIVATE_CREDIT': 'Blackrock Private Credit Fund',
             'BLACKROCK_PCF': 'Blackrock Private Credit Fund',
@@ -218,7 +176,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             'MONROE_INCOME_PLUS': 'Monroe Income Plus Fund',
             'MONROE_CAPITAL': 'Monroe Income Plus Fund',
             'SILVERDALE': 'Silverdale Fund (Nov 2027)',
-            # Cash Management
             'CASH_PLUS_GUARANTEED_SGD': 'Cash SGD guaranteed',
             'CASH_PLUS_GUARANTEED': 'Cash SGD guaranteed',
             'CASH_GUARANTEED': 'Cash SGD guaranteed',
@@ -227,7 +184,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             'CASH_PLUS': 'Cash SGD flexi',
             'CASH_SGD': 'Cash SGD flexi',
             'CASH_PLUS_SGD': 'Cash SGD flexi',
-            # SRS Portfolios
             'SRS_INCOME_ENHANCE': 'SRS Income Enhance',
             'SRS_INCOME_ENHANCED': 'SRS Income Enhance',
             'SRS_INCOME_PRESERVE': 'SRS Income Preserve',
@@ -239,18 +195,15 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
         }
         
         def normalize_portfolio_type(p_type):
-            """Normalize portfolio type string for mapping."""
+            """normalize portfolio type for mapping"""
             if not isinstance(p_type, str):
                 return None
-            # Uppercase, remove _ACTIVE suffix, strip whitespace
             normalized = p_type.upper().strip()
-            # Remove common suffixes
             for suffix in ['_ACTIVE_NEW', '_ACTIVE', '_INACTIVE', '_CLOSED', '_PENDING']:
                 if normalized.endswith(suffix):
                     normalized = normalized[:-len(suffix)]
             return normalized
 
-        # Objective Mapping
         OBJECTIVE_MAPPING = {
             'Core Equity100': 'Wealth Growth',
             'SRS Equity100': 'Wealth Growth',
@@ -266,11 +219,9 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             'Cash USD flexi': 'Capital Preservation'
         }
     
-        # Process data to get ticker weights
         client_holdings = {}
         total_nav = 0.0
         
-        # Helper function to safely convert to float
         def safe_float(val, default=0.0):
             if pd.isna(val):
                 return default
@@ -284,18 +235,14 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             currency = str(row.get('currency', 'SGD'))
             nav = safe_float(row.get('nav_in_sgd', 0))
         
-            if nav < 50: # Ignore small balances
+            if nav < 50:
                 continue
             
             ticker = None
-            
-            # Normalize the portfolio type
             normalized_type = normalize_portfolio_type(p_type)
             
             if normalized_type is None:
                 continue
-        
-            # Special handling for CASH_PLUS variants
             if 'CASH' in normalized_type and 'PLUS' in normalized_type:
                 if currency == 'USD' or 'USD' in normalized_type:
                     ticker = 'Cash USD flexi'
@@ -362,7 +309,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 obj = get_portfolio_objective(ticker)
                 objective_allocation[obj] = objective_allocation.get(obj, 0.0) + weight
 
-            # --- Natural Summary ---
             st.markdown("### Portfolio Summary")
             
             # Identify top portfolio types
@@ -395,13 +341,10 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             
             st.info(summary_text)
 
-            # --- NEW: Gemini Appropriateness Report ---
-            # --- NEW: Gemini Appropriateness Report (Persisted) ---
             if 'metabase_ai_analysis' in st.session_state:
                 with st.expander("✨ Insights", expanded=True):
                      st.markdown(st.session_state['metabase_ai_analysis'])
 
-            # --- NEW: Tabs for Allocation vs Exposures ---
             tab_alloc, tab_exposures = st.tabs(["Client Portfolio Allocation", "Client Exposures"])
 
             with tab_alloc:
@@ -467,7 +410,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     fig_obj.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
                     st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
 
-            # --- NEW: Side-by-Side 2x2 Exposure Layout (User Request) ---
             st.markdown("### Portfolio Exposures")
             st.markdown("#### Filter Exposures")
             c_filter, c_dummy = st.columns([2, 1])
@@ -516,7 +458,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 if 'asset_table' in charts:
                     st.session_state['asset_class_exposure'] = charts['asset_table']['Weight']
                 
-                # --- Row 1: Asset Class + Top Holdings ---
                 col_asset, col_holdings = st.columns([1, 1])
                 
                 with col_asset:
@@ -564,7 +505,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     else:
                         st.info("Concentration data not available.")
                 
-                # --- Row 2: Sector + Country ---
                 col_sector, col_country = st.columns([1, 1])
                 
                 with col_sector:
@@ -962,7 +902,6 @@ from utils.llm_helper import get_recommendation_narrative
 
 def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     st.header("2. Syfe Portfolio Recommender")
-    # --- Step 1: Personal & Financial Profile ---
     st.subheader("2.1 Personal & Financial Profile")
     
     col_p1, col_p2 = st.columns(2)
@@ -1011,7 +950,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         key=f"{key_prefix}_know"
     )
 
-    # --- Step 2: Risk Tolerance & Horizon ---
     st.subheader("2.2 Risk Assessment")
     
     # We need a primary objective to guide the risk questions, or just ask generic ones?
@@ -1061,7 +999,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         key=f"{key_prefix}_hor_Choice"
     )
 
-    # --- Step 3: Investment Goals ---
     st.subheader("2.3 Investment Goals")
     st.markdown("Please define your goals below.")
     
@@ -1110,9 +1047,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     )
     is_accredited = st.checkbox("I am an Accredited Investor (AI)", key=f"{key_prefix}_ai")
     
-    # --- Generate ---
-    st.markdown("---")
-    # --- Generate ---
     st.markdown("---")
     if st.button("Generate Smart Recommendation", type="primary", key=f"{key_prefix}_calc"):
         
@@ -1253,7 +1187,6 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             st.warning("Could not structure table data. Displaying raw output:")
             st.markdown(rec_text)
         
-    # --- Add to Analysis Button ---
     if 'rec_results' in st.session_state:
         st.markdown("---")
         if st.button("Add Selected Strategy to Portfolio Analysis", key=f"{key_prefix}_add_strat"):
@@ -1554,7 +1487,6 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
     else:
         st.session_state.run_optimization = False
 
-    # --- Optimization Logic ---
     if st.session_state.run_optimization:
         with st.spinner("Optimizing Portfolios..."):
             # 1. Gather Tickers
@@ -1629,7 +1561,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
     if results_data:
         st.header("4. Analysis Results")
         
-        # --- Currency Selection for Analysis ---
 
         # FX Methodology explanation
         fx_methodology = """
@@ -1811,7 +1742,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             st.markdown("---")
         
-            # --- Historical Weights View ---
             st.subheader("Historical Weights (Rebalance Dates)")
         
             w_select = st.selectbox("Select Portfolio to View Weights", list(results.keys()), key=f"{key_prefix}_w_view_sel")
@@ -1831,7 +1761,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
 
             st.markdown("---")
 
-            # --- Fixed Income Analytics ---
             st.subheader("Fixed Income Analytics")
         
             # Identify FI tickers
@@ -1975,14 +1904,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # Reuse plot function
             st.plotly_chart(fig_roll, use_container_width=True, key=f"{key_prefix}_roll_excess")
 
-    # --- Exposure Analysis ---
     if st.session_state.optimization_results:
         st.header("5. Exposure Analysis")
         
         res_data = st.session_state.optimization_results
         results = res_data['results']
         
-        # --- Advanced Exposure Filtering ---
         st.markdown("#### Filter Exposures (Aggregated by Cash Invested)")
         
         # Filter Controls
@@ -2047,7 +1974,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # Refine filtered_portfolios
                 filtered_portfolios = [p for p in filtered_portfolios if port_meta[p]['goal_name'] in sel_goals]
 
-        # --- Aggregation Logic ---
         global_ticker_values = {}
         total_agg_value = 0.0
         
@@ -2161,7 +2087,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         pass
 
 
-    # --- Factor Exposures ---
     if st.session_state.optimization_results:
         st.header("6. Factor Exposures")
     
@@ -2310,7 +2235,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.error(f"Error calculating factor exposures: {e}")
             st.exception(e)
 
-    # --- Cash Flow Analysis ---
     if st.session_state.optimization_results:
         # Check if any portfolio has cash invested
         portfolios_with_cash = {
@@ -2619,7 +2543,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             with col2:
                 st.metric(f"Average Monthly Cash Flow ({display_currency})", f"{ccy_symbol}{total_annual/12:,.2f}")
             
-            # --- Detailed Portfolio Contribution Breakdown (Dropdown) ---
             if show_goal_breakdown and ticker_cash_flows:
                 with st.expander("📊 View Detailed Portfolio Contributions", expanded=False):
                     st.markdown("**Individual Portfolio Cash Flow Contributions**")
@@ -2692,7 +2615,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 hide_index=True
                             )
         
-        # --- Growth Forecast Calculator ---
         st.markdown("---")
         st.header("7.1 Growth Forecast Calculator")
         st.caption("Project future portfolio value based on historical returns")

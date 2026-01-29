@@ -1,11 +1,37 @@
 import json
 import os
 import streamlit as st
+from supabase import create_client, Client
 
-DATA_FILE = "data/saved_portfolios.json"
+# supabase setup - uses streamlit secrets or falls back to env vars
+def get_supabase_client() -> Client:
+    try:
+        url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL"))
+        key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY"))
+        
+        if not url or not key:
+            return None
+        
+        return create_client(url, key)
+    except Exception as e:
+        st.warning(f"Supabase not configured: {e}")
+        return None
+
+# fallback to local JSON if supabase not available
+DATA_FILE = "Data/saved_portfolios.json"
 
 def load_portfolios():
-    """Load saved portfolios from JSON file."""
+    """load saved portfolios from supabase (or local JSON fallback)"""
+    client = get_supabase_client()
+    
+    if client:
+        try:
+            response = client.table('portfolios').select('name, data').execute()
+            return {row['name']: row['data'] for row in response.data}
+        except Exception as e:
+            st.warning(f"Supabase read failed, using local: {e}")
+    
+    # fallback to local JSON
     if not os.path.exists(DATA_FILE):
         return {}
     
@@ -17,13 +43,23 @@ def load_portfolios():
         return {}
 
 def save_portfolio(name, portfolio_data):
-    """Save a portfolio configuration to JSON file."""
+    """save portfolio to supabase (or local JSON fallback)"""
+    client = get_supabase_client()
+    
+    if client:
+        try:
+            # upsert - insert or update if name exists
+            client.table('portfolios').upsert({
+                'name': name,
+                'data': portfolio_data
+            }, on_conflict='name').execute()
+            return True
+        except Exception as e:
+            st.warning(f"Supabase write failed, saving locally: {e}")
+    
+    # fallback to local JSON
     data = load_portfolios()
-    
-    # Ensure directory exists
     os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-    
-    # Add/Update
     data[name] = portfolio_data
     
     try:
@@ -35,7 +71,17 @@ def save_portfolio(name, portfolio_data):
         return False
 
 def delete_portfolio(name):
-    """Delete a saved portfolio."""
+    """delete portfolio from supabase (or local JSON fallback)"""
+    client = get_supabase_client()
+    
+    if client:
+        try:
+            client.table('portfolios').delete().eq('name', name).execute()
+            return True
+        except Exception as e:
+            st.warning(f"Supabase delete failed: {e}")
+    
+    # fallback to local JSON
     data = load_portfolios()
     
     if name in data:

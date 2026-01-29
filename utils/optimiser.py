@@ -6,15 +6,9 @@ from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 
 def create_constraints(min_weight, max_weight, fixed_weights=None):
-    """
-    Creates constraints for optimization, including block optimization (fixed weights).
-    """
+    """create optimization constraints"""
     constraints = []
-    
-    # 1. Budget Constraint: Sum of weights = 1
     constraints.append({'type': 'eq', 'fun': lambda weights: np.sum(weights) - 1})
-    
-    # 2. Min/Max Weight Constraints
     constraints.append({'type': 'ineq', 'fun': lambda weights: weights - min_weight})
     constraints.append({'type': 'ineq', 'fun': lambda weights: max_weight - weights})
     
@@ -66,10 +60,7 @@ def min_vol(ret_data, covar_ann, constraints):
 def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, method='max_sharpe', 
                        shrink_covar=True, rebal_months=[1], annualized=261, halflife=3.5, 
                        fixed_weights=None, min_weight=0.0, max_weight=1.0):
-    """
-    General optimization function supporting Max Sharpe, Min Vol, and Block Optimization.
-    Added min_weight and max_weight parameters to properly apply bounds.
-    """
+    """optimization for max sharpe, min vol, block opt"""
     
     ret_data_all = returns_data.loc[:end_date]
     ret_data_filtered = returns_data.loc[start_date:end_date]
@@ -83,7 +74,7 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
     alpha = 1 - math.exp(math.log(0.5) / (halflife* annualized))
     span = (2 / alpha) - 1
     
-    # Handle Block Optimization: Separate fixed and free tickers
+    # separate fixed and free tickers
     free_tickers = tickers.copy()
     fixed_weight_sum = 0
     
@@ -95,20 +86,15 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
     
     remaining_budget = 1.0 - fixed_weight_sum
     
-    # Main optimization loop - handle both all-fixed and partial-fixed weights
     for i in range(0, len(ret_data_filtered)):
         if (weights.index[i].month in rebal_months and weights.index[i-1].month != weights.index[i].month) or i==0:
-            
-            # On rebalance dates, set fixed weights
+            # rebal date
             if fixed_weights and remaining_budget < 1e-6:
-                # All weights are fixed - just assign them
                 for t in tickers:
                     weights.loc[weights.index[i], t] = fixed_weights.get(t, 0.0)
                 reb_flag.iloc[i] = True
             else:
                 curr_date = ret_data_filtered.iloc[i].name
-                
-                # Optimization only on FREE tickers
                 if free_tickers:
                     ret_free = ret_data_all[free_tickers]
                     
@@ -120,11 +106,7 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
                         covar_ann = exp_cov_matrix * annualized
                     
                     mean_ret = (ret_free.loc[first_date:curr_date].mean() * annualized)
-                    
-                    # Apply bounds - each ticker gets (min, max) constraint
                     bounds = [(min_weight, max_weight)] * len(free_tickers)
-                    
-                    # Standard constraints for 100% portfolio
                     std_constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1},)
                     
                     if method == 'max_sharpe':
@@ -136,14 +118,12 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
                     else:
                         w_opt = np.array([1.0/len(free_tickers)] * len(free_tickers))
                     
-                    # Scale weights to remaining budget
+                    # scale to remaining budget
                     w_opt = w_opt * remaining_budget
                     
-                    # Assign weights - Use .loc instead of chained .iloc[][]
                     for idx, ticker in enumerate(free_tickers):
                         weights.loc[weights.index[i], ticker] = w_opt[idx]
                 
-                # Assign Fixed Weights
                 if fixed_weights:
                     for ticker, weight in fixed_weights.items():
                         if ticker in tickers:
@@ -152,7 +132,7 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
                 reb_flag.iloc[i] = True
             
         else:
-            # Drift
+            # drift
             weights.iloc[i] = weights.iloc[i-1] * (1+ ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
             if weights_sum > 0:
@@ -164,27 +144,16 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
     return weights
 
 def calc_port_perf(returns_data, weights_data, name_prefix='Port'):
-    """
-    Calculates portfolio performance based on returns and weights.
-    """
+    """calc portfolio perf from returns and weights"""
     weights_only = weights_data[[c for c in weights_data.columns if c.endswith('_wgt')]]
     weights_only.columns = [c.replace('_wgt', '') for c in weights_only.columns]
     
-    # Ensure alignment
     common_idx = returns_data.index.intersection(weights_only.index)
     returns_data = returns_data.loc[common_idx]
     weights_only = weights_only.loc[common_idx]
     
-    # Calculate portfolio return
-    # Shift weights by 1 day because weights determined at t are applied to returns at t+1 (or t if using close-to-close)
-    # Standard convention: Weight at start of period * Return over period
-    # Here, if weights are rebalanced at 'curr_date', they apply from that date onwards.
-    # So we simply multiply.
-    
     port_ret = (returns_data * weights_only).sum(axis=1)
     port_ret.name = f'{name_prefix}_port_ret'
-    
-    # Cumulative Return
     port_cum_ret = (1 + port_ret).cumprod()
     port_cum_ret.name = f'{name_prefix}_cum_ret'
     

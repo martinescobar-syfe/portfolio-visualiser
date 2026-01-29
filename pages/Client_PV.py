@@ -5,12 +5,12 @@ import numpy as np
 from datetime import date, timedelta
 import os
 
-# Import local modules
+# local imports
 from utils.data_loader import load_static_data, get_data_path
 from utils.ui_functions import render_client_pdf_upload
 from utils.pdf_helper import generate_portfolio_insights
 
-# --- Page Config ---
+# page config
 st.set_page_config(
     page_title="Client Portfolio Visualizer",
     page_icon="📊",
@@ -18,26 +18,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- Custom CSS (Matching app.py styling) ---
+# css (same as app.py)
 st.markdown("""
 <style>
-    /* Remove Streamlit Branding */
+    /* hide streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Global Styles */
+    /* global */
     .stApp {
         background-color: #f8f9fa;
         font-family: 'Helvetica Neue', sans-serif;
     }
     
-    /* Headers */
+    /* headers */
     h1, h2, h3 {
         color: #172B4D;
         font-weight: 700;
     }
     
-    /* Buttons */
+    /* buttons */
     .stButton>button {
         background-color: #0052CC;
         color: white;
@@ -49,7 +49,7 @@ st.markdown("""
         background-color: #0747A6;
     }
     
-    /* Cards */
+    /* cards */
     .metric-card {
         background: white;
         border-radius: 12px;
@@ -58,7 +58,7 @@ st.markdown("""
         margin-bottom: 20px;
     }
     
-    /* Insight cards */
+    /* insight cards */
     .insight-card {
         background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
         border-left: 4px solid #0052CC;
@@ -69,32 +69,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize Session State ---
+# session state
 if 'client_pv_insights' not in st.session_state:
     st.session_state.client_pv_insights = None
 
-# --- API Key (Same as app.py) ---
+# API key
 api_key = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
 
-# --- Load Static Data ---
+# load data
 data_path = get_data_path()
 df_sec_list, df_asset_class, df_sector, df_country, df_fi_metrics, df_fx, df_daily_ret, df_risk_rating, df_underlying = load_static_data(data_path)
 
-# --- Header ---
+# header
 st.title("Portfolio Visualizer")
 st.markdown("Upload your portfolio statement to analyze your holdings and receive personalized insights.")
 
 st.divider()
 
-# --- PDF Upload Section ---
+# pdf upload
 render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key_prefix="client_pv")
 
 st.divider()
 
-# --- AI Insights Section ---
+# AI insights
 st.header("AI-Powered Insights")
 
-# Check if we have parsed data to generate insights
+# check for parsed data
 pdf_key = "client_pv_parsed_data"
 if pdf_key in st.session_state:
     data = st.session_state[pdf_key]
@@ -110,11 +110,8 @@ if pdf_key in st.session_state:
         
         if generate_btn:
             with st.spinner("Generating personalized insights..."):
-                # Calculate total value for concentration analysis
                 value_col = [c for c in holdings_df.columns if 'Value' in c][0]
                 total_value = holdings_df[value_col].sum()
-                
-                # Get top holdings
                 top_holdings = holdings_df.nlargest(5, value_col)[['Ticker', 'Name', value_col]].to_dict('records')
                 
                 insights = generate_portfolio_insights(
@@ -126,7 +123,6 @@ if pdf_key in st.session_state:
                 )
                 st.session_state.client_pv_insights = insights
         
-        # Display insights if we have them
         if st.session_state.client_pv_insights:
             insights = st.session_state.client_pv_insights
             
@@ -145,7 +141,7 @@ if pdf_key in st.session_state:
 else:
     st.info("Upload a portfolio PDF above to generate personalized insights.")
 
-# --- Disclaimer ---
+# disclaimer
 st.divider()
 st.caption("""
 **Disclaimer:** The insights provided are for informational purposes only and do not constitute financial advice. 

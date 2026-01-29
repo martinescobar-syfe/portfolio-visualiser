@@ -6,14 +6,10 @@ from datetime import date, timedelta
 import sys
 import os
 
-# Import local modules
-# Assuming running from root, pages/ is one level down.
-# Streamlit handles pathing usually, but we might need to adjust path if utils not found.
-# Actually, when running `streamlit run app.py`, pages are relative to root.
+# local imports
 from utils.data_loader import load_static_data, get_data_path, download_data
 import port_cons as pc
 from utils.optimiser import create_constraints, optimize_portfolio, calc_port_perf
-# Removing render_analysis import as we are implementing custom logic
 import plotly.express as px
 import plotly.graph_objects as go
 import zipfile
@@ -32,7 +28,7 @@ import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
 from utils.portfolio_storage import save_portfolio, load_portfolios, delete_portfolio
 
-# --- Page Config ---
+# page config
 st.set_page_config(
     page_title="Portfolio Builder",
     page_icon="🏗️",
@@ -40,32 +36,32 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Password Protection ---
+# password gate
 pwd = st.sidebar.text_input("Access Password", type="password")
 if pwd != "algo1":
     st.warning("Please enter the correct password to access the Builder.")
     st.stop()
 
-# --- Custom CSS (Matching app.py) ---
+# css (same as app.py)
 st.markdown("""
 <style>
-    /* Remove Streamlit Branding */
+    /* hide streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Global Styles */
+    /* global */
     .stApp {
         background-color: #f8f9fa;
         font-family: 'Helvetica Neue', sans-serif;
     }
     
-    /* Headers */
+    /* headers */
     h1, h2, h3 {
         color: #172B4D;
         font-weight: 700;
     }
     
-    /* Buttons */
+    /* buttons */
     .stButton>button {
         background-color: #0052CC;
         color: white;
@@ -82,14 +78,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Initialization ---
+# init
 data_path = get_data_path()
 df_sec_list, df_asset_class, df_sector, df_country, df_fi_metrics, df_fx, df_daily_ret, df_risk_rating, df_underlying = load_static_data(data_path)
 
 if df_sec_list is None:
     st.stop()
 
-# --- Session State for Builder ---
+# session state
 if 'builder_portfolio' not in st.session_state:
     st.session_state.builder_portfolio = {
         'tickers': [],
@@ -107,13 +103,13 @@ st.title("Portfolio Builder (WIP)")
 
 col1, col2, col3 = st.columns(3)
 
-# --- 1. Data Selection ---
+# 1. data selection
 st.header("1. Universe Selection")
 
-# Define available_tickers early for Load logic
+# need this early for load logic
 available_tickers = sorted(df_sec_list['Ticker'].tolist())
 
-# --- Load Saved Settings ---
+# load saved settings
 with st.expander("Load Saved Template", expanded=False):
     saved_portfolios = load_portfolios()
     if saved_portfolios:
@@ -132,10 +128,8 @@ with st.expander("Load Saved Template", expanded=False):
         if st.session_state.get('trigger_load'):
             st.session_state.trigger_load = False
             data = saved_portfolios[selected_load]
-            # Restore State
-            # 1. Tickers and Benchmark
+            # restore state
             if 'tickers' in data:
-                # Filter valid tickers
                 valid_t = [t for t in data['tickers'] if t in available_tickers]
                 st.session_state.builder_universe = valid_t
             
@@ -184,7 +178,7 @@ with st.expander("Load Saved Template", expanded=False):
 
 col1, col2, col3 = st.columns(3)
 
-# Filter by Asset Class (Optional Helper)
+# filter by asset class (optional)
 unique_asset_classes = sorted(df_asset_class.index.unique().tolist()) if df_asset_class is not None else []
 available_tickers = sorted(df_sec_list['Ticker'].tolist())
 
@@ -198,7 +192,6 @@ with col1:
     end_date = st.date_input("End Date", value=latest_data_date)
 
 with col2:
-    # Initialize default if not in session state
     if 'builder_universe' not in st.session_state:
         st.session_state.builder_universe = ['CSPX', 'DUHP', 'MOAT', 'EFA', 'KWEB', 'MCHI', 'EIMI', 'DFAT', 'QQQ', 'XDEW']
     
@@ -209,14 +202,17 @@ with col2:
     )
 
 with col3:
+    # init benchmark if not set
+    if 'builder_benchmark' not in st.session_state:
+        st.session_state.builder_benchmark = 'ACWI' if 'ACWI' in available_tickers else available_tickers[0]
+    
     benchmark = st.selectbox(
         "Select Benchmark",
         options=available_tickers,
-        index=available_tickers.index('ACWI') if 'ACWI' in available_tickers else 0,
         key="builder_benchmark"
     )
 
-# --- 2. Construction Settings ---
+# 2. construction settings
 st.header("2. Portfolio Construction")
 
 c_strat, c_rebal = st.columns(2)
@@ -240,16 +236,13 @@ if allocation_method == "Fixed Weight":
     if not selected_tickers:
         st.info("Select assets in 'Universe Selection' first.")
     else:
-        # Normalize weights helper
         if 'fixed_weights' not in st.session_state.builder_portfolio:
             st.session_state.builder_portfolio['fixed_weights'] = {t: 1.0/len(selected_tickers) for t in selected_tickers}
             
-        # Ensure new tickers are added
+        # add any new tickers
         for t in selected_tickers:
             if t not in st.session_state.builder_portfolio['fixed_weights']:
                  st.session_state.builder_portfolio['fixed_weights'][t] = 0.0
-                 
-        # UI
         fw_cols = st.columns(3)
         total_w = 0.0
         new_weights = {}
@@ -272,9 +265,8 @@ if allocation_method == "Fixed Weight":
         else:
             st.success(f"Total Weight: {total_w:.2f}%")
 
-# --- 3. Constraints ---
+# 3. constraints
 st.subheader("Constraints")
-# Granular constraints: Per-ETF with Operators
 
 with st.expander("Define Constraints", expanded=True):
     st.markdown("#### per-ETF Constraints")
@@ -282,21 +274,13 @@ with st.expander("Define Constraints", expanded=True):
     if not selected_tickers:
         st.info("Select assets in 'Universe Selection' first.")
     else:
-        # Initialize granular constraints if needed
+        # init granular constraints if needed
         if 'granular_constraints' not in st.session_state.builder_portfolio or not st.session_state.builder_portfolio['granular_constraints']:
-            # Set User Default: CSPX = 20%
             defaults = {
                 'CSPX': {'op': 'Equal (=)', 'val': 0.20}
             }
-            # Only set if empty
             st.session_state.builder_portfolio['granular_constraints'] = defaults
-        
-        # Merge defaults if missing? No, user might delete them. Initialized above once.
-        
-        # Display Row for each ticker
         grp_constraints = {}
-        
-        # Header Row
         h1, h2, h3 = st.columns([1, 1, 1])
         h1.markdown("**Ticker**")
         h2.markdown("**Operator**")
@@ -306,8 +290,6 @@ with st.expander("Define Constraints", expanded=True):
             c1, c2, c3 = st.columns([1, 1, 1])
             with c1:
                 st.markdown(f"**{t}**")
-            
-            # Get existing val
             current_c = st.session_state.builder_portfolio['granular_constraints'].get(t, {'op': 'None', 'val': 0.0})
             
             with c2:
@@ -326,7 +308,6 @@ with st.expander("Define Constraints", expanded=True):
                     label_visibility="collapsed"
                 ) / 100.0
             
-            # Update
             if op != "None":
                 grp_constraints[t] = {'op': op, 'val': val}
         
@@ -339,25 +320,24 @@ with st.expander("Define Constraints", expanded=True):
         const_type = st.selectbox("Type", ["Sector", "Country", "Tracking Error"])
         
     with cc2:
-        # Populate options based on Type (Tracking Error doesn't need target)
         if const_type == "Sector":
             options = sorted(df_sector.index.unique().tolist())
             const_target = st.selectbox("Target", options)
         elif const_type == "Country":
             options = sorted(df_country.index.unique().tolist())
             const_target = st.selectbox("Target", options)
-        else:  # Tracking Error
+        else:
             st.selectbox(
                 "Target", 
                 ["vs Selected Benchmark"], 
                 disabled=True,
                 help="Tracking Error is calculated relative to the benchmark selected in Universe Selection."
             )
-            const_target = "Benchmark"  # Placeholder - uses selected benchmark
+            const_target = "Benchmark"
         
     with cc3:
         if const_type == "Tracking Error":
-            const_operator = "Max (<)"  # TE only supports max constraint
+            const_operator = "Max (<)"
             st.selectbox("Operator", ["Max (<)"], disabled=True)
             const_val = st.number_input(
                 "Max TE (%)", 0.0, 50.0, 5.0, step=1.0,
@@ -368,7 +348,7 @@ with st.expander("Define Constraints", expanded=True):
             const_val = st.number_input("Value (%)", 0.0, 100.0, 20.0, step=5.0) / 100.0
         
     with cc4:
-        st.write("") 
+        st.write("")
         st.write("")
         if st.button("Add"):
             st.session_state.custom_constraints.append({
@@ -377,8 +357,6 @@ with st.expander("Define Constraints", expanded=True):
                 "operator": const_operator,
                 "value": const_val
             })
-            
-    # Display current constraints
     if st.session_state.custom_constraints:
         st.markdown("**Active Group Constraints:**")
         for i, c in enumerate(st.session_state.custom_constraints):
@@ -388,9 +366,8 @@ with st.expander("Define Constraints", expanded=True):
                 st.session_state.custom_constraints.pop(i)
                 st.rerun()
 
-# --- 4. Optimisation Action ---
+# 4. optimisation
 st.markdown("---")
-# Warning for ignored constraints
 has_constraints = (
     st.session_state.custom_constraints or 
     (st.session_state.builder_portfolio.get('granular_constraints') and 
@@ -407,8 +384,7 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
         st.stop()
         
     with st.spinner("Optimising..."):
-        # ... (Data Loading same as before)
-        # 1. Prepare Data
+        # 1. prep data
         currency = "USD"
         rebal_map = {
             "Semi-Annual (Apr/Oct)": [4, 10],
@@ -436,47 +412,27 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
             st.error("No data found.")
             st.stop()
             
-        # 2. Constraints Builder
+        # 2. build constraints
         valid_tickers = [t for t in selected_tickers if t in ret_all.columns]
         extra_constraints = []
         
-        # A. ETF Level Constraints
-        # Convert our granular_constraints map to list
-        # Map: Ticker -> {op, val}
-        # We need to construct base 'bounds' list OR specific constraints.
-        # port_cons functions use `constraints_dict` which usually means equality checks or complex constraints.
-        # Bounds are usually passed separately to minimize, but port_cons.get_maxSharpe_wgt handles bounds.
-        # BUT `max_sharpe_rebal_wgt` only accepts `constraints_dict`.
-        # AND it generates bounds internally as (0,1).
-        
-        # To strictly enforce per-ETF constraints, we must add them as 'ineq' (>=0) constraints.
-        
         def make_etf_constraint(idx, op, val):
-            # Use default argument binding to capture values correctly
             if op == "Max (<)": # w[i] <= val -> val - w[i] >= 0
                 return {'type': 'ineq', 'fun': lambda w, i=idx, v=val: v - w[i]}
             elif op == "Min (>)": # w[i] >= val -> w[i] - val >= 0
                 return {'type': 'ineq', 'fun': lambda w, i=idx, v=val: w[i] - v}
             elif op == "Equal (=)":
                 return {'type': 'eq', 'fun': lambda w, i=idx, v=val: w[i] - v}
-        
-        # Apply ETF constraints
         if 'granular_constraints' in st.session_state.builder_portfolio:
             for t, c in st.session_state.builder_portfolio['granular_constraints'].items():
                 if t in valid_tickers and c['op'] != "None":
                     t_idx = valid_tickers.index(t)
                     extra_constraints.append(make_etf_constraint(t_idx, c['op'], c['val']))
         
-        # B. Group Constraints - Using weighted exposure (dot product)
-        # The constraint should be: Σ(w[i] × exposure[i]) op limit
-        # NOT: Σ w[i] for all i where exposure[i] > 0
-        
+        # group constraints (sector/country) - weighted exposure dot product
         def make_group_constraint(exposure_vec, op, limit):
-            """
-            Create a constraint based on weighted exposure.
-            exposure_vec: numpy array of exposures aligned with valid_tickers order
-            """
-            e = np.array(exposure_vec)  # Capture by value
+            """weighted exposure constraint"""
+            e = np.array(exposure_vec)
             if op == "Max (<)":  # Σ(w[i] * exp[i]) <= limit → limit - dot(w, exp) >= 0
                 return {'type': 'ineq', 'fun': lambda w, exp=e, lim=limit: lim - np.dot(w, exp)}
             elif op == "Min (>)":  # Σ(w[i] * exp[i]) >= limit → dot(w, exp) - limit >= 0
@@ -484,9 +440,8 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
             elif op == "Equal (=)":  # Σ(w[i] * exp[i]) == limit
                 return {'type': 'eq', 'fun': lambda w, exp=e, lim=limit: np.dot(w, exp) - lim}
 
-        # Clear debug info for fresh run
         st.session_state['constraint_debug'] = []
-        st.session_state['constraint_details'] = []  # Store structured info for display
+        st.session_state['constraint_details'] = []
         
         for c in st.session_state.custom_constraints:
             exposure_row = None
@@ -500,8 +455,6 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                 'feasible_range': None,
                 'warning': None
             }
-            
-            # df_country/df_sector format: Index=Category (Country/Sector), Columns=Tickers, Values=Exposure %
             
             if c['type'] == 'Sector':
                 if not df_sector.empty and c['target'] in df_sector.index:
@@ -518,40 +471,27 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                     constraint_info['warning'] = f"Country '{c['target']}' not found in data"
             
             elif c['type'] == 'Tracking Error':
-                # Tracking Error constraint: TE = sqrt((w - w_bm).T @ cov @ (w - w_bm)) * sqrt(252) <= limit
                 try:
-                    # Get returns for valid tickers
                     ret_subset = ret_all[valid_tickers].dropna()
-                    
-                    # Calculate covariance matrix (daily)
                     cov_matrix = ret_subset.cov().values
-                    
-                    # Benchmark weights: 100% in benchmark, 0% in portfolio assets
-                    # For TE calculation, we treat benchmark as a separate asset
-                    # But since we're constraining portfolio weights only, we use the benchmark returns directly
                     bm_ret = ret_bm.reindex(ret_subset.index).iloc[:, 0].dropna()
                     common_idx = ret_subset.index.intersection(bm_ret.index)
                     ret_subset = ret_subset.loc[common_idx]
                     bm_ret = bm_ret.loc[common_idx]
                     
-                    # Calculate active returns covariance
-                    # Active return = portfolio return - benchmark return
-                    # We need: Var(w.T @ r - r_bm) = w.T @ Cov(r) @ w - 2*w.T @ Cov(r, r_bm) + Var(r_bm)
-                    # Simplify: Create covariance of each asset with benchmark
+                    # covar of each asset with benchmark
                     asset_bm_cov = np.array([ret_subset[t].cov(bm_ret) for t in valid_tickers])
                     bm_var = bm_ret.var()
                     
                     limit = c['value']
                     
                     def te_constraint(w, cov=cov_matrix, asset_bm_c=asset_bm_cov, bm_v=bm_var, lim=limit):
-                        """TE(w) = sqrt(Var(port - bm)) * sqrt(252) <= limit"""
+                        """TE constraint"""
                         port_var = w @ cov @ w
                         cross_term = 2 * np.dot(w, asset_bm_c)
-                        active_var = port_var - cross_term + bm_v
-                        # Ensure non-negative due to numerical issues
-                        active_var = max(active_var, 0)
+                        active_var = max(port_var - cross_term + bm_v, 0)
                         te = np.sqrt(active_var * 252)
-                        return lim - te  # >= 0 for ineq constraint
+                        return lim - te
                     
                     extra_constraints.append({'type': 'ineq', 'fun': te_constraint})
                     constraint_info['status'] = 'OK'
@@ -562,23 +502,19 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                     constraint_info['warning'] = f"Failed to build TE constraint: {str(e)}"
             
             if exposure_row is not None:
-                # Build exposure vector aligned with valid_tickers order
                 exposure_vec = np.array([float(exposure_row.get(t, 0)) for t in valid_tickers])
                 
-                # Normalize if exposure is in percentage (0-100) to decimal (0-1)
+                # normalize % to decimal if needed
                 if exposure_vec.max() > 1:
                     exposure_vec = exposure_vec / 100
                 
-                # Store exposure for each ticker
                 for i, t in enumerate(valid_tickers):
                     constraint_info['exposures'][t] = exposure_vec[i]
                 
-                # Calculate feasibility bounds
-                min_possible = exposure_vec.min()  # If all weight in lowest exposure ETF
-                max_possible = exposure_vec.max()  # If all weight in highest exposure ETF
+                # feasibility check
+                min_possible = exposure_vec.min()
+                max_possible = exposure_vec.max()
                 constraint_info['feasible_range'] = (min_possible, max_possible)
-                
-                # Check feasibility
                 target_val = c['value']
                 if c['operator'] == "Max (<)" and target_val < min_possible:
                     constraint_info['warning'] = f"INFEASIBLE: All ETFs have >{target_val:.1%} exposure (min={min_possible:.1%})"
@@ -596,18 +532,16 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
             
             st.session_state['constraint_details'].append(constraint_info)
         
-        # Show infeasibility warnings immediately
         warnings_list = [ci for ci in st.session_state['constraint_details'] if ci.get('warning')]
         if warnings_list:
             warning_msgs = [f"{ci['type']} {ci['target']}: {ci['warning']}" for ci in warnings_list]
             st.warning("Constraint Feasibility Issues:\n" + "\n".join(warning_msgs))
 
 
-        # Base Constraints (Sum=1, 0<=w<=1)
         base_constraints = create_constraints(0.0, 1.0) 
         full_constraints = base_constraints + extra_constraints
         
-        # 3. Optimise
+        # 3. optimise
         offset_days = 90
         start_opt_date = ret_all.index.min() + timedelta(days=offset_days)
         start_opt_date = max(start_opt_date, pd.Timestamp(start_date))
@@ -627,16 +561,13 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                      if total > 0: user_weights = {k: v/total for k, v in user_weights.items()}
                 weights_df = pc.fixed_weight_rebal_wgt(ret_all[valid_tickers], start_date=start_opt_date, end_date=end_date, fixed_weights=user_weights, rebal_months=rebal_months)
 
-            # --- CONSTRAINT VALIDATION ---
-            # Check first rebalance date weights against constraints
+            # validate constraints against first rebal weights
             if allocation_method in ["Max Sharpe", "Min Volatility"] and extra_constraints:
                 first_rebal = weights_df[weights_df['reb_flag'] == True].iloc[0]
                 w_vec = np.array([first_rebal[f"{t}_wgt"] for t in valid_tickers])
                 
                 violations = []
-                tol = 0.02  # 2% tolerance
-                
-                # Check ETF constraints
+                tol = 0.02
                 if 'granular_constraints' in st.session_state.builder_portfolio:
                     for t, c in st.session_state.builder_portfolio['granular_constraints'].items():
                         if t in valid_tickers and c['op'] != "None":
@@ -650,7 +581,6 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                             elif c['op'] == "Min (>)" and actual < target - tol:
                                 violations.append(f"ETF {t}: Expected >{target:.1%}, Got {actual:.1%}")
                 
-                # Check Group constraints (Country/Sector) with weighted exposure
                 for c in st.session_state.custom_constraints:
                     exposure_row = None
                     if c['type'] == 'Sector' and not df_sector.empty and c['target'] in df_sector.index:
@@ -658,7 +588,6 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                     elif c['type'] == 'Country' and not df_country.empty and c['target'] in df_country.index:
                         exposure_row = df_country.loc[c['target']]
                     elif c['type'] == 'Tracking Error':
-                        # Validate TE constraint
                         try:
                             ret_subset = ret_all[valid_tickers].dropna()
                             cov_matrix = ret_subset.cov().values
@@ -708,11 +637,7 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                 if violations:
                     st.warning("Constraint Warnings:\n" + "\n".join(violations))
             
-            # Performance
             perf_df = calc_port_perf(ret_all[valid_tickers], weights_df, name_prefix="Builder")
-            
-            # Save Results - Format for render_analysis
-            # render_analysis expects: {'results': {PortName: {'weights':..., 'perf':...}}, 'ret_all', 'ret_bm'}
             
             res_struct = {
                 'results': {
@@ -734,12 +659,11 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
             import traceback
             st.code(traceback.format_exc())
 
-# --- Save Configuration ---
+# save config
 st.markdown("---")
 with st.expander("💾 Save Configuration as Template", expanded=False):
     save_name = st.text_input("Template Name", value="My Strategy", key="builder_save_name")
     if st.button("Save Template", key="builder_save_btn"):
-        # Construct Save Data
         save_data = {
             'tickers': selected_tickers,
             'benchmark': benchmark,
@@ -757,7 +681,7 @@ with st.expander("💾 Save Configuration as Template", expanded=False):
             st.error("Failed to save.")
 
 
-# --- Helper Functions ---
+# helpers
 @st.cache_data
 def load_ff_data():
     try:
@@ -773,11 +697,10 @@ def load_ff_data():
     except:
         return None
 
-# --- 5. Analysis & Visualization ---
+# 5. analysis & visualization
 if st.session_state.builder_portfolio['results']:
     res_data = st.session_state.builder_portfolio['results']
     results = res_data['results']
-    # results is {PortName: {'weights':..., 'perf':..., 'tickers':...}}
     
     ret_all = res_data['ret_all']
     ret_bm = res_data['ret_bm']
@@ -803,7 +726,7 @@ if st.session_state.builder_portfolio['results']:
         "Drawdown", "Correlation Heatmap", "Portfolio vs Benchmark", "Tracking Error"
     ])
 
-    with tabs[0]: # Key Summary
+    with tabs[0]:
         summary = get_performance_summary(all_port_ret)
         # Format
         def format_summary_value(val, metric_name):
@@ -819,7 +742,6 @@ if st.session_state.builder_portfolio['results']:
         st.dataframe(summary_formatted, use_container_width=True)
         st.markdown("---")
         
-        # Historical Weights
         st.subheader("Historical Weights (Rebalance Dates)")
         p_select_w = st.selectbox("Select Portfolio", list(results.keys()), key="builder_w_sel")
         w_df = results[p_select_w]['weights']
@@ -830,7 +752,6 @@ if st.session_state.builder_portfolio['results']:
             w_rebal = w_df # Fallback
             
         w_rebal.columns = [c.replace('_wgt', '') for c in w_rebal.columns]
-        # Format index to string for display
         w_rebal_display = w_rebal.copy()
         try:
              w_rebal_display.index = w_rebal_display.index.strftime('%Y-%m-%d')
@@ -838,69 +759,67 @@ if st.session_state.builder_portfolio['results']:
         
         st.dataframe(w_rebal_display.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
 
-    with tabs[1]: # Calendar Returns
+    with tabs[1]:
         yearly_ret = all_port_ret.resample('Y').apply(lambda x: (1+x).prod()-1)
         yearly_ret.index = yearly_ret.index.year
         st.dataframe(yearly_ret.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
 
-    with tabs[2]: # Monthly Returns
+    with tabs[2]:
         fig = plot_monthly_heatmap(all_port_ret)
         st.plotly_chart(fig, use_container_width=True, key="builder_monthly")
     
-    with tabs[3]: # Cumulative Returns
+    with tabs[3]:
         cum_ret = (1 + all_port_ret).cumprod()
         fig = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
         st.plotly_chart(fig, use_container_width=True, key="builder_cum")
         
-    with tabs[4]: # Risk/Ret
+    with tabs[4]:
         fig = plot_scatter_risk_return(all_port_ret, benchmark_ret=ret_bm)
         st.plotly_chart(fig, use_container_width=True, key="builder_scatter")
         
-    with tabs[5]: # Dist
+    with tabs[5]:
         import plotly.figure_factory as ff
         hist_data = [all_port_ret[c].dropna() for c in all_port_ret.columns]
         group_labels = all_port_ret.columns
         try:
             fig = ff.create_distplot(hist_data, group_labels, show_hist=False, show_rug=False, colors=PALETTE[:len(group_labels)])
         except:
-            fig = go.Figure() # Fallback
+            fig = go.Figure()
         fig.update_layout(title_text='Returns Distribution', plot_bgcolor='white')
         st.plotly_chart(fig, use_container_width=True, key="builder_dist")
         
-    with tabs[6]: # Roll Vol
+    with tabs[6]:
         fig = plot_rolling_volatility(all_port_ret)
         st.plotly_chart(fig, use_container_width=True, key="builder_vol")
 
-    with tabs[7]: # Drawdown
+    with tabs[7]:
         fig = plot_drawdowns(all_port_ret)
         st.plotly_chart(fig, use_container_width=True, key="builder_dd")
         
-    with tabs[8]: # Corr
+    with tabs[8]:
         fig = plot_correlation_heatmap(all_port_ret)
         st.plotly_chart(fig, use_container_width=True, key="builder_corr")
         
-    with tabs[9]: # Vs Benchmark
+    with tabs[9]:
         rel_metrics, roll_excess = calculate_relative_metrics(all_port_ret.iloc[:, 0], ret_bm.iloc[:, 0])
         st.markdown("#### Relative Performance Metrics")
         rel_df = rel_metrics.to_frame().T
-        # Format
         rel_format = {col: "{:.2f}" if 'Ratio' in col else "{:.2%}" for col in rel_df.columns}
         st.dataframe(rel_df.style.format(rel_format), use_container_width=True)
         st.markdown("#### Rolling 12M Excess Return")
         fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return"))
         st.plotly_chart(fig_roll, use_container_width=True, key="builder_excess")
         
-    with tabs[10]: # Tracking Error Timeseries
+    with tabs[10]:
         col_te_h, col_te_help = st.columns([10, 1])
         with col_te_h:
             st.markdown("#### Rolling 12M Tracking Error")
         with col_te_help:
-            st.markdown("####")  # Spacing
+            st.markdown("####")
             st.markdown(
                 ":grey_question:", 
                 help="This chart shows **realized** TE based on actual returns. TE constraints are applied at rebalance using *expected* TE from historical covariance. Realized TE may differ due to changing market conditions."
             )
-        # TE = Std(Port - Bench) * sqrt(252)
         active_ret = all_port_ret.iloc[:, 0] - ret_bm.iloc[:, 0]
         roll_te = active_ret.rolling(window=252).std() * np.sqrt(252)
         
@@ -913,21 +832,18 @@ if st.session_state.builder_portfolio['results']:
         st.plotly_chart(fig_te, use_container_width=True, key="builder_te_roll")
 
     
-    # --- Exposure Analysis ---
+    # 4. exposure analysis
     st.header("4. Exposure Analysis")
     
-    # Use the first portfolio (Builder Portfolio)
     p_name = list(results.keys())[0]
     w_df = results[p_name]['weights']
     
-    # Get weights at the last REBALANCE date, as requested
-    # w_df has 'reb_flag' column
+    # get weights at last rebal date
     if 'reb_flag' in w_df.columns:
         w_rebal_only = w_df[w_df['reb_flag'] == True]
         if not w_rebal_only.empty:
             last_w = w_rebal_only.iloc[-1].drop(['reb_flag'])
         else:
-            # Fallback to last row if no rebalance flag (shouldn't happen in standard runs)
             last_w = w_df.iloc[-1].drop(['reb_flag'], errors='ignore')
     else:
         last_w = w_df.iloc[-1].drop(['reb_flag'], errors='ignore')
@@ -937,13 +853,7 @@ if st.session_state.builder_portfolio['results']:
     
     import plotly.express as px
     
-    # Calculate Charts (Sector, Country)
-    # Ensure to use weight at rebalance (last_w comes from rebal check logic above, lines 636-644)
-    # Check trace: 
-    # if 'reb_flag' in w_df: w_rebal_only = ... last_w = w_rebal_only.iloc[-1]
-    # So last_w IS correct. 
-    # Just passing it cleanly.
-    charts = get_exposure_charts(last_w, df_sector, df_country, df_asset_class=None) # df_asset_class None to skip
+    charts = get_exposure_charts(last_w, df_sector, df_country, df_asset_class=None)
     
     # Row 1: Top Holdings
     st.markdown("### Top Holdings (Underlying)")
@@ -951,7 +861,6 @@ if st.session_state.builder_portfolio['results']:
 
     conc_raw = pd.DataFrame() 
     if df_underlying is not None:
-         # Use the helper from utils/exposure.py
          if 'reb_flag' in w_df.columns:
              last_w_full = w_df[w_df['reb_flag'] == True].iloc[-1]
          else:
@@ -960,19 +869,13 @@ if st.session_state.builder_portfolio['results']:
          conc_raw = get_concentration_exposure(last_w_full, df_underlying, top_n=t_topn)
 
     if not conc_raw.empty:
-        # Sort explicitly descending just in case
         conc_raw = conc_raw.sort_values(ascending=False)
-        
-        # Take Top N
         conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
-        
-        # Calculate sum strictly from the displayed top N items
         top_sum = conc_df['Weight'].sum()
         
         st.caption(f"Top {t_topn} holdings represent **{top_sum:.1%}** of the overall portfolio.")
         
-        # Sort ascending for horizontal bar chart (so largest is at top/bottom depending on logic)
-        conc_df_chart = conc_df.sort_values('Weight', ascending=True) 
+        conc_df_chart = conc_df.sort_values('Weight', ascending=True)
         
         fig_top = px.bar(
             conc_df_chart, 
@@ -991,16 +894,12 @@ if st.session_state.builder_portfolio['results']:
     else:
          st.info("Underlying data not available.")
 
-     # Row 2: Sector + Country
     st.markdown("### Allocation Analysis")
     show_bm_diff = st.checkbox("Show vs Benchmark", key="show_bm_diff")
         
-    # Prepare Benchmark Data for Allocation if needed
     bm_charts = None
     
     if show_bm_diff:
-        # Use the benchmark selected in Universe Selection (line 132-136)
-        # The benchmark variable is available from the selection above
         try:
             bm_w = pd.Series({f"{benchmark}_wgt": 1.0})
             bm_charts = get_exposure_charts(bm_w, df_sector, df_country, df_asset_class=None)
@@ -1014,7 +913,6 @@ if st.session_state.builder_portfolio['results']:
     c_sec, c_ctry = st.columns(2)
     
     def plot_alloc_comparison(port_df, bm_df, title):
-        # port_df index=Sector/Country, col=Weight
         comb = pd.DataFrame({'Portfolio': port_df['Weight'], 'Benchmark': bm_df['Weight'] if bm_df is not None else 0})
         comb = comb.fillna(0)
         comb = comb.sort_values('Portfolio', ascending=True)
@@ -1052,7 +950,7 @@ if st.session_state.builder_portfolio['results']:
              with st.expander("View Data"):
                 st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
 
-    # --- Factor Analysis ---
+    # 5. factor analysis
     st.header("5. Factor Analysis (Fama-French)")
     
     st.markdown("""
@@ -1065,42 +963,34 @@ if st.session_state.builder_portfolio['results']:
     """)
     
     try:
-         # Load Fama French
          df_ff_factor = load_ff_data()
                      
          if df_ff_factor is not None:
-             # Align using all_port_ret index (Portfolio Returns) instead of Universe Returns
              common_index = all_port_ret.index.intersection(df_ff_factor.index)
              
              if len(common_index) > 0:
-                 # Portfolio Factor Exposure
                  port_factors = pc.factor_exposure_coefficient(
                      all_port_ret.loc[common_index],
                      df_ff_factor.loc[common_index],
                      list(results.keys())
                  )
                  
-                 # Benchmark Factors
                  bm_factors = pd.DataFrame()
                  if ret_bm is not None and not ret_bm.empty:
-                     # Align benchmark to the SAME common index
                      common_bm = ret_bm.index.intersection(common_index)
                      if len(common_bm) > 0:
-                         # Use first column of benchmark if multiple (usually just one)
-                         bm_cols = ret_bm.columns.tolist() 
+                         bm_cols = ret_bm.columns.tolist()
                          bm_factors = pc.factor_exposure_coefficient(
                              ret_bm.loc[common_bm],
                              df_ff_factor.loc[common_bm],
                              bm_cols
                          )
 
-                 # Combine
                  all_factors = pd.concat([port_factors, bm_factors])
                  all_factors_numeric = all_factors.apply(lambda x: pd.to_numeric(x, errors='coerce'))
                  
-                 # Plot (Reverted to Grouped Bar Chart)
                  fig_f = go.Figure()
-                 for col in all_factors_numeric.index: # Iterate over Portfolio/Benchmark rows
+                 for col in all_factors_numeric.index:
                      fig_f.add_trace(go.Bar(
                          name=col,
                          x=all_factors_numeric.columns, # Factors on X-axis
@@ -1124,11 +1014,10 @@ if st.session_state.builder_portfolio['results']:
     except Exception as e:
         st.error(f"Error in Factor Analysis: {e}")
 
-    # --- 6. Individual ETF Study ---
+    # 6. individual ETF study
     st.header("6. Individual Asset Factor Analysis (In Progress)")
     st.markdown("Deep dive into Factor Exposures, Dynamic Stability, and Regression Diagnostics.")
     
-    # Selectors
     if df_daily_ret is not None:
         avail_assets = sorted(df_daily_ret.columns.tolist())
         
@@ -1142,13 +1031,12 @@ if st.session_state.builder_portfolio['results']:
             study_bench = st.selectbox("Select Benchmark", avail_assets, index=def_b_idx, key="study_bench")
             
         with c_opt:
-            st.write("") # Spacer
+            st.write("")
             st.write("")
             use_ff_mkt = st.checkbox("Use Fama-French Market Factor", value=False, 
                                      help="Tick to use standard Fama-French 'Mkt-RF'. Untick to use your Selected Benchmark (Excess Return) as the market proxy.")
             
         if study_etf and study_bench and df_ff_factor is not None:
-             # Align Dates
              common_dates = df_daily_ret.index.intersection(df_ff_factor.index)
              
              if len(common_dates) > 60:
@@ -1163,33 +1051,24 @@ if st.session_state.builder_portfolio['results']:
                  if reg_df.empty:
                      st.warning("No valid overlapping data after removing NaNs.")
                  else:
-                     # Scaling Check (Proactive)
-                     # If asset returns are like 1.5 (1.5%), std will be > 1.
-                     # FF factors are 0.015 (1.5%).
+                     # check scaling - if returns look like percentages
                      scale_factor = 1.0
-                     if reg_df['Asset'].std() > 1.0: # Likely percentage
+                     if reg_df['Asset'].std() > 1.0:
                          scale_factor = 100.0
                      
-                     # Apply Scaling
                      y_asset = (reg_df['Asset'] - reg_df['RF']) / scale_factor
-                     
-                     # Prepare Factors
                      X_factors = reg_df[['SMB', 'HML', 'RMW', 'CMA']].copy()
                      
                      if use_ff_mkt:
-                         # Use Standard FF Market
                          X_factors.insert(0, 'Mkt-RF', reg_df['Mkt-RF'])
                      else:
-                         # Use Selected Benchmark
                          bench_excess = (reg_df['Benchmark'] - reg_df['RF']) / scale_factor
                          X_factors.insert(0, 'Mkt (Bench)', bench_excess)
                          
                      X = sm.add_constant(X_factors)
-                     
-                     # 1. Full Period Regression
                      model = sm.OLS(y_asset, X).fit()
                      
-                     # Calculate VIF
+                     # VIF
                      from statsmodels.stats.outliers_influence import variance_inflation_factor
                      vifs = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
                      vif_data = pd.Series(vifs, index=X.columns)
@@ -1197,7 +1076,6 @@ if st.session_state.builder_portfolio['results']:
                          vif_data = vif_data.drop('const')
                      max_vif = vif_data.max() if not vif_data.empty else 0
                      
-                     # Display Diagnostics
                      col_res1, col_res2, col_res3 = st.columns(3)
                      
                      with col_res1:
@@ -1242,7 +1120,6 @@ if st.session_state.builder_portfolio['results']:
                          
                          st.dataframe(betas_df.style.map(color_significance, subset=['t-stat']).format("{:.4f}"), use_container_width=True)
 
-                     # 2. Dynamic Stability (Rolling Regression)
                      st.subheader("Dynamic Stability (Rolling 12-Month Betas)")
                      
                      window = 252 # 1 year
@@ -1256,8 +1133,6 @@ if st.session_state.builder_portfolio['results']:
                              rolling_betas = rolling_params.drop(columns=['const'], errors='ignore')
                              fig_roll_b = px.line(rolling_betas, title=f"Rolling {window}-Day Factor Betas (vs {study_bench})")
                              fig_roll_b.add_hline(y=0, line_dash="dash", line_color="gray")
-                             # Fix y-axis to be reasonable
-                             # fig_roll_b.update_yaxes(range=[-2, 2]) 
                              st.plotly_chart(fig_roll_b, use_container_width=True, key="builder_roll_beta")
                          else:
                              st.warning("Rolling regression produced no valid results.")
@@ -1273,7 +1148,7 @@ if st.session_state.builder_portfolio['results']:
         else:
             st.info("Loading data...")
             
-    # --- 7. Overlap Matrix ---
+    # 7. overlap matrix
     st.header("7. Overlap Matrix")
     
     if df_underlying is not None and len(current_holdings) > 1:
@@ -1284,8 +1159,6 @@ if st.session_state.builder_portfolio['results']:
         @st.cache_data
         def calculate_overlap_matrix(tickers, _df_underlying):
             from utils.exposure import get_concentration_exposure
-            
-            # 1. Get breakdown for each ticker
             breakdowns = {}
             for t in tickers:
                 dummy_w = pd.Series({f"{t}_wgt": 1.0})
@@ -1296,7 +1169,6 @@ if st.session_state.builder_portfolio['results']:
                     bd = pd.Series({t: 1.0}) 
                 breakdowns[t] = bd
             
-            # 2. Pairwise Overlap
             n = len(tickers)
             mat = pd.DataFrame(index=tickers, columns=tickers, dtype=float)
             
@@ -1318,23 +1190,10 @@ if st.session_state.builder_portfolio['results']:
 
         overlap_mat = calculate_overlap_matrix(active_tickers, df_underlying)
         
-        # Mask Upper Triangle (Keep Lower Triangle)
-        # Using numpy to create a boolean mask for the upper triangle
-        mask = np.triu(np.ones_like(overlap_mat, dtype=bool), k=0) 
-        # k=0 masks the diagonal as well if we want ONLY lower off-diagonal. 
-        # User said "only we need the lower triangular... anything above that is repeated".
-        # Usually diagonal is 100% and redundant but sometimes useful for reference.
-        # User said "lower triangular matrix", strictly that usually includes diagonal over time.
-        # Let's mask k=1 (exclude diagonal from mask) -> Show Diagonal? 
-        # Or k=0 (mask diagonal) -> Hide Diagonal?
-        # User image shows the full square. Lower triangular typically includes diagonal.
-        # Let's keep diagonal (Auto-correlation is 1).
+        # mask upper triangle (keep lower + diagonal)
         mask = np.triu(np.ones_like(overlap_mat, dtype=bool), k=1) 
-        
-        # Set masked values to NaN so Plotly doesn't plot them
         overlap_mat_masked = overlap_mat.where(~mask)
         
-        # Plot with increased size
         fig_ov = px.imshow(
             overlap_mat_masked, 
             text_auto='.1%', 

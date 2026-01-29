@@ -1,11 +1,4 @@
-"""
-PDF Helper Module for Client Portfolio Upload
-
-Provides functions to:
-1. Parse PDF documents using Gemini AI to extract stock holdings
-2. Enrich holdings with country/sector data from yfinance
-3. Format analysis results for display
-"""
+"""pdf parsing and enrichment for client portfolio upload"""
 
 import google.generativeai as genai
 import json
@@ -14,23 +7,9 @@ import pandas as pd
 
 
 def parse_pdf_with_gemini(api_key, pdf_bytes, filename="portfolio.pdf"):
-    """
-    Parse a PDF document using Gemini AI to extract stock holdings.
-    
-    Args:
-        api_key (str): Google Gemini API Key
-        pdf_bytes (bytes): PDF file content
-        filename (str): Name of the uploaded file
-        
-    Returns:
-        tuple: (holdings_dict, raw_response)
-            holdings_dict: {ticker: {'name': str, 'value': float}}
-            raw_response: The raw text response from Gemini
-    """
+    """parse pdf with gemini to extract holdings"""
     try:
         genai.configure(api_key=api_key)
-        
-        # Upload the PDF file to Gemini
         import tempfile
         import os
         
@@ -39,7 +18,6 @@ def parse_pdf_with_gemini(api_key, pdf_bytes, filename="portfolio.pdf"):
             tmp_path = tmp_file.name
         
         try:
-            # Upload file to Gemini
             uploaded_file = genai.upload_file(tmp_path, mime_type="application/pdf")
             
             prompt = """
@@ -102,15 +80,11 @@ Parse the document now and return ONLY the JSON object.
             if response_text is None:
                 return {}, f"Error: All models failed. Last error: {str(last_error)}"
             
-            # Parse the JSON response
             holdings_dict = {}
-            
-            # Extract JSON from response (it might be wrapped in markdown code blocks)
             json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(1)
             else:
-                # Try to find raw JSON
                 json_match = re.search(r'\{.*"holdings".*\}', response_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(0)
@@ -130,9 +104,7 @@ Parse the document now and return ONLY the JSON object.
                 return holdings_dict, response_text
             except json.JSONDecodeError as e:
                 return {}, f"JSON Parse Error: {e}\n\nRaw Response:\n{response_text}"
-                
         finally:
-            # Clean up temp file
             os.unlink(tmp_path)
             
     except Exception as e:
@@ -140,26 +112,13 @@ Parse the document now and return ONLY the JSON object.
 
 
 def parse_pdf_parallel(api_key, pdf_bytes, filename, num_passes=2):
-    """
-    Run PDF parsing multiple times in parallel and merge results.
-    Calculates accuracy score and ticker agreement.
-    
-    Args:
-        api_key: Gemini API key
-        pdf_bytes: PDF file bytes
-        filename: Original filename
-        num_passes: Number of parallel parsing runs (default 2)
-        
-    Returns:
-        tuple: (merged_holdings_dict, accuracy_metrics, raw_responses)
-    """
+    """run pdf parsing multiple times in parallel, merge results"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import numpy as np
     
     raw_responses = []
     all_results = []
     
-    # Run parsing in parallel
     with ThreadPoolExecutor(max_workers=num_passes) as executor:
         futures = [
             executor.submit(parse_pdf_with_gemini, api_key, pdf_bytes, filename)
@@ -175,25 +134,19 @@ def parse_pdf_parallel(api_key, pdf_bytes, filename, num_passes=2):
     if not all_results:
         return {}, {'accuracy_score': 0, 'ticker_agreement': 0}, raw_responses
     
-    # If only one pass succeeded, return it with 100% score
     if len(all_results) == 1:
         return all_results[0], {'accuracy_score': 100, 'ticker_agreement': 100}, raw_responses
     
-    # Get all unique tickers across all passes
     all_tickers = set()
     for result in all_results:
         all_tickers.update(result.keys())
     
-    # Count how many passes found each ticker
     ticker_counts = {}
     for ticker in all_tickers:
         ticker_counts[ticker] = sum(1 for r in all_results if ticker in r)
     
-    # Calculate ticker agreement (% of tickers found in ALL passes)
     tickers_in_all = sum(1 for t, c in ticker_counts.items() if c == len(all_results))
     ticker_agreement = (tickers_in_all / len(all_tickers)) * 100 if all_tickers else 100
-    
-    # Merge holdings by averaging values
     merged = {}
     value_deviations = []
     
@@ -211,12 +164,10 @@ def parse_pdf_parallel(api_key, pdf_bytes, filename, num_passes=2):
         if values:
             avg_value = sum(values) / len(values)
             
-            # Calculate deviation as % difference from mean
             if len(values) > 1:
                 max_dev = max(abs(v - avg_value) / avg_value * 100 for v in values) if avg_value > 0 else 0
                 value_deviations.append(max_dev)
             
-            # Use most common currency and first name
             from collections import Counter
             most_common_currency = Counter(currencies).most_common(1)[0][0]
             
@@ -226,9 +177,8 @@ def parse_pdf_parallel(api_key, pdf_bytes, filename, num_passes=2):
                 'currency': most_common_currency
             }
     
-    # Calculate accuracy score (based on value consistency and ticker agreement)
     avg_deviation = sum(value_deviations) / len(value_deviations) if value_deviations else 0
-    value_consistency = max(0, 100 - avg_deviation * 2)  # Deduct 2 points per % deviation
+    value_consistency = max(0, 100 - avg_deviation * 2)
     accuracy_score = (value_consistency * 0.5 + ticker_agreement * 0.5)
     accuracy_score = min(100, max(0, accuracy_score))
     
@@ -243,23 +193,10 @@ def parse_pdf_parallel(api_key, pdf_bytes, filename, num_passes=2):
 
 
 def enrich_with_yfinance(holdings_dict):
-    """
-    Enrich holdings with country and sector data from yfinance.
-    Tries different exchange suffixes for international tickers.
-    Uses currency from AI parsing as primary source.
-    
-    Args:
-        holdings_dict: {ticker: {'name': str, 'value': float, 'currency': str}}
-        
-    Returns:
-        tuple: (enriched_dict, failed_tickers)
-            enriched_dict: {ticker: {'name': str, 'value': float, 'country': str, 'sector': str, 'currency': str}}
-            failed_tickers: list of tickers that couldn't be fetched
-    """
+    """enrich holdings with country/sector from yfinance"""
     import yfinance as yf
     import time
     
-    # Suffixes to try for international stocks
     exchange_suffixes = ['', '.SS', '.SZ', '.HK', '.L', '.T', '.SI']
     max_retries = 3
     
@@ -267,14 +204,12 @@ def enrich_with_yfinance(holdings_dict):
     failed = []
     
     for ticker, data in holdings_dict.items():
-        # Get currency from AI (primary source)
         ai_currency = data.get('currency', None)
         
         found = False
         best_info = None
         best_ticker = ticker
         
-        # Try each suffix with retries
         for suffix in exchange_suffixes:
             try_ticker = ticker + suffix if not ticker.endswith(suffix) else ticker
             
@@ -284,8 +219,6 @@ def enrich_with_yfinance(holdings_dict):
                 try:
                     stock = yf.Ticker(try_ticker)
                     info = stock.info
-                    
-                    # Check if we got valid data (country or sector is a good indicator)
                     if info.get('country') or info.get('sector') or info.get('currency'):
                         found = True
                         best_info = info
@@ -296,22 +229,20 @@ def enrich_with_yfinance(holdings_dict):
                 except Exception as e:
                     print(f"    FAILED: {try_ticker} -> {e}")
                     if retry < max_retries - 1:
-                        time.sleep(1)  # Wait 1 second before retry
+                        time.sleep(1)
                     continue
             
             if found:
-                break  # Found with this suffix, no need to try others
+                break
         
         if found and best_info:
-            # Got valid data from yfinance
             country = best_info.get('country', 'Unknown')
             sector = best_info.get('sector', 'Unknown')
             industry = best_info.get('industry', 'Unknown')
             
-            # Use AI currency if provided, otherwise use yfinance
             currency = ai_currency if ai_currency else best_info.get('currency', 'Unknown')
             
-            # If country is empty, try to infer from exchange
+            # infer country from exchange if needed
             if country == 'Unknown' or not country:
                 exchange = best_info.get('exchange', '')
                 if 'NYSE' in exchange or 'NASDAQ' in exchange:
@@ -333,7 +264,6 @@ def enrich_with_yfinance(holdings_dict):
             }
             print(f"    Currency: {currency} (AI: {ai_currency}, yfinance: {best_info.get('currency')})")
         else:
-            # Could not find in yfinance - use AI-provided currency
             failed.append(ticker)
             enriched[ticker] = {
                 'name': data.get('name', ticker),
@@ -349,16 +279,7 @@ def enrich_with_yfinance(holdings_dict):
 
 
 def calculate_aggregate_exposure(enriched_holdings):
-    """
-    Calculate aggregate country and sector exposure weighted by dollar value.
-    
-    Args:
-        enriched_holdings: {ticker: {'name': str, 'value': float, 'country': str, 'sector': str}}
-        
-    Returns:
-        tuple: (country_exposure, sector_exposure)
-            Both are dicts: {category: weight}
-    """
+    """calc country/sector exposure weighted by value"""
     total_value = sum(h['value'] for h in enriched_holdings.values())
     
     if total_value == 0:
@@ -376,7 +297,6 @@ def calculate_aggregate_exposure(enriched_holdings):
         country_exposure[country] = country_exposure.get(country, 0) + weight
         sector_exposure[sector] = sector_exposure.get(sector, 0) + weight
     
-    # Sort by weight
     country_exposure = dict(sorted(country_exposure.items(), key=lambda x: x[1], reverse=True))
     sector_exposure = dict(sorted(sector_exposure.items(), key=lambda x: x[1], reverse=True))
     
@@ -384,15 +304,7 @@ def calculate_aggregate_exposure(enriched_holdings):
 
 
 def format_holdings_dataframe(enriched_holdings):
-    """
-    Format enriched holdings as a pandas DataFrame for display.
-    
-    Args:
-        enriched_holdings: {ticker: {'name': str, 'value': float, 'country': str, 'sector': str}}
-        
-    Returns:
-        pd.DataFrame: Formatted holdings table
-    """
+    """format holdings as df for display"""
     total_value = sum(h['value'] for h in enriched_holdings.values())
     
     rows = []
@@ -415,24 +327,9 @@ def format_holdings_dataframe(enriched_holdings):
 
 
 def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes=2):
-    """
-    Parse a PDF document multiple times and compare results for accuracy scoring.
-    
-    Args:
-        api_key (str): Google Gemini API Key
-        pdf_bytes (bytes): PDF file content
-        filename (str): Name of the uploaded file
-        num_passes (int): Number of parsing passes (default 2)
-        
-    Returns:
-        tuple: (merged_holdings, accuracy_metrics, raw_responses)
-            merged_holdings: {ticker: {'name': str, 'value': float}} - averaged values
-            accuracy_metrics: dict with min_deviation, max_deviation, avg_discrepancy, std_deviation, accuracy_score
-            raw_responses: list of raw responses from each pass
-    """
+    """parse pdf multiple times, compare for accuracy scoring"""
     import numpy as np
     
-    # Run multiple parsing passes
     all_results = []
     raw_responses = []
     
@@ -452,12 +349,10 @@ def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes
             'num_passes': num_passes
         }, raw_responses
     
-    # Collect all unique tickers across passes
     all_tickers = set()
     for result in all_results:
         all_tickers.update(result.keys())
     
-    # Calculate metrics per ticker
     ticker_metrics = {}
     value_deviations = []
     
@@ -472,9 +367,7 @@ def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes
                 names.append(result[ticker]['name'])
                 presence_count += 1
             else:
-                values.append(0)  # Ticker not found in this pass
-        
-        # Calculate stats for this ticker
+                values.append(0)
         values_arr = np.array(values)
         non_zero_values = values_arr[values_arr > 0]
         
@@ -484,7 +377,6 @@ def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes
             min_val = np.min(non_zero_values)
             max_val = np.max(non_zero_values)
             
-            # Deviation as percentage of average
             if avg_value > 0:
                 pct_deviation = (std_value / avg_value) * 100
             else:
@@ -501,8 +393,6 @@ def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes
                 'presence_count': presence_count,
                 'most_common_name': max(set(names), key=names.count) if names else ticker
             }
-    
-    # Calculate overall accuracy metrics
     if value_deviations:
         min_deviation = min(value_deviations)
         max_deviation = max(value_deviations)
@@ -511,18 +401,12 @@ def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes
     else:
         min_deviation = max_deviation = avg_discrepancy = std_deviation = 0
     
-    # Calculate ticker agreement (what % of tickers appeared in all passes)
     tickers_in_all_passes = sum(1 for t, m in ticker_metrics.items() if m['presence_count'] == num_passes)
     ticker_agreement = (tickers_in_all_passes / len(all_tickers) * 100) if all_tickers else 0
     
-    # Calculate accuracy score (0-100)
-    # Higher score = lower deviation + higher ticker agreement
-    # Formula: 50% weight on value consistency, 50% weight on ticker agreement
-    value_consistency_score = max(0, 100 - avg_discrepancy * 10)  # Penalize high deviation
+    value_consistency_score = max(0, 100 - avg_discrepancy * 10)
     accuracy_score = (value_consistency_score * 0.5) + (ticker_agreement * 0.5)
-    accuracy_score = min(100, max(0, accuracy_score))  # Clamp to 0-100
-    
-    # Merge results using averaged values
+    accuracy_score = min(100, max(0, accuracy_score))
     merged_holdings = {}
     for ticker, metrics in ticker_metrics.items():
         merged_holdings[ticker] = {
@@ -538,32 +422,19 @@ def parse_pdf_multipass(api_key, pdf_bytes, filename="portfolio.pdf", num_passes
         'accuracy_score': accuracy_score,
         'ticker_agreement': ticker_agreement,
         'num_passes': num_passes,
-        'ticker_details': ticker_metrics  # Detailed per-ticker info
+        'ticker_details': ticker_metrics
     }
     
     return merged_holdings, accuracy_metrics, raw_responses
 
 
 def generate_portfolio_insights(api_key, country_exposure, sector_exposure, top_holdings, total_value):
-    """
-    Generate AI-powered portfolio insights using Gemini.
-    
-    Args:
-        api_key: Gemini API key
-        country_exposure: Dict of country -> weight
-        sector_exposure: Dict of sector -> weight
-        top_holdings: List of top holdings dicts with Ticker, Name, Value
-        total_value: Total portfolio value
-        
-    Returns:
-        list: List of insight dicts with 'title', 'description', 'recommendation'
-    """
+    """generate AI portfolio insights via gemini"""
     import google.generativeai as genai
     from utils.llm_helper import SYFE_CONTEXT
     
     genai.configure(api_key=api_key)
     
-    # Format portfolio data for prompt
     country_str = "\n".join([f"- {k}: {v*100:.1f}%" for k, v in sorted(country_exposure.items(), key=lambda x: -x[1])[:10]])
     sector_str = "\n".join([f"- {k}: {v*100:.1f}%" for k, v in sorted(sector_exposure.items(), key=lambda x: -x[1])[:10]])
     
@@ -637,12 +508,10 @@ Generate the JSON now.
         if not response_text:
             return [{"title": "Analysis Unavailable", "description": "Could not generate insights at this time.", "recommendation": "Please try again later."}]
         
-        # Extract JSON from response
         json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
         if json_match:
             json_str = json_match.group(1)
         else:
-            # Try to find raw JSON array
             json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(0)

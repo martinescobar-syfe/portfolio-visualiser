@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import sys
 import os
 
-# Import local modules
+# local imports
 from utils.data_loader import load_static_data, get_data_path, download_data
 from utils.ui_functions import (
     render_client_upload, 
@@ -16,7 +16,7 @@ from utils.ui_functions import (
     render_analysis
 )
 
-# --- Page Config ---
+# page config
 st.set_page_config(
     page_title="Portfolio Visualizer",
     page_icon="📈",
@@ -24,28 +24,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS (Syfe Branding & Remove Streamlit Branding) ---
+# custom CSS - syfe branding, hide default streamlit stuff
 st.markdown("""
 <style>
-    /* Remove Streamlit Branding */
+    /* hide streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Sidebar toggle enabled */
+    /* sidebar toggle on */
 
-    /* Global Styles */
+    /* global */
     .stApp {
         background-color: #f8f9fa;
         font-family: 'Helvetica Neue', sans-serif;
     }
     
-    /* Headers */
+    /* headers */
     h1, h2, h3 {
         color: #172B4D;
         font-weight: 700;
     }
     
-    /* Buttons */
+    /* buttons */
     .stButton>button {
         background-color: #0052CC;
         color: white;
@@ -60,7 +60,7 @@ st.markdown("""
         border: none;
     }
     
-    /* Tabs */
+    /* tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 24px;
     }
@@ -81,17 +81,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Initialization ---
+# init
 data_path = get_data_path()
 df_sec_list, df_asset_class, df_sector, df_country, df_fi_metrics, df_fx, df_daily_ret, df_risk_rating, df_underlying = load_static_data(data_path)
 
 if df_sec_list is None:
     st.stop()
 
-# --- Session State ---
+# session state
 if 'portfolios' not in st.session_state:
     st.session_state.portfolios = []
-    # Default Portfolio
+    # default portfolio
     st.session_state.portfolios.append({
         'id': 1,
         'name': 'Portfolio 1',
@@ -110,26 +110,25 @@ if 'optimization_results' not in st.session_state:
 if 'refresh_counter' not in st.session_state:
     st.session_state.refresh_counter = 0
 
-# --- Sidebar ---
+# sidebar
 with st.sidebar:
-    # Syfe Logo (using text for now if image fails, or placeholder)
+    # logo placeholder
     st.markdown("## Syfe Portfolio Visualizer")
 
 
-# --- Main Tabs ---
-# Note: Keeping only the Revised Portfolio Visualiser tab as it consolidates all functionality
+# main tabs - consolidated flow
 
-# API Key (Hardcoded as requested)
+# API key (hardcoded)
 GEMINI_API_KEY = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
 
-# Define these variables globally as they are used in the new consolidated flow
+# global ticker lists
 available_tickers = sorted(df_sec_list['Ticker'].tolist())
-bm_tickers = ['SPY', 'ACWI', 'URTH'] # Default value, can be updated by user in Base Settings if needed
+bm_tickers = ['SPY', 'ACWI', 'URTH']  # defaults, user can change in base settings
 
 with st.container():
     st.markdown("## Portfolio Visualiser")
 
-    # --- Module Export Selector (Cosmetic for now) ---
+    # module export selector (cosmetic for now)
     export_modules = st.multiselect(
         "Select Modules for Export",
         [
@@ -146,11 +145,11 @@ with st.container():
         help="Select sections to include in the generated PDF report."
     )
     
-    # --- PDF Export Button ---
+    # pdf export button
     from utils.pdf_gen import render_export_ui
     render_export_ui(export_modules)
     
-    # --- Client Type Selection ---
+    # client type toggle
     client_type = st.radio(
         "Select Client Type",
         ["New Client", "Existing Client"],
@@ -158,11 +157,11 @@ with st.container():
         key="client_type_revised"
     )
     
-    # --- Base Settings (Common for both flows) ---
+    # base settings (shared across both flows)
     with st.expander("⚙️ Base Settings", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
         
-        # Get latest date from returns data
+        # grab latest date from returns data
         if df_daily_ret is not None and not df_daily_ret.empty:
             latest_data_date = df_daily_ret.index.max().date()
         else:
@@ -180,7 +179,7 @@ with st.container():
             key="exist_offset"
         )
         
-        # Allow benchmark tickers to be selected within base settings
+        # benchmark ticker selection
         bm_tickers = st.multiselect(
             "Benchmark Tickers",
             options=sorted(df_sec_list['Ticker'].tolist()),
@@ -188,31 +187,30 @@ with st.container():
             key="rev_bm_settings"
         )
     
-    # --- Conditional Flow ---
+    # conditional flow based on client type
     if client_type == "Existing Client":
-        # Client Data Upload (CSV)
+        # CSV upload
         render_client_upload(
             df_asset_class, df_sector, df_country, df_underlying,
             key_prefix="exist_upload"
         )
         
-        # Client PDF Upload (AI Parsing)
+        # PDF upload (AI parsing)
         render_client_pdf_upload(
             GEMINI_API_KEY, df_asset_class, df_sector, df_country,
             key_prefix="exist_pdf"
         )
     
-    # --- Recommender Section (Always visible) ---
+    # recommender (always visible)
     render_recommender(GEMINI_API_KEY, key_prefix="exist_rec")
     
-    # --- Portfolio Construction Section (Always visible) ---
+    # portfolio construction (always visible)
     render_portfolio_construction(
         df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency,
         backtest_offset_days, data_path, df_fi_metrics, df_fx, df_daily_ret, key_prefix="exist_cons"
     )
     
-    # --- Analysis Section (Always visible) ---
-    # --- Analysis Section (Always visible) ---
+    # analysis (always visible)
     render_analysis(
         df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, 
         backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="exist_analysis"

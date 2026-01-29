@@ -32,7 +32,7 @@ from utils.portfolio_report_generator import (
     generate_client_report
 )
 
-# --- User Provided PDF Functions ---
+# pdf generation functions
 
 def create_table(df, title):
     elements = []
@@ -215,7 +215,7 @@ def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manu
         if os.path.exists(img):
             os.remove(img)
 
-# --- Integration Logic ---
+# integration
 
 # Column name mapping for clean display
 COLUMN_NAME_MAPPING = {
@@ -599,7 +599,6 @@ def generate_report_content(modules):
                     
                     content_blocks.append({'type': 'table', 'df': df_display, 'title': 'Portfolio Summary by Type'})
                     
-                    # --- Exposure Charts ---
                     charts = []
                     
                     # By Portfolio Type

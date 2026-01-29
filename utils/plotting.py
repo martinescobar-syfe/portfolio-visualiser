@@ -12,10 +12,8 @@ def apply_syfe_layout(fig, title="", height=500):
     fig.update_layout(
         title={'text': f'<b>{title}</b>', 'font': {'size': 20}},
         font={'family': 'Helvetica Neue, Arial'},
-        # plot_bgcolor='white',  # Removed to allow theme adaptation
-        # paper_bgcolor='white', # Removed to allow theme adaptation
         height=height,
-        xaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'}, # Semi-transparent grid
+        xaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'},
         yaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'},
         colorway=PALETTE,
         margin=dict(l=40, r=40, t=80, b=40)
@@ -34,7 +32,6 @@ def plot_cumulative_returns(df_cum_ret, benchmark_ret=None):
         ))
     
     if benchmark_ret is not None:
-        # Benchmark Colors (Dark/Grey scales to contrast with colorful portfolios)
         BM_COLORS = ['#000000', '#525252', '#969696', '#252525']
         
         if isinstance(benchmark_ret, (pd.Series, pd.DataFrame)):
@@ -132,21 +129,8 @@ def plot_scatter_risk_return(df_ret, annualized=261, benchmark_ret=None):
     return fig
 
 def plot_allocation_pie(weights, title="Portfolio Allocation", use_asset_colors=None):
-    """
-    Plot a pie chart for allocations.
-    
-    Args:
-        weights: Series with item names as index and weights as values
-        title: Chart title
-        use_asset_colors: 
-            - None: Use default PALETTE colors
-            - 'asset': Use asset class color mapping
-            - 'portfolio': Use portfolio type color mapping (based on objective)
-    """
-    # Filter non-zero weights
+    """pie chart for allocations"""
     weights = weights[weights > 0.001]
-    
-    # Determine colors based on mode
     if use_asset_colors == 'asset':
         colors = [get_asset_class_color(name) for name in weights.index]
     elif use_asset_colors == 'portfolio':
@@ -159,31 +143,18 @@ def plot_allocation_pie(weights, title="Portfolio Allocation", use_asset_colors=
         values=weights.values, 
         hole=.4,
         marker=dict(colors=colors),
-        textinfo='none', # No text on chart - remove % labels
-        hovertemplate='%{label}: %{value:.4f}<extra></extra>' # Show decimals on hover
+        textinfo='none',
+        hovertemplate='%{label}: %{value:.4f}<extra></extra>'
     )])
     
     fig = apply_syfe_layout(fig, title=title)
     return fig
 
 def plot_bar_chart(df, title="", barmode='group', use_asset_colors=None):
-    """
-    Plot a bar chart.
-    
-    Args:
-        df: DataFrame to plot
-        title: Chart title
-        barmode: 'group' or 'relative'
-        use_asset_colors:
-            - None: Use default PALETTE colors
-            - 'asset': Use asset class color mapping (for index labels)
-            - 'portfolio': Use portfolio type color mapping (for index labels)
-    """
+    """bar chart"""
     fig = go.Figure()
     for i, col in enumerate(df.columns):
-        # Determine colors for bars
         if use_asset_colors and len(df.columns) == 1:
-            # Single column means index labels should be colored
             if use_asset_colors == 'asset':
                 colors = [get_asset_class_color(name) for name in df.index]
             elif use_asset_colors == 'portfolio':
@@ -223,20 +194,12 @@ def plot_rolling_volatility(df_ret, window=126, annualized=261):
     return fig
 
 def plot_monthly_heatmap(df_ret):
-    # Resample to monthly returns
+    """monthly returns heatmap"""
     monthly_ret = df_ret.resample('M').apply(lambda x: (1 + x).prod() - 1)
     monthly_ret['Year'] = monthly_ret.index.year
     monthly_ret['Month'] = monthly_ret.index.month_name()
-    
-    # Pivot for heatmap
-    # Taking the first column (assuming single portfolio passed or handle multiple)
-    # If multiple, we need a dropdown or separate plots. 
-    # For now, assume df_ret is single series or we take first col
-    
     col_name = df_ret.columns[0]
     pivot_table = monthly_ret.pivot(index='Year', columns='Month', values=col_name)
-    
-    # Reorder months
     months_order = ['January', 'February', 'March', 'April', 'May', 'June', 
                    'July', 'August', 'September', 'October', 'November', 'December']
     pivot_table = pivot_table.reindex(columns=months_order)
