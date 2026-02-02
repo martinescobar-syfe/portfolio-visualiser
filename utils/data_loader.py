@@ -6,6 +6,36 @@ import yfinance as yf
 import streamlit as st
 from datetime import datetime
 
+
+def clean_underlying_data(df_underlying):
+    """Remove invalid holdings (empty names, zero weights) from the underlying data."""
+    if df_underlying is None or df_underlying.empty:
+        return df_underlying
+    
+    df = df_underlying.copy()
+    
+    holdings_cols = [c for c in df.columns if c.endswith(' Holdings')]
+    
+    for h_col in holdings_cols:
+        ticker = h_col.replace(' Holdings', '')
+        w_col = f"{ticker} Holding Weights"
+        
+        # Clean out empty or placeholder holding names
+        if h_col in df.columns:
+            df[h_col] = df[h_col].apply(lambda x: 
+                np.nan if pd.isna(x) or str(x).strip() in ['', '0', '0.0', 'nan', 'None'] 
+                else x
+            )
+        
+        # Clean out zero or negative weights
+        if w_col in df.columns:
+            df[w_col] = pd.to_numeric(df[w_col], errors='coerce')
+            df.loc[df[w_col] == 0, w_col] = np.nan
+            df.loc[df[w_col] < 0, w_col] = np.nan
+    
+    return df
+
+
 @st.cache_data
 def load_static_data(data_path):
     try:
@@ -32,6 +62,10 @@ def load_static_data(data_path):
         df_asset_class = get_sheet('Asset Class', index_col=0)
         df_risk_rating = get_sheet('Risk', index_col=0)
         df_underlying = get_sheet('Underlying', index_col=None)
+        
+        # Clean underlying data - remove rows with zero weights or invalid holding names
+        if df_underlying is not None and not df_underlying.empty:
+            df_underlying = clean_underlying_data(df_underlying)
 
         # build sec_list from asset class sheet
         if 'Asset Class' in xls:

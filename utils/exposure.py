@@ -102,7 +102,7 @@ def clean_holding_name(name):
     return name_upper
 
 def get_concentration_exposure(weights, df_underlying, top_n=10):
-    """calc weighted underlying exposure, unify share classes"""
+    """Calculate weighted underlying exposure across all holdings, unifying share classes."""
     aggregated_holdings = {}
     
     for col_name in weights.index:
@@ -111,7 +111,6 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
             
         ticker = col_name.replace('_wgt', '')
         
-        # Safely convert weight to float
         try:
             weight_in_port = float(weights[col_name])
         except (ValueError, TypeError):
@@ -120,7 +119,7 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
         if weight_in_port == 0:
             continue
         
-        # ticker matching - handle SPY US, SPY Equity etc
+        # Handle different ticker formats (e.g. "SPY US", "SPY Equity")
         candidates = [ticker]
         clean_t = ticker.replace(" US", "").replace(" Equity", "").strip()
         if clean_t != ticker:
@@ -129,52 +128,75 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
         found_cols = False
         name_col = ""
         w_col = ""
-        use_fallback_weights = False
         
+        # Look for matching columns in the underlying data
         for cand in candidates:
-            n_c = f"{cand} Holdings"
-            w_c = f"{cand} Holding Weights"
-            if n_c in df_underlying.columns and w_c in df_underlying.columns:
-                name_col = n_c
-                w_col = w_c
+            name_patterns = [f"{cand} Holdings", f"{cand} Holding"]
+            weight_patterns = [f"{cand} Holdings Weights", f"{cand} Holding Weights", f"{cand} Weights"]
+            
+            for n_pattern in name_patterns:
+                if n_pattern in df_underlying.columns:
+                    name_col = n_pattern
+                    break
+            
+            for w_pattern in weight_patterns:
+                if w_pattern in df_underlying.columns:
+                    w_col = w_pattern
+                    break
+            
+            if name_col and w_col:
                 found_cols = True
-                break
-            elif n_c in df_underlying.columns:
-                name_col = n_c
-                w_col = None
-                found_cols = True
-                use_fallback_weights = True
                 break
         
         if not found_cols:
-            # fallback: treat ticker itself as holding
+            # No breakdown available - use the ticker itself
             aggregated_holdings[ticker] = aggregated_holdings.get(ticker, 0.0) + weight_in_port
             continue
         
-        if use_fallback_weights:
-            sub_df = df_underlying[[name_col]].dropna(subset=[name_col])
-            for _, row in sub_df.iterrows():
-                h_name = row[name_col]
-                clean_name = clean_holding_name(h_name)
-                contribution = weight_in_port
-                aggregated_holdings[clean_name] = aggregated_holdings.get(clean_name, 0.0) + contribution
-        else:
-            sub_df = df_underlying[[name_col, w_col]].dropna(subset=[name_col])
-            for _, row in sub_df.iterrows():
-                h_name = row[name_col]
-                h_val = row[w_col]
-                
-                # Safely convert holding weight to float
-                try:
-                    h_val_float = float(h_val) if not pd.isna(h_val) else 0.0
-                except (ValueError, TypeError):
-                    continue
-                
-                clean_name = clean_holding_name(h_name)
-                # assume underlying weights are in % 
+        sub_df = df_underlying[[name_col, w_col]].dropna(subset=[name_col])
+        
+        # Check if weights are in percentage (0-100) or decimal (0-1) format
+        valid_weights = []
+        for _, row in sub_df.iterrows():
+            h_name = row[name_col]
+            h_val = row[w_col]
+            if pd.isna(h_name) or str(h_name).strip() in ['', '0']:
+                continue
+            try:
+                h_val_float = float(h_val) if not pd.isna(h_val) else 0.0
+                if h_val_float > 0:
+                    valid_weights.append(h_val_float)
+            except (ValueError, TypeError):
+                continue
+        
+        # If weights sum > 1.5, they're probably in percentage format
+        total_weights = sum(valid_weights)
+        is_percentage_format = total_weights > 1.5
+        
+        for _, row in sub_df.iterrows():
+            h_name = row[name_col]
+            h_val = row[w_col]
+            
+            if pd.isna(h_name) or str(h_name).strip() in ['', '0']:
+                continue
+            
+            try:
+                h_val_float = float(h_val) if not pd.isna(h_val) else 0.0
+            except (ValueError, TypeError):
+                continue
+            
+            if h_val_float <= 0:
+                continue
+            
+            clean_name = clean_holding_name(h_name)
+            
+            # Convert to decimal if needed
+            if is_percentage_format:
                 contribution = (h_val_float / 100.0) * weight_in_port
-                
-                aggregated_holdings[clean_name] = aggregated_holdings.get(clean_name, 0.0) + contribution
+            else:
+                contribution = h_val_float * weight_in_port
+            
+            aggregated_holdings[clean_name] = aggregated_holdings.get(clean_name, 0.0) + contribution
 
     if not aggregated_holdings:
         return pd.Series()

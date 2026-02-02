@@ -3,21 +3,24 @@ import os
 import streamlit as st
 from supabase import create_client, Client
 
-# supabase setup - uses streamlit secrets or falls back to env vars
+# Supabase config for shared portfolio storage
+DEFAULT_SUPABASE_URL = "https://wjuvipxkslzkanvisbuh.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_ABW9XYxT6MWkuLxMqwkxeA_Uy8R1E6a"
+
 def get_supabase_client() -> Client:
+    """Connect to Supabase, falling back to defaults if no secrets configured."""
     try:
-        url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL"))
-        key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY"))
+        url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", DEFAULT_SUPABASE_URL))
+        key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", DEFAULT_SUPABASE_KEY))
         
         if not url or not key:
             return None
         
         return create_client(url, key)
-    except Exception as e:
-        st.warning(f"Supabase not configured: {e}")
+    except Exception:
         return None
 
-# fallback to local JSON if supabase not available
+# Local fallback if Supabase unavailable
 DATA_FILE = "Data/saved_portfolios.json"
 
 def load_portfolios():
