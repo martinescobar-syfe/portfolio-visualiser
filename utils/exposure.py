@@ -1,7 +1,7 @@
 
 import pandas as pd
 import plotly.graph_objects as go
-from utils.plotting import plot_bar_chart, plot_allocation_pie
+from utils.plotting import plot_bar_chart, plot_allocation_pie, plot_horizontal_bar_chart
 
 def calculate_exposure(weights, df_exposure):
     """calc aggregate exposure by sector/country via matrix mult"""
@@ -232,14 +232,18 @@ def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None, df_
         asset_exp = group_tail(asset_exp, top_n=9)
         
         charts['asset_table'] = asset_exp.to_frame(name='Weight')
-        charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative', use_asset_colors='asset')
-        charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation", use_asset_colors='asset')
+        charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative')
+        charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation")
 
-    # concentration
+    # concentration (Top Holdings) - use horizontal bar chart with color gradient
     if df_underlying is not None:
         conc_exp = get_concentration_exposure(weights, df_underlying, top_n=concentration_top_n)
         conc_top = group_tail(conc_exp, top_n=concentration_top_n)
+        total_concentration = conc_top.sum()
         charts['concentration_table'] = conc_top.to_frame(name='Weight')
-        charts['concentration_bar'] = plot_bar_chart(conc_top.to_frame(name='Weight').T, title=f"Top {concentration_top_n} Holdings", barmode='relative')
+        charts['concentration_bar'] = plot_horizontal_bar_chart(
+            conc_top, 
+            title=f"Top {concentration_top_n} Holdings ({total_concentration:.1%} Total)"
+        )
         
     return charts

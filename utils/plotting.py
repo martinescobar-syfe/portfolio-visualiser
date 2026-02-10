@@ -180,6 +180,54 @@ def plot_bar_chart(df, title="", barmode='group', use_asset_colors=None):
     fig.update_yaxes(tickformat=".2%")
     return fig
 
+def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
+    """
+    Create a horizontal bar chart with color gradient using PALETTE colors.
+    
+    Args:
+        weights_series: pd.Series with index as labels and values as weights
+        title: Chart title
+        show_color_scale: Whether to show the color scale legend
+    
+    Returns:
+        Plotly figure
+    """
+    from styles.syfe_colors import DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE, LIGHT_BLUE, DARK_GREY, LIGHT_GREY
+    
+    # Sort by weight (ascending for horizontal bar - smallest at bottom, largest at top)
+    sorted_weights = weights_series.sort_values(ascending=True)
+    
+    fig = px.bar(
+        x=sorted_weights.values,
+        y=sorted_weights.index,
+        orientation='h',
+        color=sorted_weights.values,
+        # Dark Blue (low) -> Light Blue -> Grey (high) - using PALETTE colors
+        color_continuous_scale=[
+            [0, DARK_BLUE],      # #172B4D
+            [0.2, PRIMARY_BLUE], # #0052CC
+            [0.4, SECONDARY_BLUE], # #2684FF
+            [0.6, TERTIARY_BLUE],  # #4C9AFF
+            [0.8, LIGHT_BLUE],   # #B3D4FF
+            [1, DARK_GREY],      # #4A4A4A
+        ],
+    )
+    
+    fig.update_layout(
+        title={'text': f'<b>{title}</b>', 'font': {'size': 20}},
+        font={'family': 'Helvetica Neue, Arial'},
+        height=500,
+        xaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)', 'tickformat': '.1%', 'title': 'Weight'},
+        yaxis={'showgrid': False, 'title': ''},
+        margin=dict(l=40, r=40, t=80, b=40),
+        coloraxis_showscale=show_color_scale,
+        showlegend=False,
+        plot_bgcolor='white',
+        paper_bgcolor='white'
+    )
+    
+    return fig
+
 def plot_rolling_volatility(df_ret, window=126, annualized=261):
     rolling_vol = df_ret.rolling(window=window).std() * np.sqrt(annualized)
     

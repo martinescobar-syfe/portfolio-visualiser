@@ -24,105 +24,6 @@ import zipfile
 import io
 
 
-def create_analysis_excel(results, all_port_ret, ret_bm=None):
-    """Create Excel file with all analysis data across multiple sheets."""
-    output = io.BytesIO()
-    
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Sheet 1: NAV (cumulative returns indexed to 1)
-        nav_df = (1 + all_port_ret).cumprod()
-        nav_df.index.name = 'Date'
-        nav_df.to_excel(writer, sheet_name='NAV')
-        
-        # Sheet 2: Daily Returns
-        daily_ret = all_port_ret.copy()
-        daily_ret.index.name = 'Date'
-        daily_ret.to_excel(writer, sheet_name='Daily Returns')
-        
-        # Sheet 3: Daily Weights (all dates)
-        daily_weights_list = []
-        for port_name, port_data in results.items():
-            if 'weights' in port_data:
-                w_df = port_data['weights'].copy()
-                w_df['Portfolio'] = port_name
-                daily_weights_list.append(w_df)
-        
-        if daily_weights_list:
-            all_daily_weights = pd.concat(daily_weights_list)
-            all_daily_weights.index.name = 'Date'
-            # Clean column names
-            all_daily_weights.columns = [c.replace('_wgt', '') for c in all_daily_weights.columns]
-            all_daily_weights.to_excel(writer, sheet_name='Daily Weights')
-        
-        # Sheet 4: Rebalance Weights only
-        rebal_weights_list = []
-        for port_name, port_data in results.items():
-            if 'weights' in port_data:
-                w_df = port_data['weights'].copy()
-                if 'reb_flag' in w_df.columns:
-                    w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
-                    w_rebal['Portfolio'] = port_name
-                    rebal_weights_list.append(w_rebal)
-        
-        if rebal_weights_list:
-            all_rebal_weights = pd.concat(rebal_weights_list)
-            all_rebal_weights.index.name = 'Date'
-            all_rebal_weights.columns = [c.replace('_wgt', '') for c in all_rebal_weights.columns]
-            all_rebal_weights.to_excel(writer, sheet_name='Rebalance Weights')
-        
-        # Sheet 5: Key Summary
-        summary = get_performance_summary(all_port_ret)
-        summary.to_excel(writer, sheet_name='Key Summary')
-        
-        # Sheet 6: Cumulative Returns
-        cum_ret = (1 + all_port_ret).cumprod() - 1  # As percentage
-        cum_ret.index.name = 'Date'
-        cum_ret.to_excel(writer, sheet_name='Cumulative Returns')
-        
-        # Sheet 7: Monthly Returns
-        monthly_ret = all_port_ret.resample('ME').apply(lambda x: (1 + x).prod() - 1)
-        monthly_ret.index.name = 'Date'
-        monthly_ret.to_excel(writer, sheet_name='Monthly Returns')
-        
-        # Sheet 8: Calendar Returns (yearly)
-        yearly_ret = all_port_ret.resample('YE').apply(lambda x: (1 + x).prod() - 1)
-        yearly_ret.index = yearly_ret.index.year
-        yearly_ret.index.name = 'Year'
-        yearly_ret.to_excel(writer, sheet_name='Calendar Returns')
-        
-        # Sheet 9: Rolling Volatility (252-day)
-        rolling_vol = all_port_ret.rolling(window=252).std() * np.sqrt(252)
-        rolling_vol.index.name = 'Date'
-        rolling_vol.to_excel(writer, sheet_name='Rolling Volatility')
-        
-        # Sheet 10: Drawdowns
-        cum_ret_nav = (1 + all_port_ret).cumprod()
-        running_max = cum_ret_nav.cummax()
-        drawdowns = (cum_ret_nav - running_max) / running_max
-        drawdowns.index.name = 'Date'
-        drawdowns.to_excel(writer, sheet_name='Drawdowns')
-        
-        # Sheet 11: Correlation Matrix
-        corr_matrix = all_port_ret.corr()
-        corr_matrix.to_excel(writer, sheet_name='Correlation Matrix')
-        
-        # Sheet 12: Risk-Return Summary
-        risk_return = pd.DataFrame({
-            'Annualized Return': all_port_ret.mean() * 252,
-            'Annualized Volatility': all_port_ret.std() * np.sqrt(252),
-            'Sharpe Ratio': (all_port_ret.mean() * 252) / (all_port_ret.std() * np.sqrt(252))
-        })
-        risk_return.to_excel(writer, sheet_name='Risk-Return')
-        
-        # Sheet 13: Benchmark comparison (if available)
-        if ret_bm is not None and not ret_bm.empty:
-            bm_nav = (1 + ret_bm).cumprod()
-            bm_nav.index.name = 'Date'
-            bm_nav.to_excel(writer, sheet_name='Benchmark NAV')
-    
-    output.seek(0)
-    return output.getvalue()
-
 def get_portfolio_objective(portfolio_name):
     """get objective from portfolio name"""
     name_lower = portfolio_name.lower()
@@ -445,71 +346,6 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 with st.expander("✨ Insights", expanded=True):
                      st.markdown(st.session_state['metabase_ai_analysis'])
 
-            tab_alloc, tab_exposures = st.tabs(["Client Portfolio Allocation", "Client Exposures"])
-
-            with tab_alloc:
-                col_p1, col_p2, col_p3 = st.columns(3)
-            
-                with col_p1:
-                    st.markdown("**By Portfolio Type**")
-                    # Use consistent colors based on portfolio's objective
-                    from styles.syfe_colors import get_portfolio_color
-                    portfolio_colors = {name: get_portfolio_color(name) for name in client_weights.keys()}
-                    fig_client = px.pie(
-                        values=list(client_weights.values()),
-                        names=list(client_weights.keys()),
-                        title=f"Total NAV: ${total_nav:,.2f}",
-                        color=list(client_weights.keys()),
-                        color_discrete_map=portfolio_colors
-                    )
-                    # Remove % labels, show decimals on hover
-                    fig_client.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
-                    st.plotly_chart(fig_client, use_container_width=True, key=f"{key_prefix}_pie_client")
-            
-                with col_p2:
-                    st.markdown("**By Asset Class**")
-                    # Filter out small values for cleaner chart and group into Others
-                    threshold = 0.01 # 1% threshold
-                    final_asset_alloc = {}
-                    others_val = 0.0
-                    
-                    for k, v in asset_allocation.items():
-                        if v >= threshold:
-                            final_asset_alloc[k] = v
-                        else:
-                            others_val += v
-                    
-                    if others_val > 0:
-                        final_asset_alloc['Others'] = others_val
-                    
-                    # Use consistent asset class colors
-                    from styles.syfe_colors import get_asset_class_color
-                    asset_colors = {name: get_asset_class_color(name) for name in final_asset_alloc.keys()}
-                    fig_asset = px.pie(
-                        values=list(final_asset_alloc.values()),
-                        names=list(final_asset_alloc.keys()),
-                        title="Asset Allocation",
-                        color=list(final_asset_alloc.keys()),
-                        color_discrete_map=asset_colors
-                    )
-                    # Remove % labels, show decimals on hover
-                    fig_asset.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
-                    st.plotly_chart(fig_asset, use_container_width=True, key=f"{key_prefix}_pie_asset_alloc")
-            
-                with col_p3:
-                    st.markdown("**By Objective**")
-                    from styles.syfe_colors import OBJECTIVE_COLORS
-                    fig_obj = px.pie(
-                        values=list(objective_allocation.values()),
-                        names=list(objective_allocation.keys()),
-                        title="Objective Allocation",
-                        color=list(objective_allocation.keys()),
-                        color_discrete_map=OBJECTIVE_COLORS
-                    )
-                    # Remove % labels, show decimals on hover
-                    fig_obj.update_traces(textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>')
-                    st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
-
             st.markdown("### Portfolio Exposures")
             st.markdown("#### Filter Exposures")
             c_filter, c_dummy = st.columns([2, 1])
@@ -558,10 +394,99 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 if 'asset_table' in charts:
                     st.session_state['asset_class_exposure'] = charts['asset_table']['Weight']
                 
+                # Calculate filtered portfolio weights for display (remove _wgt suffix and renormalize)
+                filtered_portfolio_weights = {}
+                for k, v in filtered_weights.items():
+                    ticker = k.replace("_wgt", "")
+                    filtered_portfolio_weights[ticker] = v
+                
+                # Renormalize weights for the filtered selection
+                total_filtered = sum(filtered_portfolio_weights.values())
+                if total_filtered > 0:
+                    filtered_portfolio_weights_norm = {k: v / total_filtered for k, v in filtered_portfolio_weights.items()}
+                else:
+                    filtered_portfolio_weights_norm = filtered_portfolio_weights
+                
+                # Calculate filtered NAV
+                filtered_nav = sum(client_holdings.get(ticker, 0) for ticker in filtered_portfolio_weights.keys())
+                
+                # Calculate filtered objective allocation
+                from styles.syfe_colors import get_portfolio_color, OBJECTIVE_COLORS
+                filtered_obj_allocation = {}
+                for ticker, weight in filtered_portfolio_weights_norm.items():
+                    obj = get_portfolio_objective(ticker)
+                    filtered_obj_allocation[obj] = filtered_obj_allocation.get(obj, 0) + weight
+                
+                # Row 1: NAV and Objective charts
+                col_nav, col_objective = st.columns([1, 1])
+                
+                with col_nav:
+                    st.markdown("**By Portfolio Type**")
+                    # Use go.Figure with go.Pie for consistent sizing with Asset Class chart
+                    port_colors = [get_portfolio_color(name) for name in filtered_portfolio_weights_norm.keys()]
+                    fig_nav = go.Figure(data=[go.Pie(
+                        labels=list(filtered_portfolio_weights_norm.keys()),
+                        values=list(filtered_portfolio_weights_norm.values()),
+                        hole=0.4,
+                        marker=dict(colors=port_colors),
+                        textinfo='none',
+                        hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+                    )])
+                    fig_nav.update_layout(
+                        title={'text': f'<b>NAV: ${filtered_nav:,.2f}</b>', 'font': {'size': 20}},
+                        font={'family': 'Helvetica Neue, Arial'},
+                        height=500,
+                        margin=dict(l=40, r=40, t=80, b=40)
+                    )
+                    st.plotly_chart(fig_nav, use_container_width=True, key=f"{key_prefix}_pie_nav")
+                    
+                    with st.expander("View Data"):
+                        port_df = pd.DataFrame({
+                            'Portfolio': list(filtered_portfolio_weights_norm.keys()),
+                            'Weight': list(filtered_portfolio_weights_norm.values()),
+                            'Est. Value ($)': [filtered_portfolio_weights_norm[k] * filtered_nav for k in filtered_portfolio_weights_norm.keys()]
+                        }).set_index('Portfolio')
+                        st.dataframe(
+                            port_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                            use_container_width=True
+                        )
+                
+                with col_objective:
+                    st.markdown("**By Objective**")
+                    # Use go.Figure with go.Pie for consistent sizing with Asset Class chart
+                    obj_colors = [OBJECTIVE_COLORS.get(name, '#666666') for name in filtered_obj_allocation.keys()]
+                    fig_obj = go.Figure(data=[go.Pie(
+                        labels=list(filtered_obj_allocation.keys()),
+                        values=list(filtered_obj_allocation.values()),
+                        hole=0.4,
+                        marker=dict(colors=obj_colors),
+                        textinfo='none',
+                        hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+                    )])
+                    fig_obj.update_layout(
+                        title={'text': '<b>Objective Allocation</b>', 'font': {'size': 20}},
+                        font={'family': 'Helvetica Neue, Arial'},
+                        height=500,
+                        margin=dict(l=40, r=40, t=80, b=40)
+                    )
+                    st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
+                    
+                    with st.expander("View Data"):
+                        obj_df = pd.DataFrame({
+                            'Objective': list(filtered_obj_allocation.keys()),
+                            'Weight': list(filtered_obj_allocation.values()),
+                            'Est. Value ($)': [filtered_obj_allocation[k] * filtered_nav for k in filtered_obj_allocation.keys()]
+                        }).set_index('Objective')
+                        st.dataframe(
+                            obj_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                            use_container_width=True
+                        )
+                
+                # Row 2: Asset Class and Top Holdings
                 col_asset, col_holdings = st.columns([1, 1])
                 
                 with col_asset:
-                    st.markdown("**Asset Class**")
+                    st.markdown("**Asset Class Allocation**")
                     if 'asset_pie' in charts:
                         st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_exp")
                         with st.expander("View Data"):
@@ -580,19 +505,12 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                             conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
                             total_conc = conc_df['Weight'].sum()
                             
-                            # Bar Chart for Top Holdings
-                            conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # Sort for bar chart (bottom to top)
-                            
-                            fig_top_bar = px.bar(
-                                conc_df_sorted, 
-                                x='Weight', 
-                                y=conc_df_sorted.index, 
-                                orientation='h',
-                                title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
-                                color='Weight',
-                                color_continuous_scale=PALETTE # Use Syfe Palette
+                            # Bar Chart for Top Holdings - using consistent color scheme
+                            from utils.plotting import plot_horizontal_bar_chart
+                            fig_top_bar = plot_horizontal_bar_chart(
+                                conc_raw.head(t_topn),
+                                title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)'
                             )
-                            fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
                             st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_bar_top_holdings_client")
                             
                             with st.expander("View Data"):
@@ -605,6 +523,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     else:
                         st.info("Concentration data not available.")
                 
+                # Row 3: Sector and Country
                 col_sector, col_country = st.columns([1, 1])
                 
                 with col_sector:
@@ -691,6 +610,12 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
     )
     
     st.header("1.1 Client PDF Upload")
+    show_pdf_upload = st.toggle("Show PDF Upload", value=False, key=f"{key_prefix}_show_toggle")
+    
+    if not show_pdf_upload:
+        st.info("Expand to upload a PDF document for AI-powered portfolio extraction.")
+        return
+    
     st.markdown("Upload a PDF document (e.g., brokerage statement) to extract stock holdings and analyze country/sector exposure.")
     
     # Presentation Currency Selector
@@ -1002,6 +927,12 @@ from utils.llm_helper import get_recommendation_narrative
 
 def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     st.header("2. Syfe Portfolio Recommender")
+    show_recommender = st.toggle("Show Recommender", value=False, key=f"{key_prefix}_show_toggle")
+    
+    if not show_recommender:
+        st.info("Expand to access the portfolio recommender.")
+        return
+    
     st.subheader("2.1 Personal & Financial Profile")
     
     col_p1, col_p2 = st.columns(2)
@@ -1050,63 +981,14 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         key=f"{key_prefix}_know"
     )
 
-    st.subheader("2.2 Risk Assessment")
-    
-    # We need a primary objective to guide the risk questions, or just ask generic ones?
-    # User said "Goals need to be defined and typed".
-    # But Risk questions usually depend on the objective (Growth vs Income).
-    # Let's add a "Primary Investment Style" here or just generic questions?
-    # The previous code depended on `objective` variable from Step 1.
-    # I will ask for "Primary Objective" here just to context switch the risk questions.
-    
-    primary_obj_context = st.radio(
-        "Primary Investment Style (Context for Risk Questions)",
-        ["Wealth Growth", "Income Generation", "Capital Preservation"],
-        horizontal=True,
-        key=f"{key_prefix}_primary_obj_ctx"
-    )
-    
-    risk_options = []
-    if primary_obj_context == "Wealth Growth":
-        risk_text = "I am willing to..."
-        risk_options = [
-            "Take low loss risk to preserve capital (10-15% drawdown)",
-            "Take moderate risk to balance risk/return (20% drawdown)",
-            "Take higher risk to optimize returns (30% drawdown)",
-            "Take as much risk as needed to maximize returns (30%+ drawdown)"
-        ]
-    elif primary_obj_context == "Income Generation":
-        risk_text = "I am willing to..."
-        risk_options = [
-            "Take low loss risk to preserve capital (10-15% drawdown)",
-            "Take moderate risk to balance risk/return (20% drawdown)",
-            "Take higher risk to optimize returns (30% drawdown)",
-            "Take as much risk as needed to maximize returns (30%+ drawdown)"
-        ]
-    else: # Capital Preservation
-        risk_text = "For Capital Preservation, risk tolerance is generally low."
-        risk_options = [
-            "I simply want to avoid any loss (Capital Guarantee)",
-            "I can accept very minor fluctuations for slightly better yield"
-        ]
-        
-    risk_choice = st.radio(risk_text, risk_options, key=f"{key_prefix}_risk_choice")
-    
-    horizon_choice = st.radio(
-        "General Investment Horizon (Years)",
-        ["Less than 1", "3-5", "5-10", "More than 10"],
-        horizontal=True,
-        key=f"{key_prefix}_hor_Choice"
-    )
-
-    st.subheader("2.3 Investment Goals")
+    st.subheader("2.2 Investment Goals")
     st.markdown("Please define your goals below.")
     
     # Default data for the table
     default_goals = pd.DataFrame(
         [
-            {"Goal Name": "Retirement", "Objective": "Wealth Growth", "Target Amount ($)": 1000000, "Lump Sum ($)": 50000, "Tenure (Years)": 20},
-            {"Goal Name": "House Downpayment", "Objective": "Capital Preservation", "Target Amount ($)": 100000, "Lump Sum ($)": 20000, "Tenure (Years)": 3},
+            {"Goal Name": "Retirement", "Objective": "Wealth Growth", "Target Amount ($)": 1000000, "Lump Sum ($)": 50000, "Tenure (Years)": 20, "Risk Tolerance": "Moderate (20% drawdown)"},
+            {"Goal Name": "House Downpayment", "Objective": "Capital Preservation", "Target Amount ($)": 100000, "Lump Sum ($)": 20000, "Tenure (Years)": 3, "Risk Tolerance": "Low (10-15% drawdown)"},
         ]
     )
     
@@ -1115,6 +997,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         num_rows="dynamic",
         use_container_width=True,
         column_config={
+            "Goal Name": st.column_config.TextColumn("Goal Name", required=True),
             "Objective": st.column_config.SelectboxColumn(
                 "Objective",
                 help="Select the primary objective for this goal.",
@@ -1126,10 +1009,21 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 ],
                 required=True
             ),
-            "Goal Name": st.column_config.TextColumn("Goal Name", required=True),
             "Target Amount ($)": st.column_config.NumberColumn("Target Amount ($)", min_value=0, format="$%d"),
             "Lump Sum ($)": st.column_config.NumberColumn("Lump Sum ($)", min_value=0, format="$%d"),
-            "Tenure (Years)": st.column_config.NumberColumn("Tenure (Years)", min_value=1, max_value=50)
+            "Tenure (Years)": st.column_config.NumberColumn("Tenure (Years)", min_value=1, max_value=50),
+            "Risk Tolerance": st.column_config.SelectboxColumn(
+                "Risk Tolerance",
+                help="Your willingness to accept drawdowns for this goal.",
+                width="medium",
+                options=[
+                    "Low (10-15% drawdown)",
+                    "Moderate (20% drawdown)",
+                    "Higher (30% drawdown)",
+                    "Maximum (30%+ drawdown)"
+                ],
+                required=True
+            )
         },
         key=f"{key_prefix}_goals_table"
     )
@@ -1139,7 +1033,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                                  key=f"{key_prefix}_ai_toggle")
 
     # --- Step 4: Qualitative & Check ---
-    st.subheader("2.4 Additional Details")
+    st.subheader("2.3 Additional Details")
     qualitative_details = st.text_area(
         "Additional Qualitative Inputs", 
         placeholder="Any other details relevant to your financial situation (e.g., existing liabilities, preferences, constraints)...",
@@ -1150,22 +1044,27 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     st.markdown("---")
     if st.button("Generate Smart Recommendation", type="primary", key=f"{key_prefix}_calc"):
         
-        # Map choice inputs
-        # Risk Mapping
-        if primary_obj_context == "Capital Preservation":
-             if "avoid any loss" in risk_choice: risk_willingness = 1
-             else: risk_willingness = 2
-        else:
-            if "30%+" in risk_choice: risk_willingness = 1
-            elif "30%" in risk_choice: risk_willingness = 2
-            elif "20%" in risk_choice: risk_willingness = 3
-            else: risk_willingness = 4
-            
-        # Horizon Mapping
-        if "Less than 1" in horizon_choice: horizon_years = 0.5
-        elif "3-5" in horizon_choice: horizon_years = 4
-        elif "5-10" in horizon_choice: horizon_years = 7.5
-        else: horizon_years = 15
+        # Derive risk willingness from goals table (use most conservative)
+        risk_map = {
+            "Low (10-15% drawdown)": 4,
+            "Moderate (20% drawdown)": 3,
+            "Higher (30% drawdown)": 2,
+            "Maximum (30%+ drawdown)": 1
+        }
+        
+        risk_willingness = 3  # Default moderate
+        if not goal_df.empty and "Risk Tolerance" in goal_df.columns:
+            # Use the most conservative (highest number = most conservative)
+            risk_values = [risk_map.get(r, 3) for r in goal_df["Risk Tolerance"].dropna()]
+            if risk_values:
+                risk_willingness = max(risk_values)  # Most conservative
+        
+        # Derive horizon from goals table (use maximum tenure)
+        horizon_years = 10  # Default
+        if not goal_df.empty and "Tenure (Years)" in goal_df.columns:
+            tenures = goal_df["Tenure (Years)"].dropna()
+            if not tenures.empty:
+                horizon_years = tenures.max()
 
         # Create profile dict
         profile = {
@@ -1179,7 +1078,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             'investment_knowledge': knowledge,
             'Interest in AI': "Yes" if interest_in_ai else "No",
             'Qualitative Details': qualitative_details,
-            'Goals': goal_df.to_csv(index=False), # Pass table as CSV text to LLM
+            'Goals': goal_df.to_csv(index=False), # Pass table as CSV text to LLM (includes Risk Tolerance per goal)
             'Risk Score': 'Calculating...' 
         }
         
@@ -1659,8 +1558,232 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         results_data = st.session_state.get('optimization_results')
 
     if results_data:
-        st.header("4. Analysis Results")
+        # Store results_data for later use in other sections
+        res_data = results_data
+        results = res_data['results']
+        ret_all = res_data['ret_all'].copy()
+        ret_bm = res_data['ret_bm'].copy()
         
+        # Calculate start_opt_date for analytics
+        earliest_start_date = ret_all.index.min()
+        start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
+
+    # ============================================
+    # SECTION 4: EXPOSURE ANALYSIS
+    # ============================================
+    if st.session_state.optimization_results:
+        st.header("4. Exposure Analysis")
+        
+        res_data_exp = st.session_state.optimization_results
+        results_exp = res_data_exp['results']
+        
+        st.markdown("#### Filter Exposures (Aggregated by Cash Invested)")
+        
+        # Filter Controls
+        filter_mode_exp = st.radio(
+            "Filter Mode", 
+            ["Show All", "By Objective", "By Portfolio"], 
+            horizontal=True,
+            key=f"{key_prefix}_exp_filt_mode_4"
+        )
+        
+        # Gather Metadata
+        port_meta_exp = {}
+        for p in st.session_state.portfolios:
+            port_meta_exp[p['name']] = {
+                'objective': p.get('objective', 'Unclassified'),
+                'goal_name': p.get('goal_name', 'Unclassified'),
+                'cash_invested': p.get('cash_invested', 100000.0)
+            }
+            if port_meta_exp[p['name']]['cash_invested'] == 0:
+                port_meta_exp[p['name']]['cash_invested'] = 100000.0
+
+        # Filter Selection Logic
+        filtered_portfolios_exp = []
+        scaling_factors_exp = {}
+
+        if filter_mode_exp == "Show All":
+            filtered_portfolios_exp = list(results_exp.keys())
+            
+        elif filter_mode_exp == "By Objective":
+            all_objs_exp = sorted(list(set([m['objective'] for m in port_meta_exp.values()])))
+            sel_objs_exp = st.multiselect("Select Objective(s)", all_objs_exp, default=all_objs_exp, key=f"{key_prefix}_exp_filt_obj_4")
+            filtered_portfolios_exp = [p for p in results_exp.keys() if port_meta_exp[p]['objective'] in sel_objs_exp]
+            
+        elif filter_mode_exp == "By Portfolio":
+            all_tickers_exp = set()
+            for p_name in results_exp.keys():
+                w_df = results_exp[p_name]['weights']
+                w_row = w_df.iloc[-1]
+                for ticker_wgt in w_row.index:
+                    if ticker_wgt.endswith('_wgt'):
+                        ticker = ticker_wgt.replace('_wgt', '')
+                        all_tickers_exp.add(ticker)
+            
+            all_tickers_exp = sorted(list(all_tickers_exp))
+            sel_tickers_exp = st.multiselect("Select Underlying Portfolio(s)", all_tickers_exp, default=all_tickers_exp, key=f"{key_prefix}_exp_filt_ticker_4")
+            filtered_portfolios_exp = list(results_exp.keys())
+            selected_ticker_wgts_exp = set([f"{t}_wgt" for t in sel_tickers_exp])
+            
+        # Level 2 Filter: By Goal
+        if filtered_portfolios_exp:
+            available_goals_exp = sorted(list(set([port_meta_exp[p]['goal_name'] for p in filtered_portfolios_exp])))
+            if available_goals_exp:
+                sel_goals_exp = st.multiselect("Filter by Goal (Optional)", available_goals_exp, default=available_goals_exp, key=f"{key_prefix}_exp_filt_goal_4")
+                filtered_portfolios_exp = [p for p in filtered_portfolios_exp if port_meta_exp[p]['goal_name'] in sel_goals_exp]
+
+        global_ticker_values_exp = {}
+        total_agg_value_exp = 0.0
+        
+        for p_name in filtered_portfolios_exp:
+            w_df = results_exp[p_name]['weights']
+            w_row = w_df.iloc[-1]
+            cash = port_meta_exp[p_name]['cash_invested']
+            scale = scaling_factors_exp.get(p_name, 1.0)
+            effective_cash = cash * scale
+            
+            if effective_cash > 0:
+                for ticker_wgt, weight in w_row.items():
+                    if filter_mode_exp == "By Portfolio" and ticker_wgt not in selected_ticker_wgts_exp:
+                        continue
+                    
+                    val = weight * effective_cash
+                    if val > 0:
+                        if ticker_wgt in global_ticker_values_exp:
+                            global_ticker_values_exp[ticker_wgt] += val
+                        else:
+                            global_ticker_values_exp[ticker_wgt] = val
+                        total_agg_value_exp += val
+        
+        # Convert back to weights and display charts
+        if total_agg_value_exp > 0:
+            agg_weights_exp = pd.Series({k: v / total_agg_value_exp for k, v in global_ticker_values_exp.items()})
+            
+            from utils.exposure import get_exposure_charts, get_concentration_exposure
+            charts_exp = get_exposure_charts(agg_weights_exp, df_sector, df_country, df_asset_class, df_underlying)
+            
+            col_asset_exp, col_holdings_exp = st.columns([1, 1])
+            
+            with col_asset_exp:
+                st.markdown("**Asset Class**")
+                if 'asset_pie' in charts_exp:
+                    st.plotly_chart(charts_exp['asset_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_asset_4")
+                    with st.expander("View Data"):
+                        st.dataframe(charts_exp['asset_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Asset Class data unavailable.")
+            
+            with col_holdings_exp:
+                st.markdown("**Sector**")
+                if 'sector_pie' in charts_exp:
+                    st.plotly_chart(charts_exp['sector_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_sector_4")
+                    with st.expander("View Data"):
+                        st.dataframe(charts_exp['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Sector data unavailable.")
+            
+            col_country_exp, col_conc_exp = st.columns([1, 1])
+            
+            with col_country_exp:
+                st.markdown("**Country**")
+                if 'country_pie' in charts_exp:
+                    st.plotly_chart(charts_exp['country_pie'], use_container_width=True, key=f"{key_prefix}_anal_pie_country_4")
+                    with st.expander("View Data"):
+                        st.dataframe(charts_exp['country_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Country data unavailable.")
+            
+            with col_conc_exp:
+                st.markdown("**Top Holdings**")
+                if 'concentration_bar' in charts_exp:
+                    st.plotly_chart(charts_exp['concentration_bar'], use_container_width=True, key=f"{key_prefix}_anal_bar_conc_4")
+                    with st.expander("View Data"):
+                        st.dataframe(charts_exp['concentration_table'].style.format("{:.2%}"), use_container_width=True)
+                else:
+                    st.info("Concentration data unavailable.")
+        else:
+            st.warning("No data available for selected filters.")
+    
+    # ============================================
+    # SECTION 4.1: FIXED INCOME ANALYTICS
+    # ============================================
+    if results_data:
+        st.subheader("4.1 Fixed Income Analytics")
+        
+        res_data = results_data
+        results = res_data['results']
+        ret_all = res_data['ret_all'].copy()
+        earliest_start_date = ret_all.index.min()
+        start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
+        
+        try:
+            if 'YTM / est. yield' in df_fi_metrics.index:
+                fi_tickers = df_fi_metrics.columns[df_fi_metrics.loc['YTM / est. yield'] != 0].tolist()
+            
+                if fi_tickers:
+                    port_fi_metrics = pd.DataFrame()
+                    has_fi = False
+                
+                    for p_name in results.keys():
+                        w_df = results[p_name]['weights']
+                        p_tickers = [c.replace('_wgt', '') for c in w_df.columns if c.endswith('_wgt')]
+                        common_fi = list(set(p_tickers).intersection(fi_tickers))
+                    
+                        if common_fi:
+                            has_fi = True
+                            ytm_duration_df = pc.exposure_analysis_mixed(
+                                w_df, 
+                                df_fi_metrics.loc[['Duration', 'YTM / est. yield']].astype(float), 
+                                fi_tickers, 
+                                latest_data=True, 
+                                start_date=start_opt_date, 
+                                end_date=end_date
+                            )
+                            ytm_duration_df.columns = [p_name]
+                            
+                            # Add Credit Rating
+                            try:
+                                if 'Credit rating' in df_fi_metrics.index:
+                                    cr = pc.calc_avg_credit_rating(
+                                        w_df, 
+                                        df_fi_metrics.loc[['Credit rating']], 
+                                        latest_data=True,
+                                        start_date=start_opt_date, 
+                                        end_date=end_date
+                                    )
+                                    ytm_duration_df.loc['Credit rating', p_name] = cr
+                            except Exception:
+                                ytm_duration_df.loc['Credit rating', p_name] = 'N/A'
+                            
+                            port_fi_metrics = pd.concat([port_fi_metrics, ytm_duration_df], axis=1)
+                
+                    if has_fi:
+                        # Format numeric rows, leave Credit rating as-is
+                        def format_fi_value(val, row_name):
+                            if row_name == 'Credit rating':
+                                return val if pd.notna(val) else 'N/A'
+                            try:
+                                return f"{float(val):.2f}"
+                            except:
+                                return val
+                        
+                        formatted_df = port_fi_metrics.T.copy()
+                        st.dataframe(formatted_df, use_container_width=True)
+                    else:
+                        st.info("No Fixed Income data available.")
+                else:
+                    st.info("No Fixed Income data available.")
+            else:
+                st.info("Fixed Income metrics data missing.")
+        except Exception as e:
+            st.error(f"Error calculating FI metrics: {e}")
+    
+    
+    # ============================================
+    # SECTION 4.3: BACKTEST RESULTS
+    # ============================================
+    if results_data:
+        st.subheader("4.2 Backtest Results")
 
         # FX Methodology explanation
         fx_methodology = """
@@ -1682,13 +1805,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             )
             
             # Get latest FX rate from data if available
-            latest_fx_rate = 1.35  # Default fallback
+            latest_fx_rate = 1.27  # Default fallback for USD/SGD
             if df_fx is not None and not df_fx.empty:
                 if analysis_currency == "SGD" and 'USDSGD' in df_fx.columns:
                     latest_series = df_fx['USDSGD'].dropna()
                     if not latest_series.empty:
                         latest_fx_rate = float(latest_series.iloc[-1])
-                        if latest_fx_rate < 1: latest_fx_rate = 1.35
+                        if latest_fx_rate < 1: latest_fx_rate = 1.27
                 elif analysis_currency == "HKD" and 'USDHKD' in df_fx.columns:
                      latest_series = df_fx['USDHKD'].dropna()
                      if not latest_series.empty:
@@ -1715,7 +1838,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     f"Custom USD/{analysis_currency} Rate",
                     min_value=0.5,
                     max_value=3.0,
-                    value=1.35,
+                    value=1.27,
                     step=0.01,
                     format="%.4f",
                     key=f"{key_prefix}_fx_rate_anal_custom"
@@ -1723,16 +1846,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
 
         st.markdown("---")
-    
-        res_data = results_data
-        results = res_data['results']
-
-        ret_all = res_data['ret_all'].copy()
-        ret_bm = res_data['ret_bm'].copy()
-    
-        # Calculate start_opt_date for analytics
-        earliest_start_date = ret_all.index.min()
-        start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
     
         # Combine Returns
         all_port_ret = pd.DataFrame()
@@ -1809,9 +1922,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             summary = get_performance_summary(all_port_ret)
         
             # Display date information above the table
-            exposure_start_date = all_port_ret.index.min().strftime('%d %b %Y')
-            exposure_end_date = all_port_ret.index.max().strftime('%d %b %Y')
-            st.markdown(f"**Data as of:** {exposure_end_date}<br>**Time frame taken:** {exposure_start_date} - {exposure_end_date}", unsafe_allow_html=True)
+            try:
+                exposure_start_date = pd.to_datetime(all_port_ret.index.min()).strftime('%d %b %Y')
+                exposure_end_date = pd.to_datetime(all_port_ret.index.max()).strftime('%d %b %Y')
+                st.markdown(f"**Data as of:** {exposure_end_date}<br>**Time frame taken:** {exposure_start_date} - {exposure_end_date}", unsafe_allow_html=True)
+            except:
+                st.markdown("**Data timeframe:** N/A", unsafe_allow_html=True)
         
             # Format the summary DataFrame properly
             # Metrics are in rows (index), portfolios are in columns
@@ -1840,27 +1956,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 use_container_width=True
             )
         
-            st.markdown("---")
+        # Note: Rebalance Weights moved to Section 4.4
+        # Note: Fixed Income Analytics moved to Section 4.1
         
-            st.subheader("Historical Weights (Rebalance Dates)")
-        
-            w_select = st.selectbox("Select Portfolio to View Weights", list(results.keys()), key=f"{key_prefix}_w_view_sel")
-        
-            if w_select:
-                w_df = results[w_select]['weights']
-                # Filter for rebalance dates
-                w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
-            
-                # Clean column names
-                w_rebal.columns = [c.replace('_wgt', '') for c in w_rebal.columns]
-            
-                # Format index
-                w_rebal.index = w_rebal.index.strftime('%Y-%m-%d')
-            
-                st.dataframe(w_rebal.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
-
-            st.markdown("---")
-
+        # Old Fixed Income Analytics placeholder - now in Section 4.1
+        if False:  # Disabled
             st.subheader("Fixed Income Analytics")
         
             # Identify FI tickers
@@ -2005,30 +2105,37 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # Reuse plot function
             st.plotly_chart(fig_roll, use_container_width=True, key=f"{key_prefix}_roll_excess")
         
-        # Excel Export Button
-        st.markdown("---")
-        st.subheader("📥 Export Analysis Data")
+    # ============================================
+    # SECTION 4.4: REBALANCE WEIGHTS
+    # ============================================
+    if results_data:
+        st.subheader("4.3 Rebalance Weights")
+        show_rebal_weights = st.toggle("Show Rebalance Weights", value=False, key=f"{key_prefix}_show_rebal_toggle_44")
         
-        col_exp1, col_exp2 = st.columns([1, 3])
-        with col_exp1:
-            if st.button("Generate Excel Report", key=f"{key_prefix}_gen_excel"):
-                with st.spinner("Generating Excel file..."):
-                    excel_data = create_analysis_excel(results, all_port_ret, ret_bm)
-                    st.session_state[f'{key_prefix}_excel_data'] = excel_data
-                    st.success("Excel file ready!")
+        if not show_rebal_weights:
+            st.info("Expand to view historical portfolio weights at rebalance dates.")
+        else:
+            res_data = results_data
+            results = res_data['results']
+            
+            w_select = st.selectbox("Select Portfolio to View Weights", list(results.keys()), key=f"{key_prefix}_w_view_sel_44")
         
-        with col_exp2:
-            if f'{key_prefix}_excel_data' in st.session_state:
-                st.download_button(
-                    label="⬇️ Download Excel",
-                    data=st.session_state[f'{key_prefix}_excel_data'],
-                    file_name="portfolio_analysis.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"{key_prefix}_download_excel"
-                )
-
-    if st.session_state.optimization_results:
-        st.header("5. Exposure Analysis")
+            if w_select:
+                w_df = results[w_select]['weights']
+                # Filter for rebalance dates
+                w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
+            
+                # Clean column names
+                w_rebal.columns = [c.replace('_wgt', '') for c in w_rebal.columns]
+            
+                # Format index
+                w_rebal.index = w_rebal.index.strftime('%Y-%m-%d')
+            
+                st.dataframe(w_rebal.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
+        
+    # Old Section 5 - Now handled in Section 4 above
+    if False:  # Disabled - moved to Section 4
+        st.header("OLD - Exposure Analysis")
         
         res_data = st.session_state.optimization_results
         results = res_data['results']
@@ -2211,152 +2318,156 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
 
 
     if st.session_state.optimization_results:
-        st.header("6. Factor Exposures")
+        st.subheader("4.5 Factor Exposures")
+        show_factor_exposures = st.toggle("Show Factor Exposures", value=False, key=f"{key_prefix}_show_factor_toggle")
     
-        st.markdown("""
-        **Fama-French 5-Factor Model** exposure coefficients:
-        - **Mkt**: Market risk premium (excess return of market over risk-free rate)
-        - **SMB**: Size (Small Minus Big) - smaller firms tend to outperform larger firms
-        - **HML**: Value (High Minus Low) - high book-to-market (value) vs low book-to-market (growth)
-        - **RMW**: Profitability (Robust Minus Weak) - robust profitability vs weak profitability
-        - **CMA**: Investment (Conservative Minus Aggressive) - conservative vs aggressive investment
-        """)
-    
-        try:
-            # Try to load from file first
-            ff_file_path = os.path.join(os.getcwd(), 'Data', 'F-F_Research_Data_5_Factors_2x3_daily.csv')
+        if not show_factor_exposures:
+            st.info("Expand to view Fama-French 5-Factor Model analysis.")
+        else:
+            st.markdown("""
+            **Fama-French 5-Factor Model** exposure coefficients:
+            - **Mkt**: Market risk premium (excess return of market over risk-free rate)
+            - **SMB**: Size (Small Minus Big) - smaller firms tend to outperform larger firms
+            - **HML**: Value (High Minus Low) - high book-to-market (value) vs low book-to-market (growth)
+            - **RMW**: Profitability (Robust Minus Weak) - robust profitability vs weak profitability
+            - **CMA**: Investment (Conservative Minus Aggressive) - conservative vs aggressive investment
+            """)
         
             try:
-                df_ff_factor = pd.read_csv(ff_file_path, skiprows=3, index_col=0)
-                # Filter out non-numeric rows (like copyright notice)
-                df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
-                df_ff_factor = df_ff_factor.astype(float) / 100
-                df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
-            except FileNotFoundError:
-                with st.spinner("Downloading Fama-French data..."):
-                    ff_link = 'https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip'
-                    response = requests.get(ff_link, verify=False)
-                
-                    if response.status_code == 200:
-                        with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
-                            with zf.open('F-F_Research_Data_5_Factors_2x3_daily.CSV') as file:
-                                df_ff_factor = pd.read_csv(file, skiprows=3, index_col=0)
-                                # Filter out non-numeric rows
-                                df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
-                                df_ff_factor = df_ff_factor.astype(float) / 100
-                                df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
-                    else:
-                        st.error("Failed to download Fama-French data.")
-                        st.stop()
-        
-            # Align data
-            common_index = ret_all.index.intersection(df_ff_factor.index)
-        
-            if len(common_index) == 0:
-                st.warning("No overlapping dates between portfolio data and Fama-French data.")
-            else:
-                # Calculate ticker factor exposures
-                all_tickers_list = list(set([t for p in results.values() for t in p['tickers']]))
+                # Try to load from file first
+                ff_file_path = os.path.join(os.getcwd(), 'Data', 'F-F_Research_Data_5_Factors_2x3_daily.csv')
             
-                st.subheader("Individual Ticker Factor Exposures")
-                with st.spinner("Calculating ticker factor exposures..."):
-                    ticker_factors = pc.factor_exposure_coefficient(
-                        ret_all.loc[common_index], 
-                        df_ff_factor.loc[common_index], 
-                        all_tickers_list
-                    )
-                    st.dataframe(
-                        ticker_factors.style.background_gradient(cmap='Blues', axis=None),
-                        use_container_width=True
-                    )
-            
-                # Calculate portfolio factor exposures
-                common_index_2 = all_port_ret.index.intersection(df_ff_factor.index)
-            
-                if len(common_index_2) > 0:
-                    st.subheader("Portfolio Factor Exposures")
-                    with st.spinner("Calculating portfolio factor exposures..."):
-                        # Calculate portfolio factors
-                        port_factors = pc.factor_exposure_coefficient(
-                            all_port_ret.loc[common_index_2], 
-                            df_ff_factor.loc[common_index_2], 
-                            list(results.keys())
-                        )
+                try:
+                    df_ff_factor = pd.read_csv(ff_file_path, skiprows=3, index_col=0)
+                    # Filter out non-numeric rows (like copyright notice)
+                    df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
+                    df_ff_factor = df_ff_factor.astype(float) / 100
+                    df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
+                except FileNotFoundError:
+                    with st.spinner("Downloading Fama-French data..."):
+                        ff_link = 'https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip'
+                        response = requests.get(ff_link, verify=False)
                     
-                        # Benchmark selection
-                        st.markdown("**Benchmark Selection for Comparison**")
-                        available_benchmarks = ret_bm.columns.tolist()
-                    
-                        if len(available_benchmarks) > 1:
-                            selected_benchmarks = st.multiselect(
-                                "Select Benchmark(s) for Factor Comparison",
-                                options=available_benchmarks,
-                                default=available_benchmarks,
-                                key=f"{key_prefix}_factor_bm_select"
-                            )
+                        if response.status_code == 200:
+                            with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+                                with zf.open('F-F_Research_Data_5_Factors_2x3_daily.CSV') as file:
+                                    df_ff_factor = pd.read_csv(file, skiprows=3, index_col=0)
+                                    # Filter out non-numeric rows
+                                    df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
+                                    df_ff_factor = df_ff_factor.astype(float) / 100
+                                    df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
                         else:
-                            selected_benchmarks = available_benchmarks
-                    
-                        # Calculate benchmark factors
-                        common_index_bm = ret_bm.index.intersection(df_ff_factor.index)
-                        if len(common_index_bm) > 0 and selected_benchmarks:
-                            bm_factors = pc.factor_exposure_coefficient(
-                                ret_bm[selected_benchmarks].loc[common_index_bm],
-                                df_ff_factor.loc[common_index_bm],
-                                selected_benchmarks
-                            )
-                        
-                            # Combine for visualization
-                            all_factors = pd.concat([port_factors, bm_factors])
-                        
-                            # Convert to numeric for plotting
-                            all_factors_numeric = all_factors.apply(lambda x: pd.to_numeric(x, errors='coerce'))
-                        
-                            # Create grouped bar chart
-                            fig = go.Figure()
-                        
-                            for factor in all_factors_numeric.columns:
-                                fig.add_trace(go.Bar(
-                                    name=factor,
-                                    x=all_factors_numeric.index,
-                                    y=all_factors_numeric[factor],
-                                    text=all_factors[factor],
-                                    textposition='auto'
-                                ))
-                        
-                            fig.update_layout(
-                                barmode='group',
-                                title={'text': '<b>Factor Exposures Comparison</b>', 'font': {'size': 20, 'color': '#172B4D'}},
-                                xaxis_title="Portfolio / Benchmark",
-                                yaxis_title="Factor Coefficient",
-                                font={'family': 'Helvetica Neue, Arial', 'color': '#172B4D'},
-                                plot_bgcolor='white',
-                                paper_bgcolor='white',
-                                height=500,
-                                xaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
-                                yaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
-                                legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'xanchor': 'right', 'x': 1}
-                            )
-                        
-                            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_factor_chart")
-                        
-                            # Display combined table
-                            st.dataframe(
-                                all_factors.style.background_gradient(cmap='Blues', axis=None),
-                                use_container_width=True
-                            )
-                        else:
-                            # Just portfolios, no benchmark comparison
-                            st.dataframe(
-                                port_factors.style.background_gradient(cmap='Blues', axis=None),
-                                use_container_width=True
-                            )
+                            st.error("Failed to download Fama-French data.")
+                            st.stop()
+            
+                # Align data
+                common_index = ret_all.index.intersection(df_ff_factor.index)
+            
+                if len(common_index) == 0:
+                    st.warning("No overlapping dates between portfolio data and Fama-French data.")
                 else:
-                    st.warning("No overlapping dates for portfolio factor analysis.")
+                    # Calculate ticker factor exposures
+                    all_tickers_list = list(set([t for p in results.values() for t in p['tickers']]))
                 
-        except Exception as e:
-            st.error(f"Error calculating factor exposures: {e}")
-            st.exception(e)
+                    st.subheader("Individual Ticker Factor Exposures")
+                    with st.spinner("Calculating ticker factor exposures..."):
+                        ticker_factors = pc.factor_exposure_coefficient(
+                            ret_all.loc[common_index], 
+                            df_ff_factor.loc[common_index], 
+                            all_tickers_list
+                        )
+                        st.dataframe(
+                            ticker_factors.style.background_gradient(cmap='Blues', axis=None),
+                            use_container_width=True
+                        )
+                
+                    # Calculate portfolio factor exposures
+                    common_index_2 = all_port_ret.index.intersection(df_ff_factor.index)
+                
+                    if len(common_index_2) > 0:
+                        st.subheader("Portfolio Factor Exposures")
+                        with st.spinner("Calculating portfolio factor exposures..."):
+                            # Calculate portfolio factors
+                            port_factors = pc.factor_exposure_coefficient(
+                                all_port_ret.loc[common_index_2], 
+                                df_ff_factor.loc[common_index_2], 
+                                list(results.keys())
+                            )
+                        
+                            # Benchmark selection
+                            st.markdown("**Benchmark Selection for Comparison**")
+                            available_benchmarks = ret_bm.columns.tolist()
+                        
+                            if len(available_benchmarks) > 1:
+                                selected_benchmarks = st.multiselect(
+                                    "Select Benchmark(s) for Factor Comparison",
+                                    options=available_benchmarks,
+                                    default=available_benchmarks,
+                                    key=f"{key_prefix}_factor_bm_select"
+                                )
+                            else:
+                                selected_benchmarks = available_benchmarks
+                        
+                            # Calculate benchmark factors
+                            common_index_bm = ret_bm.index.intersection(df_ff_factor.index)
+                            if len(common_index_bm) > 0 and selected_benchmarks:
+                                bm_factors = pc.factor_exposure_coefficient(
+                                    ret_bm[selected_benchmarks].loc[common_index_bm],
+                                    df_ff_factor.loc[common_index_bm],
+                                    selected_benchmarks
+                                )
+                            
+                                # Combine for visualization
+                                all_factors = pd.concat([port_factors, bm_factors])
+                            
+                                # Convert to numeric for plotting
+                                all_factors_numeric = all_factors.apply(lambda x: pd.to_numeric(x, errors='coerce'))
+                            
+                                # Create grouped bar chart
+                                fig = go.Figure()
+                            
+                                for factor in all_factors_numeric.columns:
+                                    fig.add_trace(go.Bar(
+                                        name=factor,
+                                        x=all_factors_numeric.index,
+                                        y=all_factors_numeric[factor],
+                                        text=all_factors[factor],
+                                        textposition='auto'
+                                    ))
+                            
+                                fig.update_layout(
+                                    barmode='group',
+                                    title={'text': '<b>Factor Exposures Comparison</b>', 'font': {'size': 20, 'color': '#172B4D'}},
+                                    xaxis_title="Portfolio / Benchmark",
+                                    yaxis_title="Factor Coefficient",
+                                    font={'family': 'Helvetica Neue, Arial', 'color': '#172B4D'},
+                                    plot_bgcolor='white',
+                                    paper_bgcolor='white',
+                                    height=500,
+                                    xaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
+                                    yaxis={'showgrid': True, 'gridcolor': '#F4F5F7'},
+                                    legend={'orientation': 'h', 'yanchor': 'bottom', 'y': 1.02, 'xanchor': 'right', 'x': 1}
+                                )
+                            
+                                st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_factor_chart")
+                            
+                                # Display combined table
+                                st.dataframe(
+                                    all_factors.style.background_gradient(cmap='Blues', axis=None),
+                                    use_container_width=True
+                                )
+                            else:
+                                # Just portfolios, no benchmark comparison
+                                st.dataframe(
+                                    port_factors.style.background_gradient(cmap='Blues', axis=None),
+                                    use_container_width=True
+                                )
+                    else:
+                        st.warning("No overlapping dates for portfolio factor analysis.")
+                    
+            except Exception as e:
+                st.error(f"Error calculating factor exposures: {e}")
+                st.exception(e)
 
     if st.session_state.optimization_results:
         # Check if any portfolio has cash invested
@@ -2366,7 +2477,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         }
     
         if portfolios_with_cash:
-            st.header("7. Cash Flow Analysis and Growth Forecast Calculator")
+            st.subheader("4.4 Cash Flow Analysis")
             st.markdown("**Projected monthly cash flows based on portfolio yields and cash invested.**")
         
             # Currency and Portfolio selection row
@@ -2381,7 +2492,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 )
                 
                 # 1. Fetch reference USD/SGD rate (always needed for cross-rates)
-                ref_usdsgd = 1.35
+                ref_usdsgd = 1.27
                 if df_fx is not None and not df_fx.empty and 'USDSGD' in df_fx.columns:
                     s = df_fx['USDSGD'].dropna()
                     if not s.empty: 
@@ -2476,7 +2587,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # Default to SGD for other Syfe products
                 return 'SGD'
             
-            def convert_currency(amount, from_ccy, to_ccy, target_fx, cross_usdsgd=1.35):
+            def convert_currency(amount, from_ccy, to_ccy, target_fx, cross_usdsgd=1.27):
                 """
                 Convert amount. 
                 target_fx: USD -> to_ccy rate (e.g. 1 USD = 7.8 HKD)
@@ -2739,10 +2850,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             )
         
         st.markdown("---")
-        st.header("7.1 Growth Forecast Calculator")
-        st.caption("Project future portfolio value based on historical returns")
+        st.header("5. Growth Forecast Calculator")
+        show_growth_forecast = st.toggle("Show Growth Forecast Calculator", value=False, key=f"{key_prefix}_show_growth_forecast_toggle")
         
-        if st.session_state.portfolios:
+        if not show_growth_forecast:
+            st.info("Expand to project future portfolio value based on historical returns.")
+        elif st.session_state.portfolios:
             # Portfolio selector
             portfolio_names = [p['name'] for p in st.session_state.portfolios]
             selected_portfolio_name = st.selectbox(
@@ -2880,7 +2993,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     required_monthly = gap / (time_horizon * 12) if time_horizon > 0 else 0
                                 
                                 monthly_contribution = max(0, required_monthly)  # Don't allow negative
-                                st.info(f"💡 Required monthly contribution to meet goal: **${monthly_contribution:,.2f}**")
+                                st.info(f"Required monthly contribution to meet goal: **${monthly_contribution:,.2f}**")
                             
                             # Project future values
                             years_array = np.arange(0, time_horizon + 1)

@@ -127,27 +127,6 @@ bm_tickers = ['SPY', 'ACWI', 'URTH']  # defaults, user can change in base settin
 
 with st.container():
     st.markdown("## Portfolio Visualiser")
-
-    # module export selector (cosmetic for now)
-    export_modules = st.multiselect(
-        "Select Modules for Export",
-        [
-            "1. Client Data Source",
-            "2. Syfe Portfolio Recommender",
-            "3. Portfolio Construction",
-            "4. Analysis Results",
-            "5. Exposure Analysis",
-            "6. Factor Exposures",
-            "7. Cash Flow Analysis and Growth Forecast Calculator"
-        ],
-        default=[],
-        key="module_export_selector",
-        help="Select sections to include in the generated PDF report."
-    )
-    
-    # pdf export button
-    from utils.pdf_gen import render_export_ui
-    render_export_ui(export_modules)
     
     # client type toggle
     client_type = st.radio(
@@ -189,6 +168,25 @@ with st.container():
     
     # conditional flow based on client type
     if client_type == "Existing Client":
+        # PDF Export section
+        from utils.pdf_gen import render_export_ui
+        export_modules = st.multiselect(
+            "Select Modules for Export",
+            [
+                "1. Client Data Source",
+                "2. Syfe Portfolio Recommender",
+                "3. Portfolio Construction",
+                "4. Analysis Results",
+                "5. Exposure Analysis",
+                "6. Factor Exposures",
+                "7. Cash Flow Analysis and Growth Forecast Calculator"
+            ],
+            default=[],
+            key="module_export_selector",
+            help="Select sections to include in the generated PDF report."
+        )
+        render_export_ui(export_modules)
+        
         # CSV upload
         render_client_upload(
             df_asset_class, df_sector, df_country, df_underlying,

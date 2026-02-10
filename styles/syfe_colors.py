@@ -24,16 +24,17 @@ OBJECTIVE_COLORS = {
     'Unclassified': '#C1C7D0'
 }
 
-# Color Lists for Charts
+# Color Lists for Charts - Dark Blue to Grey gradient
 PALETTE = [
-    PRIMARY_BLUE,
-    SECONDARY_BLUE,
-    TERTIARY_BLUE,
-    LIGHT_BLUE,
-    DARK_BLUE,
-    GREEN,
-    YELLOW,
-    RED
+    DARK_BLUE,       # #172B4D - Darkest
+    PRIMARY_BLUE,    # #0052CC
+    SECONDARY_BLUE,  # #2684FF
+    TERTIARY_BLUE,   # #4C9AFF
+    LIGHT_BLUE,      # #B3D4FF
+    DARK_GREY,       # #4A4A4A
+    LIGHT_GREY,      # #B0B0B0
+    "#E0E0E0",       # Very Light Grey
+    "#F5F5F5",       # Near White Grey
 ]
 
 # Diverging Palette for Heatmaps (Blue-centric)
