@@ -21,6 +21,9 @@ def apply_syfe_layout(fig, title="", height=500):
     return fig
 
 def plot_cumulative_returns(df_cum_ret, benchmark_ret=None):
+    """Plot cumulative returns. 
+    Expects df_cum_ret to already be in percentage form (0.94 for 94% return).
+    """
     fig = go.Figure()
     for i, col in enumerate(df_cum_ret.columns):
         fig.add_trace(go.Scatter(
@@ -35,7 +38,8 @@ def plot_cumulative_returns(df_cum_ret, benchmark_ret=None):
         BM_COLORS = ['#000000', '#525252', '#969696', '#252525']
         
         if isinstance(benchmark_ret, (pd.Series, pd.DataFrame)):
-            bm_cum = (1 + benchmark_ret).cumprod()
+            # Convert benchmark to cumulative returns (percentage form)
+            bm_cum = (1 + benchmark_ret).cumprod() - 1
             if isinstance(bm_cum, pd.DataFrame):
                 for i, col in enumerate(bm_cum.columns):
                     fig.add_trace(go.Scatter(

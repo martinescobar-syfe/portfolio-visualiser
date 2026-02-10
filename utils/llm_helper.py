@@ -74,7 +74,7 @@ def get_gemini_recommendation(api_key, client_profile):
         genai.configure(api_key=api_key)
         
         # Format the complex client profile into a readable string
-        # Sanitize keys for better LLM readability
+        # Sanitise keys for better LLM readability
         readable_profile = {}
         key_map = {
             "risk_willingness": "Risk Willingness (1-5)",

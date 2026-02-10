@@ -23,6 +23,106 @@ import requests
 import zipfile
 import io
 
+
+def create_analysis_excel(results, all_port_ret, ret_bm=None):
+    """Create Excel file with all analysis data across multiple sheets."""
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Sheet 1: NAV (cumulative returns indexed to 1)
+        nav_df = (1 + all_port_ret).cumprod()
+        nav_df.index.name = 'Date'
+        nav_df.to_excel(writer, sheet_name='NAV')
+        
+        # Sheet 2: Daily Returns
+        daily_ret = all_port_ret.copy()
+        daily_ret.index.name = 'Date'
+        daily_ret.to_excel(writer, sheet_name='Daily Returns')
+        
+        # Sheet 3: Daily Weights (all dates)
+        daily_weights_list = []
+        for port_name, port_data in results.items():
+            if 'weights' in port_data:
+                w_df = port_data['weights'].copy()
+                w_df['Portfolio'] = port_name
+                daily_weights_list.append(w_df)
+        
+        if daily_weights_list:
+            all_daily_weights = pd.concat(daily_weights_list)
+            all_daily_weights.index.name = 'Date'
+            # Clean column names
+            all_daily_weights.columns = [c.replace('_wgt', '') for c in all_daily_weights.columns]
+            all_daily_weights.to_excel(writer, sheet_name='Daily Weights')
+        
+        # Sheet 4: Rebalance Weights only
+        rebal_weights_list = []
+        for port_name, port_data in results.items():
+            if 'weights' in port_data:
+                w_df = port_data['weights'].copy()
+                if 'reb_flag' in w_df.columns:
+                    w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
+                    w_rebal['Portfolio'] = port_name
+                    rebal_weights_list.append(w_rebal)
+        
+        if rebal_weights_list:
+            all_rebal_weights = pd.concat(rebal_weights_list)
+            all_rebal_weights.index.name = 'Date'
+            all_rebal_weights.columns = [c.replace('_wgt', '') for c in all_rebal_weights.columns]
+            all_rebal_weights.to_excel(writer, sheet_name='Rebalance Weights')
+        
+        # Sheet 5: Key Summary
+        summary = get_performance_summary(all_port_ret)
+        summary.to_excel(writer, sheet_name='Key Summary')
+        
+        # Sheet 6: Cumulative Returns
+        cum_ret = (1 + all_port_ret).cumprod() - 1  # As percentage
+        cum_ret.index.name = 'Date'
+        cum_ret.to_excel(writer, sheet_name='Cumulative Returns')
+        
+        # Sheet 7: Monthly Returns
+        monthly_ret = all_port_ret.resample('ME').apply(lambda x: (1 + x).prod() - 1)
+        monthly_ret.index.name = 'Date'
+        monthly_ret.to_excel(writer, sheet_name='Monthly Returns')
+        
+        # Sheet 8: Calendar Returns (yearly)
+        yearly_ret = all_port_ret.resample('YE').apply(lambda x: (1 + x).prod() - 1)
+        yearly_ret.index = yearly_ret.index.year
+        yearly_ret.index.name = 'Year'
+        yearly_ret.to_excel(writer, sheet_name='Calendar Returns')
+        
+        # Sheet 9: Rolling Volatility (252-day)
+        rolling_vol = all_port_ret.rolling(window=252).std() * np.sqrt(252)
+        rolling_vol.index.name = 'Date'
+        rolling_vol.to_excel(writer, sheet_name='Rolling Volatility')
+        
+        # Sheet 10: Drawdowns
+        cum_ret_nav = (1 + all_port_ret).cumprod()
+        running_max = cum_ret_nav.cummax()
+        drawdowns = (cum_ret_nav - running_max) / running_max
+        drawdowns.index.name = 'Date'
+        drawdowns.to_excel(writer, sheet_name='Drawdowns')
+        
+        # Sheet 11: Correlation Matrix
+        corr_matrix = all_port_ret.corr()
+        corr_matrix.to_excel(writer, sheet_name='Correlation Matrix')
+        
+        # Sheet 12: Risk-Return Summary
+        risk_return = pd.DataFrame({
+            'Annualized Return': all_port_ret.mean() * 252,
+            'Annualized Volatility': all_port_ret.std() * np.sqrt(252),
+            'Sharpe Ratio': (all_port_ret.mean() * 252) / (all_port_ret.std() * np.sqrt(252))
+        })
+        risk_return.to_excel(writer, sheet_name='Risk-Return')
+        
+        # Sheet 13: Benchmark comparison (if available)
+        if ret_bm is not None and not ret_bm.empty:
+            bm_nav = (1 + ret_bm).cumprod()
+            bm_nav.index.name = 'Date'
+            bm_nav.to_excel(writer, sheet_name='Benchmark NAV')
+    
+    output.seek(0)
+    return output.getvalue()
+
 def get_portfolio_objective(portfolio_name):
     """get objective from portfolio name"""
     name_lower = portfolio_name.lower()
@@ -1844,7 +1944,8 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_monthly_heatmap")
         
         with tabs[3]: # Cumulative Returns
-            cum_ret = (1 + all_port_ret).cumprod()
+            # Calculate cumulative returns as percentage (subtract 1 so 1.94 becomes 0.94 = 94%)
+            cum_ret = (1 + all_port_ret).cumprod() - 1
             # Pass benchmark returns for comparison
             fig = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_cum_ret")
@@ -1903,6 +2004,28 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.markdown("#### Rolling 12M Excess Return")
             fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # Reuse plot function
             st.plotly_chart(fig_roll, use_container_width=True, key=f"{key_prefix}_roll_excess")
+        
+        # Excel Export Button
+        st.markdown("---")
+        st.subheader("📥 Export Analysis Data")
+        
+        col_exp1, col_exp2 = st.columns([1, 3])
+        with col_exp1:
+            if st.button("Generate Excel Report", key=f"{key_prefix}_gen_excel"):
+                with st.spinner("Generating Excel file..."):
+                    excel_data = create_analysis_excel(results, all_port_ret, ret_bm)
+                    st.session_state[f'{key_prefix}_excel_data'] = excel_data
+                    st.success("Excel file ready!")
+        
+        with col_exp2:
+            if f'{key_prefix}_excel_data' in st.session_state:
+                st.download_button(
+                    label="⬇️ Download Excel",
+                    data=st.session_state[f'{key_prefix}_excel_data'],
+                    file_name="portfolio_analysis.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"{key_prefix}_download_excel"
+                )
 
     if st.session_state.optimization_results:
         st.header("5. Exposure Analysis")

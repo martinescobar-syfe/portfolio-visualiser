@@ -10,7 +10,7 @@ def calculate_risk_score(profile):
     raw_score_map = {1: 5, 2: 4, 3: 3, 4: 2}
     raw_score = raw_score_map.get(profile.get('risk_willingness', 3), 3)
     
-    # time horizon caps
+    # time horizon caps 
     horizon = profile.get('time_horizon_years', 10)
     if horizon < 3:
         raw_score = min(raw_score, 2)
