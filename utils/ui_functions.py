@@ -1734,8 +1734,35 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
         
         try:
-            if 'YTM / est. yield' in df_fi_metrics.index:
-                fi_tickers = df_fi_metrics.columns[df_fi_metrics.loc['YTM / est. yield'] != 0].tolist()
+            # Determine which yield metric to use: YTM first, fallback to T12M
+            has_ytm = 'YTM / est. yield' in df_fi_metrics.index
+            has_t12m = 'T12M dividend yield' in df_fi_metrics.index
+            
+            if has_ytm or has_t12m:
+                # Build a combined yield row: YTM first, fallback to T12M
+                combined_yield = pd.Series(0.0, index=df_fi_metrics.columns, name='Yield (combined)')
+                yield_source_map = {}
+                
+                for col in df_fi_metrics.columns:
+                    ytm_val = 0.0
+                    t12m_val = 0.0
+                    if has_ytm:
+                        v = df_fi_metrics.loc['YTM / est. yield', col]
+                        if pd.notna(v) and v != 0:
+                            ytm_val = float(v)
+                    if has_t12m:
+                        v = df_fi_metrics.loc['T12M dividend yield', col]
+                        if pd.notna(v) and v != 0:
+                            t12m_val = float(v)
+                    
+                    if ytm_val != 0:
+                        combined_yield[col] = ytm_val
+                        yield_source_map[col] = 'YTM'
+                    elif t12m_val != 0:
+                        combined_yield[col] = t12m_val
+                        yield_source_map[col] = 'T12M'
+                
+                fi_tickers = combined_yield[combined_yield != 0].index.tolist()
                 
                 # Exclude tickers that don't generate cash flow (aligned with cash flow exclusions)
                 FI_EXCLUDED_PATTERNS = [
@@ -1747,6 +1774,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 fi_tickers = [t for t in fi_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
             
                 if fi_tickers:
+                    # Build a metrics df with Duration + combined yield for exposure_analysis_mixed
+                    fi_metrics_for_calc = pd.DataFrame(index=['Duration', 'YTM / est. yield'], columns=df_fi_metrics.columns, dtype=float)
+                    if 'Duration' in df_fi_metrics.index:
+                        fi_metrics_for_calc.loc['Duration'] = df_fi_metrics.loc['Duration'].astype(float)
+                    else:
+                        fi_metrics_for_calc.loc['Duration'] = 0.0
+                    # Use combined yield (YTM first, T12M fallback) in the YTM row
+                    fi_metrics_for_calc.loc['YTM / est. yield'] = combined_yield
+                    
                     port_fi_metrics = pd.DataFrame()
                     has_fi = False
                 
@@ -1761,13 +1797,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             has_fi = True
                             ytm_duration_df = pc.exposure_analysis_mixed(
                                 w_df, 
-                                df_fi_metrics.loc[['Duration', 'YTM / est. yield']].astype(float), 
+                                fi_metrics_for_calc, 
                                 fi_tickers, 
                                 latest_data=True, 
                                 start_date=start_opt_date, 
                                 end_date=end_date
                             )
                             ytm_duration_df.columns = [p_name]
+                            
+                            # Rename the yield row to show it uses combined logic
+                            ytm_duration_df = ytm_duration_df.rename(index={'YTM / est. yield': 'Yield (Estimated)'})
                             
                             # Add Credit Rating
                             try:
@@ -2360,7 +2399,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             - **RMW**: Profitability (Robust Minus Weak) - robust profitability vs weak profitability
             - **CMA**: Investment (Conservative Minus Aggressive) - conservative vs aggressive investment
             """)
-        
+    
             try:
                 # Try to load from file first
                 ff_file_path = os.path.join(os.getcwd(), 'Data', 'F-F_Research_Data_5_Factors_2x3_daily.csv')
@@ -2578,6 +2617,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 key=f"{key_prefix}_show_goal_breakdown",
                 help="Group cash flows by investment goal"
             )
+            
+            # Yield source preference
+            yield_preference = st.selectbox(
+                "Yield Source",
+                options=["YTM / Est. Yield", "T12M Dividend Yield"],
+                index=0,
+                key=f"{key_prefix}_yield_pref",
+                help="Select which yield metric to use for cash flow projections. Primary source is used first, falls back to the other if unavailable."
+            )
         
             if not selected_portfolios:
                 st.warning("Please select at least one portfolio to display cash flows.")
@@ -2663,7 +2711,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             ccy_symbol = "$"
             if display_currency == "SGD": ccy_symbol = "S$"
             elif display_currency == "HKD": ccy_symbol = "HK$"
-            
+        
             # Calculate cash flows
             monthly_cash_flows = pd.DataFrame(0.0, 
                                              index=[p['name'] for idx, p in filtered_portfolios.items()],
@@ -2673,6 +2721,14 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             # Track calculation breakdown for transparency
             calc_breakdown = []
+        
+            # Excluded patterns for cash flow analysis (aligned with portfolio_report_generator.py)
+            CASHFLOW_EXCLUDED_PATTERNS = [
+                'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF - no dividend payout
+                'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios - dividends auto-reinvested
+                'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # Thematic - auto-reinvested
+                'CUSTOM', 'STRATEGIC',  # Custom portfolios excluded
+            ]
             
             for idx, port in filtered_portfolios.items():
                 p_name = port['name']
@@ -2680,20 +2736,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # Get the currency that cash_invested is denominated in
                 # CSV loaded = SGD, Manual = USD, PDF = presentation_ccy
                 cash_currency = port.get('cash_currency', 'USD')  # Default USD for backwards compatibility
-            
-                # Get portfolio weights from optimization results
-                if p_name in results:
-                    weights_df = results[p_name]['weights']
-                    latest_weights = weights_df.iloc[-1]
                 
-                    # Excluded patterns for cash flow analysis (aligned with portfolio_report_generator.py)
-                    CASHFLOW_EXCLUDED_PATTERNS = [
-                        'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF - no dividend payout
-                        'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios - dividends auto-reinvested
-                        'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # Thematic - auto-reinvested
-                        'CUSTOM', 'STRATEGIC',  # Custom portfolios excluded
-                    ]
-                    
+                # Always use fixed weights (user-defined amounts/weights)
+                fixed_weights = port.get('decimal_weights', port.get('fixed_weights', {}))
+                
+                if fixed_weights:
                     for ticker in port['tickers']:
                         # Skip excluded portfolios - no cash payout
                         ticker_upper = ticker.upper()
@@ -2703,37 +2750,53 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 'Ticker': ticker,
                                 'Status': 'Excluded',
                                 'Weight': '-',
-                                f'Invested ({cash_currency})': '-',
+                                f'Allocated ({cash_currency})': '-',
                                 'Yield': '-',
                                 'Frequency': '-',
                                 f'Annual CF ({display_currency})': '-',
                             })
                             continue
-                            
-                        weight_col = f"{ticker}_wgt"
-                        if weight_col in latest_weights.index:
-                            weight = latest_weights[weight_col]
-                            # invested_in_ticker is in cash_currency
-                            invested_in_ticker = cash_invested * weight
                         
-                            # Get yield - check both dividend yield and YTM
-                            # All yields in Excel are in percentage format (e.g., 0.87 = 0.87%, 10.72 = 10.72%)
-                            annual_yield = 0.0
-                            yield_source = 'N/A'
-                            if ticker in df_fi_metrics.columns:
-                                # First try T12M dividend yield
+                        # Get weight from fixed weights
+                        weight = float(fixed_weights.get(ticker, 0.0))
+                        
+                        if weight <= 0:
+                            continue
+                            
+                        # invested_in_ticker is in cash_currency
+                        invested_in_ticker = cash_invested * weight
+                    
+                        # Get yield based on user preference
+                        # All yields in Excel are in percentage format (e.g., 0.87 = 0.87%, 10.72 = 10.72%)
+                        annual_yield = 0.0
+                        yield_source = 'N/A'
+                        if ticker in df_fi_metrics.columns:
+                            if yield_preference == "T12M Dividend Yield":
+                                # Primary: T12M dividend yield, fallback: YTM
                                 if 'T12M dividend yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
-                                        annual_yield = float(yield_val) / 100  # Convert % to decimal
+                                        annual_yield = float(yield_val) / 100
                                         yield_source = 'T12M Div Yield'
                                 
-                                # Fall back to YTM if no dividend yield
                                 if annual_yield == 0 and 'YTM / est. yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
-                                        annual_yield = float(yield_val) / 100  # Convert % to decimal
+                                        annual_yield = float(yield_val) / 100
+                                        yield_source = 'YTM (fallback)'
+                            else:
+                                # Primary: YTM / est. yield, fallback: T12M
+                                if 'YTM / est. yield' in df_fi_metrics.index:
+                                    yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
+                                    if pd.notna(yield_val) and yield_val != 0:
+                                        annual_yield = float(yield_val) / 100
                                         yield_source = 'YTM / Est. Yield'
+                                
+                                if annual_yield == 0 and 'T12M dividend yield' in df_fi_metrics.index:
+                                    yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
+                                    if pd.notna(yield_val) and yield_val != 0:
+                                        annual_yield = float(yield_val) / 100
+                                        yield_source = 'T12M (fallback)'
                         
                             if annual_yield > 0 and invested_in_ticker > 0:
                                 payment_freq = get_payment_frequency(ticker)
@@ -2791,9 +2854,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     'Ticker': ticker,
                                     'Status': 'Included',
                                     'Weight': f'{weight:.2%}',
-                                    f'Invested ({cash_currency})': f'{invested_in_ticker:,.0f}',
+                                    f'Allocated ({cash_currency})': f'{invested_in_ticker:,.2f}',
                                     'Ticker Ccy': ticker_base_ccy,
-                                    'Yield': f'{annual_yield:.2%} ({yield_source})',
+                                    'Yield': f'{annual_yield:.2%}',
+                                    'Yield Source': yield_source,
                                     'Frequency': payment_freq,
                                     f'Annual CF ({display_currency})': f'{ccy_symbol}{annual_cf_display:,.2f}',
                                 })
@@ -2803,9 +2867,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     'Ticker': ticker,
                                     'Status': 'No yield' if annual_yield == 0 else 'Zero weight',
                                     'Weight': f'{weight:.2%}',
-                                    f'Invested ({cash_currency})': f'{invested_in_ticker:,.0f}',
+                                    f'Allocated ({cash_currency})': f'{invested_in_ticker:,.2f}',
                                     'Ticker Ccy': get_ticker_base_currency(ticker),
                                     'Yield': f'{annual_yield:.2%}' if annual_yield > 0 else '0.00%',
+                                    'Yield Source': yield_source,
                                     'Frequency': '-',
                                     f'Annual CF ({display_currency})': f'{ccy_symbol}0.00',
                                 })
@@ -2827,7 +2892,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     y=cash_flow_array,
                     marker_color=colors_list[i % len(colors_list)]
                 ))
-        
+            
             fig.update_layout(
                 barmode='stack',
                 title={'text': f'<b>Monthly Cash Flow Projections ({display_currency})</b>', 'font': {'size': 20, 'color': '#172B4D'}},
@@ -2879,11 +2944,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             # Calculation breakdown for transparency
             if calc_breakdown:
-                with st.expander("View Calculation Breakdown", expanded=False):
+                with st.expander("View Calculation Breakdown", expanded=True):
                     st.markdown("**How cash flows are calculated per ticker:**")
                     breakdown_df = pd.DataFrame(calc_breakdown)
                     st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
-                    st.caption("Note: Only tickers with 'Included' status generate cash flows. Excluded tickers (CORE, Growth, Cash, Thematic) have dividends auto-reinvested and do not produce cash payouts.")
+                    st.caption("Only tickers with 'Included' status generate cash flows. Excluded tickers (CORE, Growth, Cash, Thematic) have dividends auto-reinvested and do not produce cash payouts.")
             
             if show_goal_breakdown and ticker_cash_flows:
                 with st.expander("📊 View Detailed Portfolio Contributions", expanded=False):
