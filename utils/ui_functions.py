@@ -381,6 +381,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         filtered_weights[f"{ticker}_wgt"] = weight
 
             weights_series = pd.Series(filtered_weights)
+            
+            # Renormalize weights so filtered view sums to 100%
+            total_wgt = weights_series.sum()
+            if total_wgt > 0:
+                weights_series = weights_series / total_wgt
 
             if not weights_series.empty:
                 # Calculate all charts first
@@ -2283,6 +2288,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             if effective_cash > 0:
                 for ticker_wgt, weight in w_row.items():
+                    # Skip non-weight columns (e.g. reb_flag)
+                    if not ticker_wgt.endswith('_wgt'):
+                        continue
+                    
                     # If "By Portfolio" mode, only include selected tickers
                     if filter_mode == "By Portfolio" and ticker_wgt not in selected_ticker_wgts:
                         continue
