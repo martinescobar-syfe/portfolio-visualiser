@@ -2737,10 +2737,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # CSV loaded = SGD, Manual = USD, PDF = presentation_ccy
                 cash_currency = port.get('cash_currency', 'USD')  # Default USD for backwards compatibility
                 
-                # Always use fixed weights (user-defined amounts/weights)
+                # Use fixed weights (user-defined amounts/weights), fall back to backtest weights
                 fixed_weights = port.get('decimal_weights', port.get('fixed_weights', {}))
                 
-                if fixed_weights:
+                # Fall back to backtest weights if no fixed weights defined
+                backtest_weights = None
+                if not fixed_weights and p_name in results:
+                    weights_df = results[p_name]['weights']
+                    backtest_weights = weights_df.iloc[-1]
+                
+                if fixed_weights or backtest_weights is not None:
                     for ticker in port['tickers']:
                         # Skip excluded portfolios - no cash payout
                         ticker_upper = ticker.upper()
@@ -2750,15 +2756,21 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 'Ticker': ticker,
                                 'Status': 'Excluded',
                                 'Weight': '-',
-                                f'Allocated ({cash_currency})': '-',
+                                'Allocated': '-',
                                 'Yield': '-',
                                 'Frequency': '-',
                                 f'Annual CF ({display_currency})': '-',
                             })
                             continue
                         
-                        # Get weight from fixed weights
-                        weight = float(fixed_weights.get(ticker, 0.0))
+                        # Get weight: fixed weights first, backtest fallback
+                        weight = 0.0
+                        if fixed_weights and ticker in fixed_weights:
+                            weight = float(fixed_weights[ticker])
+                        elif backtest_weights is not None:
+                            weight_col = f"{ticker}_wgt"
+                            if weight_col in backtest_weights.index:
+                                weight = float(backtest_weights[weight_col])
                         
                         if weight <= 0:
                             continue
@@ -2857,7 +2869,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     f'Allocated ({cash_currency})': f'{invested_in_ticker:,.2f}',
                                     'Ticker Ccy': ticker_base_ccy,
                                     'Yield': f'{annual_yield:.2%}',
-                                    'Yield Source': yield_source,
                                     'Frequency': payment_freq,
                                     f'Annual CF ({display_currency})': f'{ccy_symbol}{annual_cf_display:,.2f}',
                                 })
@@ -2870,7 +2881,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     f'Allocated ({cash_currency})': f'{invested_in_ticker:,.2f}',
                                     'Ticker Ccy': get_ticker_base_currency(ticker),
                                     'Yield': f'{annual_yield:.2%}' if annual_yield > 0 else '0.00%',
-                                    'Yield Source': yield_source,
                                     'Frequency': '-',
                                     f'Annual CF ({display_currency})': f'{ccy_symbol}0.00',
                                 })
