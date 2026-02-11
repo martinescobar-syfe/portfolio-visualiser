@@ -2945,7 +2945,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             # Calculation breakdown for transparency
             if calc_breakdown:
                 with st.expander("View Calculation Breakdown", expanded=True):
-                    st.markdown("**How cash flows are calculated per ticker:**")
                     breakdown_df = pd.DataFrame(calc_breakdown)
                     st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
                     st.caption("Only tickers with 'Included' status generate cash flows. Excluded tickers (CORE, Growth, Cash, Thematic) have dividends auto-reinvested and do not produce cash payouts.")
