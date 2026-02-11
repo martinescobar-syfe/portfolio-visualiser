@@ -101,6 +101,7 @@ if 'portfolios' not in st.session_state:
         'min_weight': 0.0,
         'max_weight': 1.0,
         'cash_invested': 0.0,
+        'cash_currency': 'USD',  # Manual portfolios default to USD
         'fixed_weights': {}
     })
 

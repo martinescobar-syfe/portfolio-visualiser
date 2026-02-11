@@ -558,6 +558,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
                     st.session_state.portfolios[0]['fixed_weights'] = client_weights
                     st.session_state.portfolios[0]['cash_invested'] = total_nav
+                    st.session_state.portfolios[0]['cash_currency'] = 'SGD'  # CSV nav_in_sgd is already in SGD
                 
                     # Update dollar amounts and decimal weights dictionaries
                     st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
@@ -581,6 +582,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         'min_weight': 0.0,
                         'max_weight': 1.0,
                         'cash_invested': total_nav,
+                        'cash_currency': 'SGD',  # CSV nav_in_sgd is already in SGD
                         'fixed_weights': client_weights,
                         'dollar_amounts': client_holdings,
                         'decimal_weights': client_weights
@@ -880,6 +882,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                     st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
                     st.session_state.portfolios[0]['fixed_weights'] = client_weights
                     st.session_state.portfolios[0]['cash_invested'] = total_value
+                    st.session_state.portfolios[0]['cash_currency'] = presentation_ccy  # Use selected presentation currency
                     st.session_state.portfolios[0]['dollar_amounts'] = client_holdings_raw
                     st.session_state.portfolios[0]['decimal_weights'] = client_weights
                     
@@ -907,6 +910,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                         'min_weight': 0.0,
                         'max_weight': 1.0,
                         'cash_invested': total_value,
+                        'cash_currency': presentation_ccy,  # Use selected presentation currency
                         'fixed_weights': client_weights,
                         'dollar_amounts': client_holdings_raw,
                         'decimal_weights': client_weights
@@ -1247,6 +1251,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                         'min_weight': 0.0,
                         'max_weight': 1.0,
                         'cash_invested': lump_sum, # Use mapped lump sum
+                        'cash_currency': 'SGD',  # Recommender lump sum is in SGD
                         'target_amount': target_amount, # Target amount from goal
                         'fixed_weights': allocs,
                         'decimal_weights': allocs, # Sync
@@ -1291,6 +1296,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 'min_weight': 0.0,
                 'max_weight': 1.0,
                 'cash_invested': 0.0,
+                'cash_currency': 'USD',  # Manual portfolios default to USD
                 'fixed_weights': {}
             })
             st.rerun()
@@ -1380,15 +1386,26 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 st.session_state.portfolios[i]['min_weight'] = st.number_input(f"Min Weight", min_value=0.0, max_value=1.0, value=port['min_weight'], step=0.01, key=f"{key_prefix}_min_{i}_{st.session_state.refresh_counter}")
                 st.session_state.portfolios[i]['max_weight'] = st.number_input(f"Max Weight", min_value=0.0, max_value=1.0, value=port['max_weight'], step=0.01, key=f"{key_prefix}_max_{i}_{st.session_state.refresh_counter}")
         
-            # Cash Invested and Portfolio Target Input
-            c_cash, c_target = st.columns(2)
+            # Cash Invested, Currency, and Portfolio Target Input
+            c_cash, c_ccy, c_target = st.columns([2, 1, 2])
             with c_cash:
                 st.session_state.portfolios[i]['cash_invested'] = st.number_input(
-                    f"Cash Invested ($)", 
+                    f"Cash Invested", 
                     min_value=0.0, 
                     value=float(port.get('cash_invested', 100000.0)), 
                     step=1000.0, 
                     key=f"{key_prefix}_cash_{i}_{st.session_state.refresh_counter}"
+                )
+            
+            with c_ccy:
+                ccy_options = ['SGD', 'USD', 'HKD']
+                current_ccy = port.get('cash_currency', 'USD')
+                ccy_index = ccy_options.index(current_ccy) if current_ccy in ccy_options else 1
+                st.session_state.portfolios[i]['cash_currency'] = st.selectbox(
+                    "Currency",
+                    options=ccy_options,
+                    index=ccy_index,
+                    key=f"{key_prefix}_cash_ccy_{i}_{st.session_state.refresh_counter}"
                 )
             
             with c_target:
@@ -1719,6 +1736,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         try:
             if 'YTM / est. yield' in df_fi_metrics.index:
                 fi_tickers = df_fi_metrics.columns[df_fi_metrics.loc['YTM / est. yield'] != 0].tolist()
+                
+                # Exclude tickers that don't generate cash flow (aligned with cash flow exclusions)
+                FI_EXCLUDED_PATTERNS = [
+                    'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF
+                    'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios
+                    'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # Thematic
+                    'CUSTOM', 'STRATEGIC',  # Custom portfolios
+                ]
+                fi_tickers = [t for t in fi_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
             
                 if fi_tickers:
                     port_fi_metrics = pd.DataFrame()
@@ -1727,6 +1753,8 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     for p_name in results.keys():
                         w_df = results[p_name]['weights']
                         p_tickers = [c.replace('_wgt', '') for c in w_df.columns if c.endswith('_wgt')]
+                        # Also filter portfolio tickers
+                        p_tickers = [t for t in p_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
                         common_fi = list(set(p_tickers).intersection(fi_tickers))
                     
                         if common_fi:
@@ -2631,6 +2659,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 # Default to monthly for bonds and other income assets
                 return 'monthly'
         
+            # Currency symbol for display
+            ccy_symbol = "$"
+            if display_currency == "SGD": ccy_symbol = "S$"
+            elif display_currency == "HKD": ccy_symbol = "HK$"
+            
             # Calculate cash flows
             monthly_cash_flows = pd.DataFrame(0.0, 
                                              index=[p['name'] for idx, p in filtered_portfolios.items()],
@@ -2638,9 +2671,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             ticker_cash_flows = {}  # Track by ticker for stacked chart
         
+            # Track calculation breakdown for transparency
+            calc_breakdown = []
+            
             for idx, port in filtered_portfolios.items():
                 p_name = port['name']
                 cash_invested = port['cash_invested']
+                # Get the currency that cash_invested is denominated in
+                # CSV loaded = SGD, Manual = USD, PDF = presentation_ccy
+                cash_currency = port.get('cash_currency', 'USD')  # Default USD for backwards compatibility
             
                 # Get portfolio weights from optimization results
                 if p_name in results:
@@ -2659,55 +2698,117 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         # Skip excluded portfolios - no cash payout
                         ticker_upper = ticker.upper()
                         if any(pattern in ticker_upper for pattern in CASHFLOW_EXCLUDED_PATTERNS):
+                            calc_breakdown.append({
+                                'Portfolio': p_name,
+                                'Ticker': ticker,
+                                'Status': 'Excluded',
+                                'Weight': '-',
+                                f'Invested ({cash_currency})': '-',
+                                'Yield': '-',
+                                'Frequency': '-',
+                                f'Annual CF ({display_currency})': '-',
+                            })
                             continue
                             
                         weight_col = f"{ticker}_wgt"
                         if weight_col in latest_weights.index:
                             weight = latest_weights[weight_col]
+                            # invested_in_ticker is in cash_currency
                             invested_in_ticker = cash_invested * weight
                         
                             # Get yield - check both dividend yield and YTM
                             # All yields in Excel are in percentage format (e.g., 0.87 = 0.87%, 10.72 = 10.72%)
                             annual_yield = 0.0
+                            yield_source = 'N/A'
                             if ticker in df_fi_metrics.columns:
                                 # First try T12M dividend yield
                                 if 'T12M dividend yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
                                         annual_yield = float(yield_val) / 100  # Convert % to decimal
+                                        yield_source = 'T12M Div Yield'
                                 
                                 # Fall back to YTM if no dividend yield
                                 if annual_yield == 0 and 'YTM / est. yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
                                         annual_yield = float(yield_val) / 100  # Convert % to decimal
+                                        yield_source = 'YTM / Est. Yield'
                         
                             if annual_yield > 0 and invested_in_ticker > 0:
                                 payment_freq = get_payment_frequency(ticker)
                                 
-                                # Get ticker's base currency and convert if needed
+                                # Get ticker's base currency (currency that dividends are paid in)
                                 ticker_base_ccy = get_ticker_base_currency(ticker)
+                            
+                                # Convert invested amount from cash_currency to ticker's base currency
+                                # This is needed because the yield is applied on the ticker's NAV currency
+                                # Determine the correct target FX rate for conversion to ticker_base_ccy
+                                if ticker_base_ccy == 'SGD':
+                                    target_fx_for_ticker = ref_usdsgd
+                                elif ticker_base_ccy == 'HKD':
+                                    target_fx_for_ticker = 7.80  # Default USDHKD
+                                else:  # USD
+                                    target_fx_for_ticker = 1.0
+                                    
+                                invested_in_ticker_ccy = convert_currency(
+                                    invested_in_ticker, 
+                                    cash_currency, 
+                                    ticker_base_ccy, 
+                                    target_fx_for_ticker, 
+                                    ref_usdsgd
+                                )
                             
                                 # Store ticker-level cash flows for stacked chart
                                 ticker_key = f"{p_name} - {ticker}"
                                 if ticker_key not in ticker_cash_flows:
                                     ticker_cash_flows[ticker_key] = np.zeros(12)
+                                
+                                annual_cf_display = 0.0
                             
                                 if payment_freq == 'monthly':
-                                    monthly_payment = (invested_in_ticker * annual_yield) / 12
+                                    # Calculate payment in ticker's base currency
+                                    monthly_payment = (invested_in_ticker_ccy * annual_yield) / 12
                                     # Convert to display currency
                                     monthly_payment = convert_currency(monthly_payment, ticker_base_ccy, display_currency, fx_rate, ref_usdsgd)
+                                    annual_cf_display = monthly_payment * 12
                                     for month in range(12):
                                         monthly_cash_flows.loc[p_name, month + 1] += monthly_payment
                                         ticker_cash_flows[ticker_key][month] += monthly_payment
                                 else:  # quarterly
-                                    quarterly_payment = (invested_in_ticker * annual_yield) / 4
+                                    # Calculate payment in ticker's base currency
+                                    quarterly_payment = (invested_in_ticker_ccy * annual_yield) / 4
                                     # Convert to display currency
                                     quarterly_payment = convert_currency(quarterly_payment, ticker_base_ccy, display_currency, fx_rate, ref_usdsgd)
+                                    annual_cf_display = quarterly_payment * 4
                                     for quarter in range(4):
                                         month = (quarter * 3) + 2  # Months 3, 6, 9, 12 (index 2, 5, 8, 11)
                                         monthly_cash_flows.loc[p_name, month + 1] += quarterly_payment
                                         ticker_cash_flows[ticker_key][month] += quarterly_payment
+                                
+                                calc_breakdown.append({
+                                    'Portfolio': p_name,
+                                    'Ticker': ticker,
+                                    'Status': 'Included',
+                                    'Weight': f'{weight:.2%}',
+                                    f'Invested ({cash_currency})': f'{invested_in_ticker:,.0f}',
+                                    'Ticker Ccy': ticker_base_ccy,
+                                    'Yield': f'{annual_yield:.2%} ({yield_source})',
+                                    'Frequency': payment_freq,
+                                    f'Annual CF ({display_currency})': f'{ccy_symbol}{annual_cf_display:,.2f}',
+                                })
+                            else:
+                                calc_breakdown.append({
+                                    'Portfolio': p_name,
+                                    'Ticker': ticker,
+                                    'Status': 'No yield' if annual_yield == 0 else 'Zero weight',
+                                    'Weight': f'{weight:.2%}',
+                                    f'Invested ({cash_currency})': f'{invested_in_ticker:,.0f}',
+                                    'Ticker Ccy': get_ticker_base_currency(ticker),
+                                    'Yield': f'{annual_yield:.2%}' if annual_yield > 0 else '0.00%',
+                                    'Frequency': '-',
+                                    f'Annual CF ({display_currency})': f'{ccy_symbol}0.00',
+                                })
         
             # Store cash flow data in session_state for PDF export
             st.session_state['cashflow_data'] = ticker_cash_flows
@@ -2727,11 +2828,6 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     marker_color=colors_list[i % len(colors_list)]
                 ))
         
-            # Currency symbol for display
-            ccy_symbol = "$"
-            if display_currency == "SGD": ccy_symbol = "S$"
-            elif display_currency == "HKD": ccy_symbol = "HK$"
-            
             fig.update_layout(
                 barmode='stack',
                 title={'text': f'<b>Monthly Cash Flow Projections ({display_currency})</b>', 'font': {'size': 20, 'color': '#172B4D'}},
@@ -2780,6 +2876,14 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 st.metric(f"Total Annual Cash Flow ({display_currency})", f"{ccy_symbol}{total_annual:,.2f}")
             with col2:
                 st.metric(f"Average Monthly Cash Flow ({display_currency})", f"{ccy_symbol}{total_annual/12:,.2f}")
+            
+            # Calculation breakdown for transparency
+            if calc_breakdown:
+                with st.expander("View Calculation Breakdown", expanded=False):
+                    st.markdown("**How cash flows are calculated per ticker:**")
+                    breakdown_df = pd.DataFrame(calc_breakdown)
+                    st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+                    st.caption("Note: Only tickers with 'Included' status generate cash flows. Excluded tickers (CORE, Growth, Cash, Thematic) have dividends auto-reinvested and do not produce cash payouts.")
             
             if show_goal_breakdown and ticker_cash_flows:
                 with st.expander("📊 View Detailed Portfolio Contributions", expanded=False):
