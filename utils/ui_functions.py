@@ -2647,14 +2647,18 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     weights_df = results[p_name]['weights']
                     latest_weights = weights_df.iloc[-1]
                 
+                    # Excluded patterns for cash flow analysis (aligned with portfolio_report_generator.py)
+                    CASHFLOW_EXCLUDED_PATTERNS = [
+                        'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF - no dividend payout
+                        'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios - dividends auto-reinvested
+                        'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # Thematic - auto-reinvested
+                        'CUSTOM', 'STRATEGIC',  # Custom portfolios excluded
+                    ]
+                    
                     for ticker in port['tickers']:
-                        # Skip CORE and Thematic portfolios - dividends are auto-reinvested, no cash payout
+                        # Skip excluded portfolios - no cash payout
                         ticker_upper = ticker.upper()
-                        if ('CORE' in ticker_upper or 
-                            'CHINA GROWTH' in ticker_upper or 
-                            'ESG' in ticker_upper or 
-                            'HEALTHCARE' in ticker_upper or 
-                            'DISRUPTIVE' in ticker_upper):
+                        if any(pattern in ticker_upper for pattern in CASHFLOW_EXCLUDED_PATTERNS):
                             continue
                             
                         weight_col = f"{ticker}_wgt"
