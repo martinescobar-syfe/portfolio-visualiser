@@ -133,8 +133,17 @@ with st.expander("Load Saved Template", expanded=False):
                 valid_t = [t for t in data['tickers'] if t in available_tickers]
                 st.session_state.builder_universe = valid_t
             
-            if 'benchmark' in data and data['benchmark'] in available_tickers:
-                st.session_state.builder_benchmark = data['benchmark']
+            if 'bm_tickers' in data and 'bm_weights' in data:
+                valid_bm = [t for t in data['bm_tickers'] if t in available_tickers]
+                if valid_bm:
+                    st.session_state.builder_bm_tickers = valid_bm
+                    st.session_state.builder_bm_weights = data['bm_weights'][:len(valid_bm)]
+                    st.session_state.builder_bm_count = data.get('bm_count', len(valid_bm))
+            elif 'benchmark' in data and data['benchmark'] in available_tickers:
+                # backwards compat: single benchmark from old templates
+                st.session_state.builder_bm_tickers = [data['benchmark']]
+                st.session_state.builder_bm_weights = [1.0]
+                st.session_state.builder_bm_count = 1
 
             if 'allocation_type' in data:
                 mapping = {
@@ -202,15 +211,90 @@ with col2:
     )
 
 with col3:
-    # init benchmark if not set
-    if 'builder_benchmark' not in st.session_state:
-        st.session_state.builder_benchmark = 'ACWI' if 'ACWI' in available_tickers else available_tickers[0]
+    st.markdown("**Benchmark Configuration**")
     
-    benchmark = st.selectbox(
-        "Select Benchmark",
-        options=available_tickers,
-        key="builder_benchmark"
+    # number of benchmark components
+    if 'builder_bm_count' not in st.session_state:
+        st.session_state.builder_bm_count = 1
+    
+    num_bm = st.selectbox(
+        "Number of Benchmark Components",
+        options=[1, 2, 3, 4, 5],
+        key="builder_bm_count",
+        help="Select 1 for a single benchmark, or 2-5 for a blended benchmark."
     )
+    
+    # init benchmark tickers/weights in session state
+    if 'builder_bm_tickers' not in st.session_state:
+        st.session_state.builder_bm_tickers = ['ACWI' if 'ACWI' in available_tickers else available_tickers[0]]
+    if 'builder_bm_weights' not in st.session_state:
+        st.session_state.builder_bm_weights = [1.0]
+    
+    # adjust lists to match num_bm
+    while len(st.session_state.builder_bm_tickers) < num_bm:
+        st.session_state.builder_bm_tickers.append(available_tickers[0])
+    while len(st.session_state.builder_bm_weights) < num_bm:
+        st.session_state.builder_bm_weights.append(0.0)
+    st.session_state.builder_bm_tickers = st.session_state.builder_bm_tickers[:num_bm]
+    st.session_state.builder_bm_weights = st.session_state.builder_bm_weights[:num_bm]
+    
+    bm_tickers_selected = []
+    bm_weights_selected = []
+    total_bm_w = 0.0
+    
+    for idx in range(num_bm):
+        if num_bm == 1:
+            # simple single benchmark — just a selectbox
+            default_idx = available_tickers.index(st.session_state.builder_bm_tickers[idx]) if st.session_state.builder_bm_tickers[idx] in available_tickers else 0
+            t = st.selectbox(
+                "Select Benchmark",
+                options=available_tickers,
+                index=default_idx,
+                key=f"builder_bm_tick_{idx}"
+            )
+            bm_tickers_selected.append(t)
+            bm_weights_selected.append(1.0)
+            total_bm_w = 100.0
+        else:
+            bm_c1, bm_c2 = st.columns([3, 2])
+            with bm_c1:
+                default_idx = available_tickers.index(st.session_state.builder_bm_tickers[idx]) if st.session_state.builder_bm_tickers[idx] in available_tickers else 0
+                t = st.selectbox(
+                    f"Benchmark {idx+1}",
+                    options=available_tickers,
+                    index=default_idx,
+                    key=f"builder_bm_tick_{idx}"
+                )
+            with bm_c2:
+                w = st.number_input(
+                    f"Weight {idx+1} (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=st.session_state.builder_bm_weights[idx] * 100,
+                    step=5.0,
+                    key=f"builder_bm_wgt_{idx}",
+                    help="Fixed weight for this benchmark component. All benchmark weights must sum to 100%. These are fixed weights that remain constant throughout the backtest."
+                )
+            bm_tickers_selected.append(t)
+            bm_weights_selected.append(w / 100.0)
+            total_bm_w += w
+    
+    # update session state
+    st.session_state.builder_bm_tickers = bm_tickers_selected
+    st.session_state.builder_bm_weights = bm_weights_selected
+    
+    if num_bm > 1:
+        if abs(total_bm_w - 100.0) > 0.01:
+            st.warning(f"Benchmark weights: {total_bm_w:.1f}% (must sum to 100%)")
+        else:
+            st.success(f"Benchmark weights: {total_bm_w:.1f}%")
+    
+    # single string label for display throughout
+    if num_bm == 1:
+        benchmark_label = bm_tickers_selected[0]
+    else:
+        parts = [f"{t} {w:.0%}" for t, w in zip(bm_tickers_selected, bm_weights_selected)]
+        benchmark_label = "Blended (" + " / ".join(parts) + ")"
 
 # 2. construction settings
 st.header("2. Portfolio Construction")
@@ -321,10 +405,10 @@ with st.expander("Define Constraints", expanded=True):
         
     with cc2:
         if const_type == "Sector":
-            options = sorted(df_sector.index.unique().tolist())
+            options = sorted([str(x) for x in df_sector.index.unique().tolist() if pd.notna(x)])
             const_target = st.selectbox("Target", options)
         elif const_type == "Country":
-            options = sorted(df_country.index.unique().tolist())
+            options = sorted([str(x) for x in df_country.index.unique().tolist() if pd.notna(x)])
             const_target = st.selectbox("Target", options)
         else:
             st.selectbox(
@@ -393,20 +477,34 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
             "Monthly": list(range(1, 13))
         }
         rebal_months = rebal_map.get(rebal_freq, [4, 10])
-        all_tickers_req = list(set(selected_tickers + [benchmark]))
+        all_tickers_req = list(set(selected_tickers + bm_tickers_selected))
         
-        ret_all, ret_bm = download_data(
+        ret_all, ret_bm_raw = download_data(
             data_source="Bloomberg",
             start_date=start_date,
             end_date=end_date,
             all_tickers=all_tickers_req,
-            bm_tickers=[benchmark],
+            bm_tickers=bm_tickers_selected,
             currency=currency,
             df_sec_list=df_sec_list,
             df_fx=df_fx,
             data_path=data_path,
             df_daily_ret=df_daily_ret
         )
+        
+        # compute blended benchmark returns
+        if num_bm == 1:
+            ret_bm = ret_bm_raw[[bm_tickers_selected[0]]].copy()
+            ret_bm.columns = [benchmark_label]
+        else:
+            bm_weights_arr = np.array(bm_weights_selected)
+            valid_bm_cols = [t for t in bm_tickers_selected if t in ret_bm_raw.columns]
+            if len(valid_bm_cols) == len(bm_tickers_selected):
+                blended_ret = (ret_bm_raw[bm_tickers_selected] * bm_weights_arr).sum(axis=1)
+                ret_bm = blended_ret.to_frame(name=benchmark_label)
+            else:
+                st.error(f"Missing benchmark tickers in data: {set(bm_tickers_selected) - set(valid_bm_cols)}")
+                st.stop()
         
         if ret_all.empty:
             st.error("No data found.")
@@ -666,7 +764,10 @@ with st.expander("💾 Save Configuration as Template", expanded=False):
     if st.button("Save Template", key="builder_save_btn"):
         save_data = {
             'tickers': selected_tickers,
-            'benchmark': benchmark,
+            'benchmark': bm_tickers_selected[0],  # backwards compat
+            'bm_tickers': bm_tickers_selected,
+            'bm_weights': bm_weights_selected,
+            'bm_count': num_bm,
             'allocation_type': allocation_method,
             'rebal_freq': rebal_freq,
             'fixed_weights': st.session_state.builder_portfolio.get('fixed_weights', {}),
@@ -1047,13 +1148,13 @@ if st.session_state.builder_portfolio['results']:
     
     if show_bm_diff:
         try:
-            bm_w = pd.Series({f"{benchmark}_wgt": 1.0})
+            bm_w = pd.Series({f"{t}_wgt": w for t, w in zip(bm_tickers_selected, bm_weights_selected)})
             bm_charts = get_exposure_charts(bm_w, df_sector, df_country, df_asset_class=None)
             if bm_charts.get('sector_table') is None or bm_charts['sector_table'].empty:
-                st.warning(f"Benchmark '{benchmark}' sector/country data not found. Comparison disabled.")
+                st.warning(f"Benchmark '{benchmark_label}' sector/country data not found. Comparison disabled.")
                 bm_charts = None
         except Exception as e:
-            st.warning(f"Could not load benchmark '{benchmark}' data: {str(e)}")
+            st.warning(f"Could not load benchmark '{benchmark_label}' data: {str(e)}")
             bm_charts = None
 
     c_sec, c_ctry = st.columns(2)
