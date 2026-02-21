@@ -523,7 +523,8 @@ Given a client's portfolio diversification scores, generate exactly 3 concise, a
 **Syfe Product Context:**
 {SYFE_CONTEXT}
 
-**Output format — return ONLY valid JSON, no markdown fences:**
+**Output format — return ONLY valid JSON, no markdown fences.**
+**IMPORTANT: Do NOT use markdown formatting (no **, no *, no _) in the title or body fields. Use plain text only. Round all scores to 1 decimal place.**
 [
   {{"category": "strength"|"improvement"|"observation", "title": "Short title (max 6 words)", "body": "1-2 sentence insight."}}
 ]"""

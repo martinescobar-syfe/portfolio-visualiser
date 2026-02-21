@@ -326,14 +326,16 @@ def _get_geo_brief(geo):
     if geo.get('error'):
         return geo['error']
     rd = geo.get('region_details', {})
-    weakest = min(rd.items(), key=lambda x: x[1]['coverage'])[0] if rd else 'N/A'
-    weakest_cov = min(rd.items(), key=lambda x: x[1]['coverage'])[1]['coverage'] if rd else 0
+    if not rd:
+        return 'No geographic data available.'
+    weakest = min(rd.items(), key=lambda x: x[1]['coverage'])
+    strongest = max(rd.items(), key=lambda x: x[1]['client_weight'])
     if geo['score'] >= 7:
         return "Good global coverage across US, developed, and emerging markets."
     elif geo['score'] >= 4:
-        return f"Some gaps in {weakest} ({weakest_cov:.0%} coverage vs benchmark). Room to improve."
+        return f"Mostly in {strongest[0]} ({strongest[1]['client_weight']:.0%}). {weakest[0]} could use more coverage."
     else:
-        return f"Underweight in {weakest}. Consider broadening regional exposure."
+        return f"Concentrated in {strongest[0]} ({strongest[1]['client_weight']:.0%}). Limited exposure to other regions."
 
 
 def _get_sector_brief(sec):
