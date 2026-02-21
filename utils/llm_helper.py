@@ -460,3 +460,96 @@ def analyze_portfolio_appropriateness(api_key, client_profile, current_holdings)
 
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def generate_diversification_insights(api_key, score_result, client_weights):
+    """
+    Generate 3 AI-powered insights from diversification scores using Gemini,
+    following the instruction set in insight_generation_instructions.md.
+    """
+    import json
+
+    portfolios_list = [{"name": k, "weight": round(v, 4)}
+                       for k, v in client_weights.items()]
+
+    ac = score_result['asset_class']
+    geo = score_result['geography']
+    conc = score_result['concentration']
+    sec = score_result['sector']
+
+    input_payload = {
+        "portfolios": portfolios_list,
+        "scores": {
+            "asset_class": ac['score'],
+            "geography": geo['score'],
+            "sector": sec['score'],
+            "concentration": conc['score'],
+            "overall": score_result['composite_score'],
+        },
+        "sub_metrics": {
+            "asset_class_breadth": ac['breadth_score'],
+            "asset_class_dominance": ac['dominance_score'],
+            "asset_class_weights": list(ac['details'].values()) if ac['details'] else [],
+            "geo_weights": [d['client_weight'] for d in geo.get('region_details', {}).values()],
+            "n_holdings": conc['n_holdings'],
+            "n_effective": conc['n_eff'],
+            "hhi": conc['hhi'],
+            "max_holding_weight": max(conc.get('top_holdings', {0: 0}).values()) if conc.get('top_holdings') else 0,
+            "sector_equity_score": sec.get('equity_score'),
+            "sector_fi_score": sec.get('fi_score'),
+        },
+    }
+
+    prompt = f"""You are a portfolio insight engine for Syfe, a digital wealth manager regulated by the Monetary Authority of Singapore.
+
+Given a client's portfolio diversification scores, generate exactly 3 concise, actionable insights (1-2 sentences each).
+
+**Rules:**
+1. Always include at least one strength and at least one area for improvement.
+2. Map scores to specific, actionable Syfe portfolio suggestions (Core Equity100, Core Growth, Core Balanced, Core Defensive, Income+ Enhance, Income+ Preserve, REIT100, Cash+ Flexi, China Growth, Disruptive Technology, ESG & Clean Energy, Healthcare Innovation).
+3. Use plain English — no jargon like HHI, N_effective, or Shannon entropy. Say things like "your portfolio behaves as if it holds only X independent positions."
+4. Be specific with numbers — reference actual scores and suggest percentage ranges.
+5. Tone: friendly, professional, concise. Like a wealth advisor giving a quick portfolio health check.
+
+**Score guide:**
+- Asset Class (low < 6): suggest adding missing asset classes (bonds, REITs, cash)
+- Geography (low < 6): suggest broader regional exposure via Core portfolios
+- Sector (low < 6): suggest diversifying via Income+ or REIT100 for missing sectors
+- Concentration (low < 6): suggest broad index like Core Equity100 (3,500+ stocks)
+
+**Input:**
+{json.dumps(input_payload, indent=2)}
+
+**Syfe Product Context:**
+{SYFE_CONTEXT}
+
+**Output format — return ONLY valid JSON, no markdown fences:**
+[
+  {{"category": "strength"|"improvement"|"observation", "title": "Short title (max 6 words)", "body": "1-2 sentence insight."}}
+]"""
+
+    try:
+        genai.configure(api_key=api_key)
+        models_to_try = [
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-1.5-flash',
+        ]
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                text = response.text.strip()
+                if text.startswith('```'):
+                    text = text.split('\n', 1)[1] if '\n' in text else text[3:]
+                    text = text.rsplit('```', 1)[0]
+                return json.loads(text)
+            except Exception as e:
+                last_error = e
+                continue
+        return [{"category": "observation", "title": "Insights unavailable",
+                 "body": f"Could not generate insights: {last_error}"}]
+    except Exception as e:
+        return [{"category": "observation", "title": "Error",
+                 "body": f"Error: {e}"}]
