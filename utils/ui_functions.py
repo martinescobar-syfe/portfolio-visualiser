@@ -254,6 +254,10 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
         if fr:
             sec = fr['sector']
             st.metric("Sector Score", f"{sec['score']:.1f} / 10")
+            if sec.get('zero_sector_tickers'):
+                st.warning(f"Zero sector data: **{', '.join(sec['zero_sector_tickers'])}** — excluded from scoring")
+            if sec.get('skipped_tickers'):
+                st.warning(f"Not in sector matrix: **{', '.join(sec['skipped_tickers'])}** — excluded from scoring")
             if sec.get('unmapped_sectors'):
                 st.warning(f"No benchmark match: **{', '.join(sec['unmapped_sectors'].keys())}**")
             if sec.get('equity_score') is not None:

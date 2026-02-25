@@ -123,6 +123,18 @@ EQUITY_GICS_SECTORS = {
 
 IGNORED_SECTORS = {'Cash and/or Derivatives'}
 
+# Map GICS sector names to their BICS equivalents for FI portfolios whose
+# sector data has been updated to GICS naming (e.g. Income Enhance).
+# "Information Technology" in GICS → "Technology" in BICS, etc.
+GICS_TO_BICS_MAP = {
+    'Information Technology': 'Technology',
+    'Communication Services': 'Communications',
+    'Government': 'Government',
+}
+# Sectors that share the same name in both GICS and BICS need no mapping:
+# Financials, Industrials, Consumer Discretionary, Health Care,
+# Consumer Staples, Materials, Energy, Utilities, Real Estate.
+
 
 # ---------------------------------------------------------------------------
 # 1. Asset Class Score (40% weight)
@@ -297,6 +309,12 @@ def _classify_portfolio_type(ticker: str, df_asset_class) -> str:
             return 'cash'
         return 'equity'
 
+    # Mixed/structured portfolios that should stay in the equity bucket
+    # because they are growth-oriented products.
+    name_lower = ticker.lower()
+    if any(kw in name_lower for kw in ['balanced', 'growth', 'defensive', 'downside']):
+        return 'equity'
+
     col = df_asset_class[ticker]
     try:
         col_numeric = pd.to_numeric(col, errors='coerce').fillna(0)
@@ -363,6 +381,7 @@ def calculate_sector_score(
     fi_total = 0.0
     unmapped_sectors = {}
     skipped_tickers = []
+    zero_sector_tickers = []
 
     for ticker, port_weight in client_weights.items():
         ptype = _classify_portfolio_type(ticker, df_asset_class)
@@ -370,11 +389,31 @@ def calculate_sector_score(
         if ptype == 'cash':
             continue
 
-        if ticker not in df_sector.columns:
+        # Case-insensitive column lookup (e.g. "Blackrock" vs "BlackRock")
+        matched_col = None
+        if ticker in df_sector.columns:
+            matched_col = ticker
+        else:
+            ticker_lower = ticker.lower()
+            for col in df_sector.columns:
+                if col.lower() == ticker_lower:
+                    matched_col = col
+                    break
+
+        if matched_col is None:
             skipped_tickers.append(ticker)
             continue
 
-        sector_col = pd.to_numeric(df_sector[ticker], errors='coerce').fillna(0)
+        sector_col = pd.to_numeric(df_sector[matched_col], errors='coerce').fillna(0)
+
+        # Flag portfolios whose non-ignored sector data sums to zero
+        valid_sector_sum = sum(
+            sw for sector, sw in sector_col.items()
+            if sw > 0 and sector not in IGNORED_SECTORS
+        )
+        if valid_sector_sum == 0:
+            zero_sector_tickers.append(ticker)
+            continue
 
         if ptype in ('equity', 'reit'):
             for sector, sw in sector_col.items():
@@ -400,9 +439,27 @@ def calculate_sector_score(
             for sector, sw in sector_col.items():
                 if sw <= 0 or sector in IGNORED_SECTORS:
                     continue
-                if sector in EQUITY_GICS_SECTORS:
-                    equity_sector_weights[sector] = equity_sector_weights.get(sector, 0.0) + sw * port_weight
-                    eq_sub += sw
+                # FI portfolios may now have GICS sector names (e.g. Income
+                # Enhance updated to GICS).  Map them to BICS so they land in
+                # the FI benchmark comparison instead of the equity bucket.
+                if sector in GICS_TO_BICS_MAP:
+                    mapped = GICS_TO_BICS_MAP[sector]
+                    fi_sector_weights[mapped] = fi_sector_weights.get(mapped, 0.0) + sw * port_weight
+                    fi_sub += sw
+                elif sector in FI_SECTOR_MAP or sector in FI_SECTOR_BENCHMARK:
+                    mapped = _map_fi_sector(sector)
+                    fi_sector_weights[mapped] = fi_sector_weights.get(mapped, 0.0) + sw * port_weight
+                    if mapped not in FI_SECTOR_BENCHMARK:
+                        unmapped_sectors.setdefault(sector, []).append((ticker, sw * port_weight))
+                    fi_sub += sw
+                elif sector in EQUITY_GICS_SECTORS:
+                    # GICS sector that shares the same name in BICS (e.g.
+                    # Financials, Industrials) — route to FI bucket directly.
+                    bics_name = sector
+                    fi_sector_weights[bics_name] = fi_sector_weights.get(bics_name, 0.0) + sw * port_weight
+                    if bics_name not in FI_SECTOR_BENCHMARK:
+                        unmapped_sectors.setdefault(sector, []).append((ticker, sw * port_weight))
+                    fi_sub += sw
                 else:
                     mapped = _map_fi_sector(sector)
                     fi_sector_weights[mapped] = fi_sector_weights.get(mapped, 0.0) + sw * port_weight
@@ -418,8 +475,12 @@ def calculate_sector_score(
             return {}
         return {k: (v / total) * 100 for k, v in d.items()}
 
-    eq_pct = normalise_to_pct(equity_sector_weights, equity_total)
-    fi_pct = normalise_to_pct(fi_sector_weights, fi_total)
+    # Use actual sector weight sums so each bucket's client % sums to 100
+    eq_sector_sum = sum(equity_sector_weights.values())
+    fi_sector_sum = sum(fi_sector_weights.values())
+
+    eq_pct = normalise_to_pct(equity_sector_weights, eq_sector_sum) if eq_sector_sum > 0 else {}
+    fi_pct = normalise_to_pct(fi_sector_weights, fi_sector_sum) if fi_sector_sum > 0 else {}
 
     # Score each type against its benchmark
     def benchmark_gap_score(client_pct: dict, benchmark: dict):
@@ -453,11 +514,12 @@ def calculate_sector_score(
     if fi_total > 0:
         fi_score, fi_details = benchmark_gap_score(fi_pct, FI_SECTOR_BENCHMARK)
 
-    # Weighted combination
-    combined_total = equity_total + fi_total
-    if combined_total > 0:
-        eq_contrib = (equity_score or 0) * (equity_total / combined_total)
-        fi_contrib = (fi_score or 0) * (fi_total / combined_total)
+    # Weighted combination — use actual sector sums to avoid double-counting
+    # from equity portfolios whose FI sectors are routed to the FI bucket
+    combined_sum = eq_sector_sum + fi_sector_sum
+    if combined_sum > 0:
+        eq_contrib = (equity_score or 0) * (eq_sector_sum / combined_sum)
+        fi_contrib = (fi_score or 0) * (fi_sector_sum / combined_sum)
         score = eq_contrib + fi_contrib
     else:
         score = 0.0
@@ -472,6 +534,7 @@ def calculate_sector_score(
         'fi_details': fi_details,
         'unmapped_sectors': unmapped_sectors,
         'skipped_tickers': skipped_tickers,
+        'zero_sector_tickers': zero_sector_tickers,
     }
 
 
