@@ -16,7 +16,9 @@ def apply_syfe_layout(fig, title="", height=500):
         xaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'},
         yaxis={'showgrid': True, 'gridcolor': 'rgba(128, 128, 128, 0.2)'},
         colorway=PALETTE,
-        margin=dict(l=40, r=40, t=80, b=40)
+        margin=dict(l=40, r=40, t=80, b=40),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
     )
     return fig
 
@@ -222,8 +224,8 @@ def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
         margin=dict(l=40, r=40, t=80, b=40),
         coloraxis_showscale=show_color_scale,
         showlegend=False,
-        plot_bgcolor='white',
-        paper_bgcolor='white'
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)'
     )
     
     return fig

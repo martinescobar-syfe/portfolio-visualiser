@@ -153,6 +153,20 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
                 unsafe_allow_html=True,
             )
 
+    # Data completeness warnings (country / sector not summing to 100%)
+    data_warnings = result.get('data_warnings', [])
+    if data_warnings:
+        warning_items = "".join(f"<li>{w}</li>" for w in data_warnings)
+        st.markdown(
+            f'<div style="background:#FFF8E1;border-left:4px solid #FFC107;border-radius:8px;'
+            f'padding:14px 16px;margin:10px 0">'
+            f'<div style="font-weight:700;color:#7B6100;font-size:14px;margin-bottom:6px">'
+            f'Data Completeness Issues</div>'
+            f'<ul style="color:#333;font-size:13px;line-height:1.6;margin:0;padding-left:18px">'
+            f'{warning_items}</ul></div>',
+            unsafe_allow_html=True,
+        )
+
     # Detail panel for whichever card is selected
     selected = st.session_state.get(state_key)
     if selected is None:
@@ -271,7 +285,7 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
                                  use_container_width=True, hide_index=True)
             if sec.get('fi_score') is not None:
                 st.markdown(f"**Fixed Income** ({sec['fi_weight']:.1%}) — **{sec['fi_score']:.1f}** / 10")
-                st.caption("Benchmark: BNDW (BICS)")
+                st.caption("Benchmark: AGGU (BICS)")
                 if sec.get('fi_details'):
                     fi_rows = [{'Sector': ('⚠ ' + s if d.get('warning') else s),
                                 'Client (%)': d['client'], 'Benchmark (%)': d['benchmark'], 'Credit': d['contribution']}
@@ -675,215 +689,282 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 with st.expander("✨ Insights", expanded=True):
                      st.markdown(st.session_state['metabase_ai_analysis'])
 
-            # Two tabs: the existing exposure charts and the new diversification score
-            tab_exposures, tab_divscore = st.tabs(["Portfolio Exposures", "Diversification Score"])
+            # --- Section 1: Summary (Portfolio Type + Objective pies) ---
+            st.markdown("### 1. Summary")
+            st.markdown("#### Filter Exposures")
+            c_filter, c_dummy = st.columns([2, 1])
 
-            with tab_exposures:
-                st.markdown("#### Filter Exposures")
-                c_filter, c_dummy = st.columns([2, 1])
-                
-                with c_filter:
-                    filter_mode = st.radio(
-                        "Filter Mode", 
-                        ["Show All", "By Objective", "By Portfolio Type"], 
-                        horizontal=True,
-                        key=f"{key_prefix}_filt_mode"
+            with c_filter:
+                filter_mode = st.radio(
+                    "Filter Mode",
+                    ["Show All", "By Objective", "By Portfolio Type"],
+                    horizontal=True,
+                    key=f"{key_prefix}_filt_mode"
+                )
+
+            filtered_weights = {}
+
+            if filter_mode == "Show All":
+                filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
+            elif filter_mode == "By Objective":
+                all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
+                sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
+                for ticker, weight in client_weights.items():
+                    if get_portfolio_objective(ticker) in sel_objectives:
+                        filtered_weights[f"{ticker}_wgt"] = weight
+            elif filter_mode == "By Portfolio Type":
+                all_port_types = sorted(list(client_weights.keys()))
+                sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
+                for ticker, weight in client_weights.items():
+                    if ticker in sel_port_types:
+                        filtered_weights[f"{ticker}_wgt"] = weight
+
+            weights_series = pd.Series(filtered_weights)
+            total_wgt = weights_series.sum()
+            if total_wgt > 0:
+                weights_series = weights_series / total_wgt
+
+            if not weights_series.empty:
+                charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
+
+                if 'sector_table' in charts:
+                    st.session_state['sector_exposure'] = charts['sector_table']['Weight']
+                if 'country_table' in charts:
+                    st.session_state['country_exposure'] = charts['country_table']['Weight']
+                if 'asset_table' in charts:
+                    st.session_state['asset_class_exposure'] = charts['asset_table']['Weight']
+
+                filtered_portfolio_weights = {k.replace("_wgt", ""): v for k, v in filtered_weights.items()}
+                total_filtered = sum(filtered_portfolio_weights.values())
+                filtered_portfolio_weights_norm = {k: v / total_filtered for k, v in filtered_portfolio_weights.items()} if total_filtered > 0 else filtered_portfolio_weights
+                filtered_nav = sum(client_holdings.get(ticker, 0) for ticker in filtered_portfolio_weights.keys())
+
+                from styles.syfe_colors import get_portfolio_color, OBJECTIVE_COLORS
+                filtered_obj_allocation = {}
+                for ticker, weight in filtered_portfolio_weights_norm.items():
+                    obj = get_portfolio_objective(ticker)
+                    filtered_obj_allocation[obj] = filtered_obj_allocation.get(obj, 0) + weight
+
+                col_nav, col_objective = st.columns([1, 1])
+
+                with col_nav:
+                    st.markdown("**By Portfolio Type**")
+                    port_colors = [get_portfolio_color(name) for name in filtered_portfolio_weights_norm.keys()]
+                    fig_nav = go.Figure(data=[go.Pie(
+                        labels=list(filtered_portfolio_weights_norm.keys()),
+                        values=list(filtered_portfolio_weights_norm.values()),
+                        hole=0.4, marker=dict(colors=port_colors),
+                        textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+                    )])
+                    fig_nav.update_layout(
+                        title={'text': f'<b>NAV: ${filtered_nav:,.2f}</b>', 'font': {'size': 20}},
+                        font={'family': 'Helvetica Neue, Arial'}, height=500,
+                        margin=dict(l=40, r=40, t=80, b=40),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                     )
-                
-                filtered_weights = {}
-                
-                if filter_mode == "Show All":
-                    filtered_weights = {f"{k}_wgt": v for k, v in client_weights.items()}
-                    
-                elif filter_mode == "By Objective":
-                    all_objectives = sorted(list(set([get_portfolio_objective(ticker) for ticker in client_weights.keys()])))
-                    sel_objectives = st.multiselect("Select Objective(s)", all_objectives, default=all_objectives, key=f"{key_prefix}_filt_obj")
-                    
-                    for ticker, weight in client_weights.items():
-                        obj = get_portfolio_objective(ticker)
-                        if obj in sel_objectives:
-                            filtered_weights[f"{ticker}_wgt"] = weight
-                            
-                elif filter_mode == "By Portfolio Type":
-                    all_port_types = sorted(list(client_weights.keys()))
-                    sel_port_types = st.multiselect("Select Portfolio Type(s)", all_port_types, default=all_port_types, key=f"{key_prefix}_filt_type")
-                    
-                    for ticker, weight in client_weights.items():
-                        if ticker in sel_port_types:
-                            filtered_weights[f"{ticker}_wgt"] = weight
+                    st.plotly_chart(fig_nav, use_container_width=True, key=f"{key_prefix}_pie_nav")
+                    with st.expander("View Data"):
+                        port_df = pd.DataFrame({
+                            'Portfolio': list(filtered_portfolio_weights_norm.keys()),
+                            'Weight': list(filtered_portfolio_weights_norm.values()),
+                            'Est. Value ($)': [filtered_portfolio_weights_norm[k] * filtered_nav for k in filtered_portfolio_weights_norm.keys()]
+                        }).set_index('Portfolio')
+                        st.dataframe(port_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
 
-                weights_series = pd.Series(filtered_weights)
-                
-                # Renormalize weights so filtered view sums to 100%
-                total_wgt = weights_series.sum()
-                if total_wgt > 0:
-                    weights_series = weights_series / total_wgt
+                with col_objective:
+                    st.markdown("**By Objective**")
+                    obj_colors = [OBJECTIVE_COLORS.get(name, '#666666') for name in filtered_obj_allocation.keys()]
+                    fig_obj = go.Figure(data=[go.Pie(
+                        labels=list(filtered_obj_allocation.keys()),
+                        values=list(filtered_obj_allocation.values()),
+                        hole=0.4, marker=dict(colors=obj_colors),
+                        textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+                    )])
+                    fig_obj.update_layout(
+                        title={'text': '<b>Objective Allocation</b>', 'font': {'size': 20}},
+                        font={'family': 'Helvetica Neue, Arial'}, height=500,
+                        margin=dict(l=40, r=40, t=80, b=40),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    )
+                    st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
+                    with st.expander("View Data"):
+                        obj_df = pd.DataFrame({
+                            'Objective': list(filtered_obj_allocation.keys()),
+                            'Weight': list(filtered_obj_allocation.values()),
+                            'Est. Value ($)': [filtered_obj_allocation[k] * filtered_nav for k in filtered_obj_allocation.keys()]
+                        }).set_index('Objective')
+                        st.dataframe(obj_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
 
-                if not weights_series.empty:
-                    # Calculate all charts first
-                    charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
-                    
-                    # Store exposure data in session_state for PDF export
-                    if 'sector_table' in charts:
-                        st.session_state['sector_exposure'] = charts['sector_table']['Weight']
-                    if 'country_table' in charts:
-                        st.session_state['country_exposure'] = charts['country_table']['Weight']
-                    if 'asset_table' in charts:
-                        st.session_state['asset_class_exposure'] = charts['asset_table']['Weight']
-                    
-                    # Calculate filtered portfolio weights for display (remove _wgt suffix and renormalize)
-                    filtered_portfolio_weights = {}
-                    for k, v in filtered_weights.items():
-                        ticker = k.replace("_wgt", "")
-                        filtered_portfolio_weights[ticker] = v
-                    
-                    # Renormalize weights for the filtered selection
-                    total_filtered = sum(filtered_portfolio_weights.values())
-                    if total_filtered > 0:
-                        filtered_portfolio_weights_norm = {k: v / total_filtered for k, v in filtered_portfolio_weights.items()}
-                    else:
-                        filtered_portfolio_weights_norm = filtered_portfolio_weights
-                    
-                    # Calculate filtered NAV
-                    filtered_nav = sum(client_holdings.get(ticker, 0) for ticker in filtered_portfolio_weights.keys())
-                    
-                    # Calculate filtered objective allocation
-                    from styles.syfe_colors import get_portfolio_color, OBJECTIVE_COLORS
-                    filtered_obj_allocation = {}
-                    for ticker, weight in filtered_portfolio_weights_norm.items():
-                        obj = get_portfolio_objective(ticker)
-                        filtered_obj_allocation[obj] = filtered_obj_allocation.get(obj, 0) + weight
-                    
-                    # Row 1: NAV and Objective charts
-                    col_nav, col_objective = st.columns([1, 1])
-                    
-                    with col_nav:
-                        st.markdown("**By Portfolio Type**")
-                        port_colors = [get_portfolio_color(name) for name in filtered_portfolio_weights_norm.keys()]
-                        fig_nav = go.Figure(data=[go.Pie(
-                            labels=list(filtered_portfolio_weights_norm.keys()),
-                            values=list(filtered_portfolio_weights_norm.values()),
-                            hole=0.4,
-                            marker=dict(colors=port_colors),
-                            textinfo='none',
-                            hovertemplate='%{label}: %{value:.4f}<extra></extra>'
-                        )])
-                        fig_nav.update_layout(
-                            title={'text': f'<b>NAV: ${filtered_nav:,.2f}</b>', 'font': {'size': 20}},
-                            font={'family': 'Helvetica Neue, Arial'},
-                            height=500,
-                            margin=dict(l=40, r=40, t=80, b=40)
-                        )
-                        st.plotly_chart(fig_nav, use_container_width=True, key=f"{key_prefix}_pie_nav")
-                        
-                        with st.expander("View Data"):
-                            port_df = pd.DataFrame({
-                                'Portfolio': list(filtered_portfolio_weights_norm.keys()),
-                                'Weight': list(filtered_portfolio_weights_norm.values()),
-                                'Est. Value ($)': [filtered_portfolio_weights_norm[k] * filtered_nav for k in filtered_portfolio_weights_norm.keys()]
-                            }).set_index('Portfolio')
-                            st.dataframe(
-                                port_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                use_container_width=True
+                st.markdown("### 2. Client Exposures")
+
+                # --- Section 2: Diversification Score (left) + Exposure Tabs (right) ---
+                from utils.diversification_score import calculate_diversification_score, WEIGHTS
+                from styles.syfe_colors import DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE
+
+                div_result = calculate_diversification_score(
+                    client_weights, df_asset_class, df_sector, df_country, df_underlying
+                )
+                composite = div_result['composite_score']
+                sub_labels = ['Asset Class', 'Geography', 'Sector', 'Concentration']
+                sub_keys = ['asset_class', 'geography', 'sector', 'concentration']
+                weight_keys = ['asset', 'geo', 'sector', 'conc']
+                sub_scores = [div_result[k]['score'] if div_result[k].get('score') is not None else 0 for k in sub_keys]
+                sub_weights_vals = [WEIGHTS[k] for k in weight_keys]
+                slice_colors = [DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE]
+
+                def _score_rating(s):
+                    if s >= 8: return 'Excellent'
+                    if s >= 6: return 'Good'
+                    if s >= 4: return 'Fair'
+                    return 'Needs Work'
+
+                col_left, col_right = st.columns([2, 3])
+
+                # --- LEFT: Composite donut + insights ---
+                with col_left:
+                    fig_donut = go.Figure(data=[go.Pie(
+                        labels=[f'{l}  ({s:.1f})' for l, s in zip(sub_labels, sub_scores)],
+                        values=[w * s for w, s in zip(sub_weights_vals, sub_scores)],
+                        hole=0.7,
+                        marker=dict(colors=slice_colors, line=dict(color='white', width=2)),
+                        textinfo='none',
+                        hovertemplate='%{label}<extra></extra>',
+                        sort=False,
+                        direction='clockwise',
+                    )])
+                    fig_donut.update_layout(
+                        showlegend=True,
+                        legend=dict(
+                            orientation='h', yanchor='top', y=-0.02, xanchor='center', x=0.5,
+                            font=dict(size=11, color='#555'),
+                            itemsizing='constant', itemwidth=30,
+                        ),
+                        height=340,
+                        margin=dict(l=5, r=5, t=5, b=60),
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        annotations=[dict(
+                            text=f'<b style="font-size:40px">{composite:.1f}</b>'
+                                 f'<b style="font-size:16px;color:#172B4D"> /10</b>',
+                            x=0.5, y=0.5, font_size=16, showarrow=False, font_color='#172B4D',
+                        )],
+                    )
+                    st.plotly_chart(fig_donut, use_container_width=True, key=f"{key_prefix}_div_donut")
+
+                    # AI insights
+                    insight_key = f"{key_prefix}_div_insights"
+                    if insight_key not in st.session_state:
+                        with st.spinner("Generating insights..."):
+                            from utils.llm_helper import generate_diversification_insights
+                            api_key = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
+                            st.session_state[insight_key] = generate_diversification_insights(api_key, div_result, client_weights)
+
+                    if st.session_state.get(insight_key):
+                        CATEGORY_STYLES = {
+                            'strength': ('#E8F5E9', '#2E7D32', '#172B4D'),
+                            'improvement': ('#FFF3E0', '#E65100', '#172B4D'),
+                            'observation': ('#E3F2FD', '#0052CC', '#172B4D'),
+                        }
+                        for insight in st.session_state[insight_key]:
+                            cat = insight.get('category', 'observation')
+                            bg, accent, tc = CATEGORY_STYLES.get(cat, CATEGORY_STYLES['observation'])
+                            st.markdown(
+                                f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
+                                f'<div style="font-weight:700;color:{tc};font-size:13px;margin-bottom:3px">{insight.get("title","")}</div>'
+                                f'<div style="color:#333;font-size:12px;line-height:1.4">{insight.get("body","")}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
                             )
-                    
-                    with col_objective:
-                        st.markdown("**By Objective**")
-                        obj_colors = [OBJECTIVE_COLORS.get(name, '#666666') for name in filtered_obj_allocation.keys()]
-                        fig_obj = go.Figure(data=[go.Pie(
-                            labels=list(filtered_obj_allocation.keys()),
-                            values=list(filtered_obj_allocation.values()),
-                            hole=0.4,
-                            marker=dict(colors=obj_colors),
-                            textinfo='none',
-                            hovertemplate='%{label}: %{value:.4f}<extra></extra>'
-                        )])
-                        fig_obj.update_layout(
-                            title={'text': '<b>Objective Allocation</b>', 'font': {'size': 20}},
-                            font={'family': 'Helvetica Neue, Arial'},
-                            height=500,
-                            margin=dict(l=40, r=40, t=80, b=40)
+
+                    # Data completeness warnings
+                    data_warnings = div_result.get('data_warnings', [])
+                    if data_warnings:
+                        warning_items = "".join(f"<li>{w}</li>" for w in data_warnings)
+                        st.markdown(
+                            f'<div style="background:#FFF8E1;border-left:4px solid #FFC107;border-radius:8px;'
+                            f'padding:12px 14px;margin:8px 0">'
+                            f'<div style="font-weight:700;color:#7B6100;font-size:13px;margin-bottom:4px">'
+                            f'Data Completeness Issues</div>'
+                            f'<ul style="color:#333;font-size:12px;line-height:1.5;margin:0;padding-left:16px">'
+                            f'{warning_items}</ul></div>',
+                            unsafe_allow_html=True,
                         )
-                        st.plotly_chart(fig_obj, use_container_width=True, key=f"{key_prefix}_pie_obj")
-                        
-                        with st.expander("View Data"):
-                            obj_df = pd.DataFrame({
-                                'Objective': list(filtered_obj_allocation.keys()),
-                                'Weight': list(filtered_obj_allocation.values()),
-                                'Est. Value ($)': [filtered_obj_allocation[k] * filtered_nav for k in filtered_obj_allocation.keys()]
-                            }).set_index('Objective')
-                            st.dataframe(
-                                obj_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                use_container_width=True
-                            )
-                    
-                    # Row 2: Asset Class and Top Holdings
-                    col_asset, col_holdings = st.columns([1, 1])
-                    
-                    with col_asset:
-                        st.markdown("**Asset Class Allocation**")
+
+                # --- RIGHT: Tabbed exposure charts with sub-scores ---
+                with col_right:
+                    tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
+
+                    with tab_aa:
+                        score_aa = sub_scores[0]
+                        st.markdown(
+                            f'<div style="text-align:center;padding:8px 0">'
+                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[0]}">{score_aa:.1f}</span>'
+                            f'<span style="font-size:14px;color:#999"> / 10</span>'
+                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_aa)}</span>'
+                            f'</div>', unsafe_allow_html=True)
                         if 'asset_pie' in charts:
-                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_pie_asset_exp")
+                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_tab_asset_pie")
                             with st.expander("View Data"):
                                 st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Asset Class data unavailable.")
-                    
-                    with col_holdings:
+                        st.caption(_get_asset_brief(div_result['asset_class']))
+
+                    with tab_geo:
+                        score_geo = sub_scores[1]
+                        st.markdown(
+                            f'<div style="text-align:center;padding:8px 0">'
+                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[1]}">{score_geo:.1f}</span>'
+                            f'<span style="font-size:14px;color:#999"> / 10</span>'
+                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_geo)}</span>'
+                            f'</div>', unsafe_allow_html=True)
+                        if 'country_pie' in charts:
+                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_tab_country_pie")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
+                        st.caption(_get_geo_brief(div_result['geography']))
+
+                    with tab_sec:
+                        score_sec = sub_scores[2]
+                        st.markdown(
+                            f'<div style="text-align:center;padding:8px 0">'
+                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[2]}">{score_sec:.1f}</span>'
+                            f'<span style="font-size:14px;color:#999"> / 10</span>'
+                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_sec)}</span>'
+                            f'</div>', unsafe_allow_html=True)
+                        if 'sector_pie' in charts:
+                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_tab_sector_pie")
+                            with st.expander("View Data"):
+                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
+                        st.caption(_get_sector_brief(div_result['sector']))
+
+                    with tab_conc:
+                        score_conc = sub_scores[3]
+                        st.markdown(
+                            f'<div style="text-align:center;padding:8px 0">'
+                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[3]}">{score_conc:.1f}</span>'
+                            f'<span style="font-size:14px;color:#999"> / 10</span>'
+                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_conc)}</span>'
+                            f'</div>', unsafe_allow_html=True)
                         t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_client")
-                        
                         if df_underlying is not None:
                             conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
                             if not conc_raw.empty:
-                                conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
-                                conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
-                                total_conc = conc_df['Weight'].sum()
-                                
                                 from utils.plotting import plot_horizontal_bar_chart
+                                total_conc = conc_raw.head(t_topn).sum()
                                 fig_top_bar = plot_horizontal_bar_chart(
                                     conc_raw.head(t_topn),
                                     title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)'
                                 )
-                                st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_bar_top_holdings_client")
-                                
+                                st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_tab_conc_bar")
                                 with st.expander("View Data"):
-                                    st.dataframe(
-                                        conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                        use_container_width=True
-                                    )
+                                    conc_df = conc_raw.head(t_topn).to_frame(name='Weight')
+                                    conc_df['Est. Value ($)'] = conc_df['Weight'] * total_nav
+                                    st.dataframe(conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
                             else:
                                 st.warning("No underlying holdings found.")
-                        else:
-                            st.info("Concentration data not available.")
-                    
-                    # Row 3: Sector and Country
-                    col_sector, col_country = st.columns([1, 1])
-                    
-                    with col_sector:
-                        st.markdown("**Sector**")
-                        if 'sector_pie' in charts:
-                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_pie_sector")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Sector data unavailable.")
-                    
-                    with col_country:
-                        st.markdown("**Country**")
-                        if 'country_pie' in charts:
-                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_pie_country")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                        else:
-                            st.info("Country data unavailable.")
+                        st.caption(_get_conc_brief(div_result['concentration']))
 
-                else:
-                    st.warning("No data matches the selected filters.")
-
-            with tab_divscore:
-                _render_diversification_score(
-                    client_weights, df_asset_class, df_sector, df_country, df_underlying, key_prefix
-                )
+            else:
+                st.warning("No data matches the selected filters.")
 
             st.divider()
 
