@@ -3474,19 +3474,25 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             selected_portfolio = next((p for p in st.session_state.portfolios if p['name'] == selected_portfolio_name), None)
             
             if selected_portfolio and 'tickers' in selected_portfolio and selected_portfolio['tickers']:
-                col1, col2 = st.columns(2)
+                col_method, col_target, col_horizon = st.columns(3)
                 
-                with col1:
+                with col_method:
+                    forecast_method = st.selectbox(
+                        "Forecast Methodology",
+                        ["Deterministic Analytical", "Monte Carlo", "Monte Carlo + GARCH"],
+                        key=f"{key_prefix}_forecast_method"
+                    )
+                
+                with col_target:
                     default_target = float(selected_portfolio.get('target_amount', 0.0))
                     if default_target == 0:
                         default_target = float(selected_portfolio.get('cash_invested', 1000000.0))
                     target_goal = st.number_input(
                         "Target Goal Value ($)", min_value=0, value=int(default_target), step=1000,
-                        format="%d",
-                        key=f"{key_prefix}_target_goal_{selected_portfolio['id']}"
+                        format="%d", key=f"{key_prefix}_target_goal_{selected_portfolio['id']}"
                     )
                 
-                with col2:
+                with col_horizon:
                     default_horizon = selected_portfolio.get('horizon', 10)
                     time_horizon = st.slider(
                         "Time Horizon (Years)", min_value=1, max_value=30, value=int(default_horizon),
@@ -3502,33 +3508,50 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     if not solve_for_payment:
                         monthly_contribution = st.number_input(
                             "Monthly Contribution ($)", min_value=0, value=0, step=100,
-                            format="%d",
-                            key=f"{key_prefix}_monthly_contrib"
+                            format="%d", key=f"{key_prefix}_monthly_contrib"
                         )
+                        solve_probability = None
                     else:
                         monthly_contribution = None
+                        solve_probability = st.select_slider(
+                            "Target probability of meeting goal",
+                            options=[50, 60, 70, 80, 90, 95],
+                            value=80,
+                            format_func=lambda x: f"{x}%",
+                            key=f"{key_prefix}_solve_prob"
+                        )
                 
                 with col5:
                     initial_value = selected_portfolio.get('cash_invested', 100000.0)
                     st.metric("Current Portfolio Value", f"${initial_value:,.2f}")
                 
                 if st.button("Calculate Projection", type="primary", key=f"{key_prefix}_calc_forecast"):
-                    with st.spinner("Running deterministic forecast..."):
+                    with st.spinner(f"Running {forecast_method} forecast..."):
                         import math
                         from scipy.stats import norm as scipy_norm
                         
-                        # Get portfolio weights
-                        if 'fixed_weights' in selected_portfolio:
-                            weights = selected_portfolio['fixed_weights']
-                        elif 'decimal_weights' in selected_portfolio:
-                            weights = selected_portfolio['decimal_weights']
-                        else:
-                            st.error("Portfolio weights not found")
-                            weights = None
+                        # Try all possible weight sources
+                        weights = None
+                        for key in ['fixed_weights', 'decimal_weights', 'dollar_amounts']:
+                            w = selected_portfolio.get(key)
+                            if w and isinstance(w, dict) and len(w) > 0:
+                                if key == 'dollar_amounts':
+                                    # Convert dollar amounts to weights
+                                    total = sum(w.values())
+                                    weights = {k: v/total for k, v in w.items()} if total > 0 else None
+                                else:
+                                    weights = w
+                                break
                         
-                        if weights is not None:
+                        # Last resort: equal weight from tickers
+                        if not weights and selected_portfolio.get('tickers'):
+                            tickers = selected_portfolio['tickers']
+                            weights = {t: 1.0/len(tickers) for t in tickers}
+                        
+                        if not weights:
+                            st.error("Portfolio weights not found. Please set up portfolio allocations first.")
+                        else:
                             try:
-                                # Get daily return data
                                 ret_data = None
                                 if 'optimization_results' in st.session_state and st.session_state.optimization_results:
                                     ret_data = st.session_state.optimization_results.get('ret_all')
@@ -3536,7 +3559,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 if ret_data is None or ret_data.empty:
                                     st.error("No return data available. Please run the portfolio analysis first.")
                                 else:
-                                    # Build portfolio daily returns: R_p = sum(w_i * r_i)
+                                    # Build portfolio daily returns
                                     portfolio_daily_ret = pd.Series(0.0, index=ret_data.index)
                                     valid_tickers = []
                                     for ticker, weight in weights.items():
@@ -3547,105 +3570,239 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     if len(valid_tickers) == 0:
                                         st.error("No matching tickers found in return data.")
                                     else:
-                                        # Deterministic analytical forecast (adapted from forecast_reference.py)
-                                        # Uses exponentially-weighted mean and annualised vol from daily data
                                         TRADING_DAYS = 252
-                                        HALFLIFE_DAYS = 35  # ~7 weeks worth of trading days
-                                        
-                                        # Compute daily log returns for the portfolio
-                                        daily_nav = (1 + portfolio_daily_ret).cumprod() * 100
-                                        daily_log_ret = np.log(daily_nav / daily_nav.shift(1)).dropna()
-                                        
-                                        # Exponential decay weights (most recent data weighted more)
-                                        decay = 1 - math.exp(np.log(0.5) / HALFLIFE_DAYS / TRADING_DAYS)
-                                        n = len(daily_log_ret)
-                                        exp_wgt = np.zeros(n)
-                                        exp_wgt[-1] = decay
-                                        for i in range(n - 2, -1, -1):
-                                            exp_wgt[i] = exp_wgt[i + 1] * (1 - decay)
-                                        
-                                        # Exponentially-weighted annualised expected return
-                                        expected_annual_return = np.dot(daily_log_ret.values, exp_wgt) * TRADING_DAYS / exp_wgt.sum()
-                                        
-                                        # Annualised standard deviation
-                                        annual_stdev = daily_log_ret.std() * np.sqrt(TRADING_DAYS)
-                                        
-                                        # Project monthly for the time horizon
+                                        HALFLIFE_DAYS = 35
+                                        garch_annual_vol = None
+                                        SEED = 42
+                                        N_SIMS = 10000
                                         months_total = time_horizon * 12
                                         months = np.arange(0, months_total + 1)
                                         
-                                        # 5th, 50th, 95th percentiles (conservative, likely, optimistic)
-                                        conservative = np.ones(len(months)) * 100.0
-                                        likely = np.ones(len(months)) * 100.0
-                                        optimistic = np.ones(len(months)) * 100.0
+                                        # Use simple daily returns (same as optimiser)
+                                        daily_ret_clean = portfolio_daily_ret.dropna()
                                         
-                                        m_vec = months[1:]
-                                        drift = (m_vec / 12) * expected_annual_return
-                                        vol = np.sqrt(m_vec / 12) * annual_stdev
+
                                         
-                                        conservative[1:] = np.exp(drift + vol * scipy_norm.ppf(0.05)) * 100
-                                        likely[1:] = np.exp(drift + vol * scipy_norm.ppf(0.50)) * 100
-                                        optimistic[1:] = np.exp(drift + vol * scipy_norm.ppf(0.95)) * 100
+                                        # Common: exponentially-weighted expected annual return
+                                        decay = 1 - math.exp(np.log(0.5) / HALFLIFE_DAYS / TRADING_DAYS)
+                                        n_obs = len(daily_ret_clean)
+                                        exp_wgt = np.zeros(n_obs)
+                                        exp_wgt[-1] = decay
+                                        for idx in range(n_obs - 2, -1, -1):
+                                            exp_wgt[idx] = exp_wgt[idx + 1] * (1 - decay)
+                                        weighted_daily = np.dot(daily_ret_clean.values, exp_wgt) / exp_wgt.sum()
+                                        expected_annual_return = (1 + weighted_daily) ** TRADING_DAYS - 1
                                         
-                                        # Scale from index (100 base) to actual portfolio value
-                                        # Include monthly contributions in the likely scenario
+                                        # Common: base annualised vol from full history
+                                        annual_stdev = daily_ret_clean.std() * np.sqrt(TRADING_DAYS)
+                                        
                                         mc = monthly_contribution if monthly_contribution else 0.0
                                         
-                                        # If solving for payment, use the likely (median) scenario
-                                        if solve_for_payment:
-                                            # Median final multiplier
-                                            median_annual = np.exp(expected_annual_return) - 1  # convert log to simple
-                                            future_value_of_initial = initial_value * (likely[-1] / 100.0)
-                                            gap = target_goal - future_value_of_initial
+                                        # Convert to log-space for the analytical/MC formulas
+                                        log_annual_return = np.log(1 + expected_annual_return)
+                                        
+                                        if forecast_method == "Deterministic Analytical":
+                                            conservative = np.ones(len(months)) * 100.0
+                                            likely = np.ones(len(months)) * 100.0
+                                            optimistic = np.ones(len(months)) * 100.0
                                             
-                                            if median_annual > 0:
-                                                annuity_factor = (((1 + median_annual) ** time_horizon - 1) / median_annual) * (1 + median_annual)
+                                            m_vec = months[1:]
+                                            drift = (m_vec / 12) * log_annual_return
+                                            vol = np.sqrt(m_vec / 12) * annual_stdev
+                                            
+                                            conservative[1:] = np.exp(drift + vol * scipy_norm.ppf(0.05)) * 100
+                                            likely[1:] = np.exp(drift + vol * scipy_norm.ppf(0.50)) * 100
+                                            optimistic[1:] = np.exp(drift + vol * scipy_norm.ppf(0.95)) * 100
+                                            
+                                            percentiles = {5: conservative, 50: likely, 95: optimistic}
+                                            method_label = "Deterministic Analytical"
+                                        
+                                        elif forecast_method == "Monte Carlo":
+                                            # Monte Carlo with fixed seed, constant vol
+                                            rng = np.random.RandomState(SEED)
+                                            monthly_mu = log_annual_return / 12
+                                            monthly_sigma = annual_stdev / np.sqrt(12)
+                                            
+                                            sims = np.zeros((N_SIMS, len(months)))
+                                            sims[:, 0] = 100.0
+                                            for m in range(1, len(months)):
+                                                z = rng.standard_normal(N_SIMS)
+                                                monthly_ret = np.exp(monthly_mu - 0.5 * monthly_sigma**2 + monthly_sigma * z)
+                                                sims[:, m] = sims[:, m-1] * monthly_ret
+                                            
+                                            percentiles = {}
+                                            for p in [5, 10, 25, 50, 75, 90, 95]:
+                                                percentiles[p] = np.percentile(sims, p, axis=0)
+                                            
+                                            method_label = "Monte Carlo (10,000 simulations)"
+                                        
+                                        elif forecast_method == "Monte Carlo + GARCH":
+                                            from arch import arch_model
+                                            
+                                            # Feed simple daily returns scaled to % (arch works best in 1-1000 range)
+                                            scaled_ret = daily_ret_clean.values * 100
+                                            
+                                            garch = arch_model(scaled_ret, vol='Garch', p=1, q=1, mean='Constant', dist='normal')
+                                            garch_fit = garch.fit(disp='off')
+                                            
+                                            # Use GARCH long-run unconditional variance for multi-year forecasts
+                                            # omega / (1 - alpha - beta) gives the unconditional daily variance
+                                            omega = garch_fit.params['omega']
+                                            alpha = garch_fit.params['alpha[1]']
+                                            beta = garch_fit.params['beta[1]']
+                                            persistence = alpha + beta
+                                            
+                                            if persistence < 1:
+                                                uncond_var = omega / (1 - persistence)  # long-run daily variance in %^2
+                                                garch_annual_vol = np.sqrt(uncond_var) * np.sqrt(TRADING_DAYS) / 100
+                                            else:
+                                                garch_annual_vol = annual_stdev  # fallback to historical if non-stationary
+                                            
+                                            rng = np.random.RandomState(SEED)
+                                            monthly_mu = log_annual_return / 12
+                                            monthly_sigma = garch_annual_vol / np.sqrt(12)
+                                            
+                                            sims = np.zeros((N_SIMS, len(months)))
+                                            sims[:, 0] = 100.0
+                                            for m in range(1, len(months)):
+                                                z = rng.standard_normal(N_SIMS)
+                                                monthly_ret = np.exp(monthly_mu - 0.5 * monthly_sigma**2 + monthly_sigma * z)
+                                                sims[:, m] = sims[:, m-1] * monthly_ret
+                                            
+                                            percentiles = {}
+                                            for p in [5, 10, 25, 50, 75, 90, 95]:
+                                                percentiles[p] = np.percentile(sims, p, axis=0)
+                                            
+                                            method_label = "Monte Carlo + GARCH"
+                                        
+                                        # Helper to convert an index path to dollar values with monthly contributions
+                                        def build_projection(index_path, initial, monthly_c):
+                                            vals = [initial]
+                                            for m_idx in range(1, len(index_path)):
+                                                growth = index_path[m_idx] / index_path[m_idx - 1]
+                                                vals.append(vals[-1] * growth + monthly_c)
+                                            return np.array(vals)
+                                        
+                                        median_annual_simple = expected_annual_return  # already in simple return space
+                                        
+                                        if solve_for_payment and forecast_method in ("Monte Carlo", "Monte Carlo + GARCH"):
+                                            # Binary search: find monthly contribution where
+                                            # P(final_value >= target) = solve_probability%
+                                            
+                                            def _calc_prob(mc_test, n_sample=2000):
+                                                finals = np.array([
+                                                    build_projection(sims[s], initial_value, mc_test)[-1]
+                                                    for s in range(min(N_SIMS, n_sample))
+                                                ])
+                                                return (finals >= target_goal).mean() * 100
+                                            
+                                            # Solve for each probability level
+                                            prob_levels = [50, 60, 70, 80, 90, 95]
+                                            solved_payments = {}
+                                            
+                                            for plev in prob_levels:
+                                                if _calc_prob(0) >= plev:
+                                                    solved_payments[plev] = 0.0
+                                                    continue
+                                                lo, hi = 0.0, target_goal / max(1, months_total)
+                                                while _calc_prob(hi) < plev and hi < target_goal:
+                                                    hi *= 2
+                                                for _ in range(25):
+                                                    mid = (lo + hi) / 2
+                                                    if _calc_prob(mid) >= plev:
+                                                        hi = mid
+                                                    else:
+                                                        lo = mid
+                                                solved_payments[plev] = hi
+                                            
+                                            mc = solved_payments.get(solve_probability, 0)
+                                            monthly_contribution = mc
+                                            
+                                            st.info(f"Required monthly contribution at **{solve_probability}% probability**: **${mc:,.0f}**")
+                                            
+                                            with st.expander("View all probability levels"):
+                                                prob_rows = []
+                                                for plev in prob_levels:
+                                                    pmt = solved_payments[plev]
+                                                    marker = " <<<" if plev == solve_probability else ""
+                                                    prob_rows.append({
+                                                        "Probability": f"{plev}%",
+                                                        "Monthly Payment": f"${pmt:,.0f}",
+                                                        "": marker,
+                                                    })
+                                                st.dataframe(pd.DataFrame(prob_rows), use_container_width=True, hide_index=True)
+                                        
+                                        elif solve_for_payment:
+                                            # Deterministic: use percentile path matching solve_probability
+                                            target_pctile = 100 - (solve_probability or 50)  # 80% prob = use 20th percentile path
+                                            solver_path = percentiles.get(target_pctile, percentiles[50])
+                                            future_value_of_initial = initial_value * (solver_path[-1] / 100.0)
+                                            gap = target_goal - future_value_of_initial
+                                            if median_annual_simple > 0:
+                                                annuity_factor = (((1 + median_annual_simple) ** time_horizon - 1) / median_annual_simple) * (1 + median_annual_simple)
                                                 required_monthly = (gap / annuity_factor) / 12 if annuity_factor > 0 else 0
                                             else:
                                                 required_monthly = gap / (time_horizon * 12) if time_horizon > 0 else 0
-                                            
                                             mc = max(0, required_monthly)
                                             monthly_contribution = mc
-                                            st.info(f"Required monthly contribution to meet goal (median scenario): **${mc:,.2f}**")
+                                            st.info(f"Required monthly contribution (deterministic): **${mc:,.0f}**")
                                         
-                                        # Build actual projected values with contributions
-                                        def build_projection(index_path, initial, monthly_c):
-                                            vals = [initial]
-                                            for m in range(1, len(index_path)):
-                                                growth_factor = index_path[m] / index_path[m - 1]
-                                                vals.append(vals[-1] * growth_factor + monthly_c)
-                                            return np.array(vals)
+
                                         
-                                        proj_conservative = build_projection(conservative, initial_value, mc)
-                                        proj_likely = build_projection(likely, initial_value, mc)
-                                        proj_optimistic = build_projection(optimistic, initial_value, mc)
-                                        
+                                        projected = {p: build_projection(path, initial_value, mc) for p, path in percentiles.items()}
                                         years_array = months / 12.0
                                         
-                                        # Chart
+                                        # Fan chart
                                         fig = go.Figure()
-                                        fig.add_trace(go.Scatter(
-                                            x=years_array, y=proj_optimistic, mode='lines',
-                                            name='Optimistic (95th %ile)',
-                                            line=dict(color='#36B37E', width=2, dash='dot'),
-                                        ))
-                                        fig.add_trace(go.Scatter(
-                                            x=years_array, y=proj_likely, mode='lines',
-                                            name='Likely (Median)',
-                                            line=dict(color='#0052CC', width=3),
-                                        ))
-                                        fig.add_trace(go.Scatter(
-                                            x=years_array, y=proj_conservative, mode='lines',
-                                            name='Conservative (5th %ile)',
-                                            line=dict(color='#FF5630', width=2, dash='dot'),
-                                        ))
+                                        
+                                        if len(percentiles) > 3:
+                                            # Monte Carlo fan chart: fill between percentile bands
+                                            fig.add_trace(go.Scatter(
+                                                x=np.concatenate([years_array, years_array[::-1]]),
+                                                y=np.concatenate([projected[95], projected[5][::-1]]),
+                                                fill='toself', fillcolor='rgba(0,82,204,0.08)',
+                                                line=dict(width=0), name='5th–95th %ile', showlegend=True, hoverinfo='skip',
+                                            ))
+                                            fig.add_trace(go.Scatter(
+                                                x=np.concatenate([years_array, years_array[::-1]]),
+                                                y=np.concatenate([projected[75], projected[25][::-1]]),
+                                                fill='toself', fillcolor='rgba(0,82,204,0.15)',
+                                                line=dict(width=0), name='25th–75th %ile', showlegend=True, hoverinfo='skip',
+                                            ))
+                                            fig.add_trace(go.Scatter(
+                                                x=years_array, y=projected[50], mode='lines',
+                                                name='Median', line=dict(color='#0052CC', width=3),
+                                            ))
+                                            fig.add_trace(go.Scatter(
+                                                x=years_array, y=projected[5], mode='lines',
+                                                name='5th %ile', line=dict(color='#FF5630', width=1, dash='dot'),
+                                            ))
+                                            fig.add_trace(go.Scatter(
+                                                x=years_array, y=projected[95], mode='lines',
+                                                name='95th %ile', line=dict(color='#36B37E', width=1, dash='dot'),
+                                            ))
+                                        else:
+                                            # Deterministic: 3 lines
+                                            fig.add_trace(go.Scatter(
+                                                x=years_array, y=projected[95], mode='lines',
+                                                name='Optimistic (95th)', line=dict(color='#36B37E', width=2, dash='dot'),
+                                            ))
+                                            fig.add_trace(go.Scatter(
+                                                x=years_array, y=projected[50], mode='lines',
+                                                name='Likely (Median)', line=dict(color='#0052CC', width=3),
+                                            ))
+                                            fig.add_trace(go.Scatter(
+                                                x=years_array, y=projected[5], mode='lines',
+                                                name='Conservative (5th)', line=dict(color='#FF5630', width=2, dash='dot'),
+                                            ))
+                                        
                                         fig.add_trace(go.Scatter(
                                             x=years_array, y=[target_goal] * len(years_array), mode='lines',
                                             name='Target Goal', line=dict(color='#999', dash='dash', width=1),
                                         ))
                                         
                                         fig.update_layout(
-                                            title=f"Growth Forecast — {selected_portfolio_name}",
+                                            title=f"Growth Forecast — {selected_portfolio_name}<br><sub>{method_label}</sub>",
                                             xaxis_title="Years", yaxis_title="Portfolio Value ($)",
                                             hovermode='x unified', yaxis=dict(tickformat='$,.0f'),
                                             font=dict(family='Helvetica Neue'),
@@ -3653,28 +3810,37 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_forecast_chart")
                                         
                                         # Summary metrics
-                                        median_annual_simple = np.exp(expected_annual_return) - 1
-                                        final_likely = proj_likely[-1]
-                                        final_conservative = proj_conservative[-1]
-                                        final_optimistic = proj_optimistic[-1]
+                                        final_median = projected[50][-1]
+                                        final_conservative = projected[5][-1]
+                                        final_optimistic = projected[95][-1]
                                         total_contributions = mc * months_total
                                         
                                         c1, c2, c3, c4 = st.columns(4)
                                         with c1:
                                             st.metric("Expected Return (ann.)", f"{median_annual_simple*100:.2f}%")
                                         with c2:
-                                            st.metric("Annualised Volatility", f"{annual_stdev*100:.1f}%")
+                                            vol_display = garch_annual_vol if (forecast_method == "Monte Carlo + GARCH" and garch_annual_vol is not None) else annual_stdev
+                                            st.metric("Annualised Volatility", f"{vol_display*100:.1f}%")
                                         with c3:
-                                            gap = final_likely - target_goal
+                                            gap = final_median - target_goal
                                             st.metric("Gap to Goal (Median)", f"${gap:,.0f}", f"{gap/target_goal*100:+.1f}%" if target_goal > 0 else "")
                                         with c4:
                                             st.metric("Total Contributions", f"${total_contributions:,.0f}")
                                         
-                                        # Range summary
-
+                                        # Probability of hitting target (Monte Carlo only)
+                                        if forecast_method in ("Monte Carlo", "Monte Carlo + GARCH"):
+                                            final_values = np.array([build_projection(sims[i], initial_value, mc)[-1] for i in range(min(N_SIMS, 1000))])
+                                            prob_hit = (final_values >= target_goal).mean() * 100
+                                            st.markdown(
+                                                f'<div style="background:#E3F2FD;border-left:4px solid #0052CC;border-radius:8px;padding:14px 16px;margin:8px 0">'
+                                                f'<span style="font-weight:700;color:#172B4D">Probability of reaching goal:</span> '
+                                                f'<span style="font-size:20px;font-weight:800;color:#0052CC">{prob_hit:.0f}%</span>'
+                                                f'</div>',
+                                                unsafe_allow_html=True,
+                                            )
                                         
-                                        if final_likely < target_goal:
-                                            st.warning(f"Your median projection falls short of the target by ${abs(final_likely - target_goal):,.0f}. Consider increasing contributions or extending the time horizon.")
+                                        if final_median < target_goal:
+                                            st.warning(f"Your median projection falls short of the target by ${abs(final_median - target_goal):,.0f}. Consider increasing contributions or extending the time horizon.")
                                         else:
                                             st.success(f"You are on track to meet your goal in the median scenario!")
                                         

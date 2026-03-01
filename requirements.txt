@@ -118,3 +118,4 @@ wcwidth==0.2.14
 websockets==15.0.1
 yfinance==0.2.66
 supabase>=2.0.0
+arch>=7.0.0
