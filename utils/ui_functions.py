@@ -1812,9 +1812,10 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
             with c_cash:
                 st.session_state.portfolios[i]['cash_invested'] = st.number_input(
                     f"Cash Invested", 
-                    min_value=0.0, 
-                    value=float(port.get('cash_invested', 100000.0)), 
-                    step=1000.0, 
+                    min_value=0, 
+                    value=int(port.get('cash_invested', 100000)), 
+                    step=1000, 
+                    format="%d",
                     key=f"{key_prefix}_cash_{i}_{st.session_state.refresh_counter}"
                 )
             
@@ -1832,9 +1833,10 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
             with c_target:
                 st.session_state.portfolios[i]['target_amount'] = st.number_input(
                     f"Portfolio Target ($)", 
-                    min_value=0.0, 
-                    value=float(port.get('target_amount', 0.0)), 
-                    step=1000.0, 
+                    min_value=0, 
+                    value=int(port.get('target_amount', 0)), 
+                    step=1000, 
+                    format="%d",
                     key=f"{key_prefix}_target_{i}_{st.session_state.refresh_counter}",
                     help="Target goal amount for this portfolio. Used in Growth Forecast."
                 )
@@ -1869,9 +1871,10 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
 
                             amount = st.number_input(
                                 f"{ticker} ($)", 
-                                min_value=0.0, 
-                                value=float(existing_val),
-                                step=100.0,
+                                min_value=0, 
+                                value=int(existing_val),
+                                step=100,
+                                format="%d",
                                 key=f"{key_prefix}_amt_{i}_{ticker}_{st.session_state.refresh_counter}"
                             )
                             dollar_amounts[ticker] = amount
@@ -3463,224 +3466,220 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         if not show_growth_forecast:
             st.info("Expand to project future portfolio value based on historical returns.")
         elif st.session_state.portfolios:
-            # Portfolio selector
             portfolio_names = [p['name'] for p in st.session_state.portfolios]
             selected_portfolio_name = st.selectbox(
-                "Select Portfolio", 
-                portfolio_names,
+                "Select Portfolio", portfolio_names,
                 key=f"{key_prefix}_forecast_portfolio"
             )
-            
-            # Find selected portfolio
             selected_portfolio = next((p for p in st.session_state.portfolios if p['name'] == selected_portfolio_name), None)
             
             if selected_portfolio and 'tickers' in selected_portfolio and selected_portfolio['tickers']:
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    # Auto-populate target goal from portfolio if available and non-zero
                     default_target = float(selected_portfolio.get('target_amount', 0.0))
                     if default_target == 0:
                         default_target = float(selected_portfolio.get('cash_invested', 1000000.0))
-                        
                     target_goal = st.number_input(
-                        "Target Goal Value ($)", 
-                        min_value=0.0, 
-                        value=default_target, 
-                        step=10000.0,
+                        "Target Goal Value ($)", min_value=0, value=int(default_target), step=1000,
+                        format="%d",
                         key=f"{key_prefix}_target_goal_{selected_portfolio['id']}"
                     )
                 
                 with col2:
-                    lookback_period = st.selectbox(
-                        "Return Assumption (Historical)", 
-                        ["1 Year", "3 Years", "5 Years"],
-                        key=f"{key_prefix}_lookback_{selected_portfolio['id']}"
-                    )
-                
-                with col3:
-                    # Auto-populate from portfolio horizon if available
                     default_horizon = selected_portfolio.get('horizon', 10)
                     time_horizon = st.slider(
-                        "Time Horizon (Years)", 
-                        min_value=1, 
-                        max_value=30, 
-                        value=int(default_horizon),
+                        "Time Horizon (Years)", min_value=1, max_value=30, value=int(default_horizon),
                         key=f"{key_prefix}_horizon_{selected_portfolio['id']}"
                     )
                 
                 col4, col5 = st.columns(2)
-                
                 with col4:
                     solve_for_payment = st.checkbox(
                         "Solve for monthly payment required to meet goal?",
                         key=f"{key_prefix}_solve_payment"
                     )
-                    
                     if not solve_for_payment:
                         monthly_contribution = st.number_input(
-                            "Monthly Contribution ($)", 
-                            min_value=0.0, 
-                            value=0.0, 
-                            step=100.0,
+                            "Monthly Contribution ($)", min_value=0, value=0, step=100,
+                            format="%d",
                             key=f"{key_prefix}_monthly_contrib"
                         )
                     else:
-                        monthly_contribution = None  # Will be calculated
+                        monthly_contribution = None
                 
                 with col5:
                     initial_value = selected_portfolio.get('cash_invested', 100000.0)
                     st.metric("Current Portfolio Value", f"${initial_value:,.2f}")
                 
                 if st.button("Calculate Projection", type="primary", key=f"{key_prefix}_calc_forecast"):
-                    with st.spinner("Calculating future value projection..."):
-                        # Calculate expected return
-                        lookback_years = int(lookback_period.split()[0])
+                    with st.spinner("Running deterministic forecast..."):
+                        import math
+                        from scipy.stats import norm as scipy_norm
                         
-                        # Get weights
+                        # Get portfolio weights
                         if 'fixed_weights' in selected_portfolio:
                             weights = selected_portfolio['fixed_weights']
                         elif 'decimal_weights' in selected_portfolio:
                             weights = selected_portfolio['decimal_weights']
                         else:
                             st.error("Portfolio weights not found")
-                            return
+                            weights = None
                         
-                        # Calculate weighted average historical return
-                        try:
-                            # Get historical data if optimization was run
-                            if 'optimization_results' in st.session_state and st.session_state.optimization_results:
-                                ret_all = st.session_state.optimization_results.get('ret_all')
+                        if weights is not None:
+                            try:
+                                # Get daily return data
+                                ret_data = None
+                                if 'optimization_results' in st.session_state and st.session_state.optimization_results:
+                                    ret_data = st.session_state.optimization_results.get('ret_all')
                                 
-                                if ret_all is not None:
-                                    # Filter to lookback period
-                                    end_date = ret_all.index.max()
-                                    start_date = end_date - pd.DateOffset(years=lookback_years)
-                                    
-                                    ret_filtered = ret_all.loc[start_date:end_date]
-                                    
-                                    # Calculate portfolio daily returns
-                                    # R_p = sum(w_i * r_i) for each day
-                                    portfolio_daily_ret = pd.Series(0.0, index=ret_filtered.index)
+                                if ret_data is None or ret_data.empty:
+                                    st.error("No return data available. Please run the portfolio analysis first.")
+                                else:
+                                    # Build portfolio daily returns: R_p = sum(w_i * r_i)
+                                    portfolio_daily_ret = pd.Series(0.0, index=ret_data.index)
                                     valid_tickers = []
-                                    
                                     for ticker, weight in weights.items():
-                                        if ticker in ret_filtered.columns:
-                                            portfolio_daily_ret += ret_filtered[ticker] * weight
+                                        if ticker in ret_data.columns:
+                                            portfolio_daily_ret += ret_data[ticker] * weight
                                             valid_tickers.append(ticker)
                                     
-                                    # Calculate annualized return (CAGR) of the portfolio
-                                    if not portfolio_daily_ret.empty and len(valid_tickers) > 0:
-                                        cumulative_return = (1 + portfolio_daily_ret).prod() - 1
-                                        num_years = len(portfolio_daily_ret) / 252
-                                        expected_return = (1 + cumulative_return) ** (1 / num_years) - 1 if num_years > 0 else 0
+                                    if len(valid_tickers) == 0:
+                                        st.error("No matching tickers found in return data.")
                                     else:
-                                        expected_return = 0.07  # Default when no valid historical data
-                                else:
-                                    # Fallback if no historical data
-                                    expected_return = 0.07  # 7% default
-                            else:
-                                # Fallback if optimization not run
-                                expected_return = 0.07  # 7% default
-                            
-                            # If solving for monthly payment, calculate required contribution
-                            if solve_for_payment:
-                                # Solve for PMT given FV, PV, r, n
-                                # FV = PV(1+r)^n + PMT * [((1+r)^n - 1) / r] * (1+r)
-                                # PMT = (FV - PV(1+r)^n) / ([((1+r)^n - 1) / r] * (1+r))
-                                
-                                future_value_of_initial = initial_value * ((1 + expected_return) ** time_horizon)
-                                gap = target_goal - future_value_of_initial
-                                
-                                if expected_return > 0:
-                                    # Annuity factor for monthly contributions
-                                    annuity_factor = (((1 + expected_return) ** time_horizon - 1) / expected_return) * (1 + expected_return)
-                                    required_monthly = (gap / annuity_factor) / 12 if annuity_factor > 0 else 0
-                                else:
-                                    required_monthly = gap / (time_horizon * 12) if time_horizon > 0 else 0
-                                
-                                monthly_contribution = max(0, required_monthly)  # Don't allow negative
-                                st.info(f"Required monthly contribution to meet goal: **${monthly_contribution:,.2f}**")
-                            
-                            # Project future values
-                            years_array = np.arange(0, time_horizon + 1)
-                            projected_values = []
-                            
-                            current_value = initial_value
-                            for year in years_array:
-                                if year == 0:
-                                    projected_values.append(current_value)
-                                else:
-                                    # Add monthly contributions for the year
-                                    annual_contributions = monthly_contribution * 12 if monthly_contribution else 0
-                                    # Future value formula: FV = PV(1+r)^t + PMT * [((1+r)^t - 1) / r]
-                                    current_value = current_value * (1 + expected_return) + annual_contributions * (1 + expected_return)
-                                    projected_values.append(current_value)
-                            
-                            # Create visualization
-                            fig = go.Figure()
-                            
-                            # Projected value line
-                            fig.add_trace(go.Scatter(
-                                x=years_array,
-                                y=projected_values,
-                                mode='lines+markers',
-                                name='Projected Portfolio Value',
-                                line=dict(color='green', width=3)
-                            ))
-                            
-                            # Target goal line
-                            fig.add_trace(go.Scatter(
-                                x=years_array,
-                                y=[target_goal] * len(years_array),
-                                mode='lines',
-                                name='Target Goal',
-                                line=dict(color='red', dash='dash', width=2)
-                            ))
-                            
-                            fig.update_layout(
-                                title=f"Portfolio Growth Projection - {selected_portfolio_name}",
-                                xaxis_title="Years",
-                                yaxis_title="Portfolio Value ($)",
-                                hovermode='x unified',
-                                yaxis=dict(tickformat='$,.0f')
-                            )
-                            
-                            st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_forecast_chart")
-                            
-                            # Summary metrics
-                            final_value = projected_values[-1]
-                            total_contributions = monthly_contribution * 12 * time_horizon
-                            investment_growth = final_value - initial_value - total_contributions
-                            
-                            col1, col2, col3, col4 = st.columns(4)
-                            
-                            with col1:
-                                st.metric("Expected Annual Return", f"{expected_return*100:.2f}%")
-                            
-                            with col2:
-                                st.metric("Projected Final Value", f"${final_value:,.2f}")
-                            
-                            with col3:
-                                gap = final_value - target_goal
-                                gap_pct = (gap / target_goal * 100) if target_goal > 0 else 0
-                                st.metric("Gap to Goal", f"${gap:,.2f}", f"{gap_pct:+.1f}%")
-                            
-                            with col4:
-                                st.metric("Investment Growth", f"${investment_growth:,.2f}")
-                            
-                            # Recommendations
-                            if gap < -1:
-                                st.warning(f"⚠️ Your projected value falls short of the target by ${abs(gap):,.2f}. Consider increasing contributions or extending the time horizon.")
-                            elif gap > 1:
-                                st.success(f"✅ You're on track to exceed your goal by ${gap:,.2f}!")
-                            else:
-                                st.success(f"✅ You are on track to meet your goal exactly!")
-                                
-                        except Exception as e:
-                            st.error(f"Error calculating projection: {str(e)}")
-                            # Show fallback with default return
-                            st.info("Using default 7% annual return assumption")
+                                        # Deterministic analytical forecast (adapted from forecast_reference.py)
+                                        # Uses exponentially-weighted mean and annualised vol from daily data
+                                        TRADING_DAYS = 252
+                                        HALFLIFE_DAYS = 35  # ~7 weeks worth of trading days
+                                        
+                                        # Compute daily log returns for the portfolio
+                                        daily_nav = (1 + portfolio_daily_ret).cumprod() * 100
+                                        daily_log_ret = np.log(daily_nav / daily_nav.shift(1)).dropna()
+                                        
+                                        # Exponential decay weights (most recent data weighted more)
+                                        decay = 1 - math.exp(np.log(0.5) / HALFLIFE_DAYS / TRADING_DAYS)
+                                        n = len(daily_log_ret)
+                                        exp_wgt = np.zeros(n)
+                                        exp_wgt[-1] = decay
+                                        for i in range(n - 2, -1, -1):
+                                            exp_wgt[i] = exp_wgt[i + 1] * (1 - decay)
+                                        
+                                        # Exponentially-weighted annualised expected return
+                                        expected_annual_return = np.dot(daily_log_ret.values, exp_wgt) * TRADING_DAYS / exp_wgt.sum()
+                                        
+                                        # Annualised standard deviation
+                                        annual_stdev = daily_log_ret.std() * np.sqrt(TRADING_DAYS)
+                                        
+                                        # Project monthly for the time horizon
+                                        months_total = time_horizon * 12
+                                        months = np.arange(0, months_total + 1)
+                                        
+                                        # 5th, 50th, 95th percentiles (conservative, likely, optimistic)
+                                        conservative = np.ones(len(months)) * 100.0
+                                        likely = np.ones(len(months)) * 100.0
+                                        optimistic = np.ones(len(months)) * 100.0
+                                        
+                                        m_vec = months[1:]
+                                        drift = (m_vec / 12) * expected_annual_return
+                                        vol = np.sqrt(m_vec / 12) * annual_stdev
+                                        
+                                        conservative[1:] = np.exp(drift + vol * scipy_norm.ppf(0.05)) * 100
+                                        likely[1:] = np.exp(drift + vol * scipy_norm.ppf(0.50)) * 100
+                                        optimistic[1:] = np.exp(drift + vol * scipy_norm.ppf(0.95)) * 100
+                                        
+                                        # Scale from index (100 base) to actual portfolio value
+                                        # Include monthly contributions in the likely scenario
+                                        mc = monthly_contribution if monthly_contribution else 0.0
+                                        
+                                        # If solving for payment, use the likely (median) scenario
+                                        if solve_for_payment:
+                                            # Median final multiplier
+                                            median_annual = np.exp(expected_annual_return) - 1  # convert log to simple
+                                            future_value_of_initial = initial_value * (likely[-1] / 100.0)
+                                            gap = target_goal - future_value_of_initial
+                                            
+                                            if median_annual > 0:
+                                                annuity_factor = (((1 + median_annual) ** time_horizon - 1) / median_annual) * (1 + median_annual)
+                                                required_monthly = (gap / annuity_factor) / 12 if annuity_factor > 0 else 0
+                                            else:
+                                                required_monthly = gap / (time_horizon * 12) if time_horizon > 0 else 0
+                                            
+                                            mc = max(0, required_monthly)
+                                            monthly_contribution = mc
+                                            st.info(f"Required monthly contribution to meet goal (median scenario): **${mc:,.2f}**")
+                                        
+                                        # Build actual projected values with contributions
+                                        def build_projection(index_path, initial, monthly_c):
+                                            vals = [initial]
+                                            for m in range(1, len(index_path)):
+                                                growth_factor = index_path[m] / index_path[m - 1]
+                                                vals.append(vals[-1] * growth_factor + monthly_c)
+                                            return np.array(vals)
+                                        
+                                        proj_conservative = build_projection(conservative, initial_value, mc)
+                                        proj_likely = build_projection(likely, initial_value, mc)
+                                        proj_optimistic = build_projection(optimistic, initial_value, mc)
+                                        
+                                        years_array = months / 12.0
+                                        
+                                        # Chart
+                                        fig = go.Figure()
+                                        fig.add_trace(go.Scatter(
+                                            x=years_array, y=proj_optimistic, mode='lines',
+                                            name='Optimistic (95th %ile)',
+                                            line=dict(color='#36B37E', width=2, dash='dot'),
+                                        ))
+                                        fig.add_trace(go.Scatter(
+                                            x=years_array, y=proj_likely, mode='lines',
+                                            name='Likely (Median)',
+                                            line=dict(color='#0052CC', width=3),
+                                        ))
+                                        fig.add_trace(go.Scatter(
+                                            x=years_array, y=proj_conservative, mode='lines',
+                                            name='Conservative (5th %ile)',
+                                            line=dict(color='#FF5630', width=2, dash='dot'),
+                                        ))
+                                        fig.add_trace(go.Scatter(
+                                            x=years_array, y=[target_goal] * len(years_array), mode='lines',
+                                            name='Target Goal', line=dict(color='#999', dash='dash', width=1),
+                                        ))
+                                        
+                                        fig.update_layout(
+                                            title=f"Growth Forecast — {selected_portfolio_name}",
+                                            xaxis_title="Years", yaxis_title="Portfolio Value ($)",
+                                            hovermode='x unified', yaxis=dict(tickformat='$,.0f'),
+                                            font=dict(family='Helvetica Neue'),
+                                        )
+                                        st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_forecast_chart")
+                                        
+                                        # Summary metrics
+                                        median_annual_simple = np.exp(expected_annual_return) - 1
+                                        final_likely = proj_likely[-1]
+                                        final_conservative = proj_conservative[-1]
+                                        final_optimistic = proj_optimistic[-1]
+                                        total_contributions = mc * months_total
+                                        
+                                        c1, c2, c3, c4 = st.columns(4)
+                                        with c1:
+                                            st.metric("Expected Return (ann.)", f"{median_annual_simple*100:.2f}%")
+                                        with c2:
+                                            st.metric("Annualised Volatility", f"{annual_stdev*100:.1f}%")
+                                        with c3:
+                                            gap = final_likely - target_goal
+                                            st.metric("Gap to Goal (Median)", f"${gap:,.0f}", f"{gap/target_goal*100:+.1f}%" if target_goal > 0 else "")
+                                        with c4:
+                                            st.metric("Total Contributions", f"${total_contributions:,.0f}")
+                                        
+                                        # Range summary
+
+                                        
+                                        if final_likely < target_goal:
+                                            st.warning(f"Your median projection falls short of the target by ${abs(final_likely - target_goal):,.0f}. Consider increasing contributions or extending the time horizon.")
+                                        else:
+                                            st.success(f"You are on track to meet your goal in the median scenario!")
+                                        
+                            except Exception as e:
+                                st.error(f"Error calculating projection: {str(e)}")
             else:
                 st.info("Please construct a portfolio first to use the Growth Forecast Calculator")
         else:
