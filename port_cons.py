@@ -476,7 +476,7 @@ def performance_sharpe(ret_data, freq, rf=0):
 
 def performance_sortino(ret_data, freq, rf=0):
     if isinstance(ret_data, pd.Series):
-        ret_data = ret_data.to_frame()  # Convert Series to DataFrame
+        ret_data = ret_data.to_frame()  # convert series to dataframe
     
     if freq == 'daily':
         return (performance_annualized_ret_via_cum(ret_data, freq) - 0) / (ret_data[ret_data < 0].std(axis=0) * np.sqrt(261))
@@ -809,7 +809,7 @@ def forward_regression(X, y, initial_list=[], threshold_in=0.05, threshold_out=0
     included = list(initial_list)
     while True:
         changed = False
-        # Forward step
+        # forward step
         excluded = list(set(X.columns) - set(included))
         new_pval = pd.Series(index=excluded,dtype='float64')
         for new_column in excluded:
@@ -817,7 +817,7 @@ def forward_regression(X, y, initial_list=[], threshold_in=0.05, threshold_out=0
             new_pval[new_column] = model.pvalues[new_column]
         best_pval = new_pval.min()
         if best_pval < threshold_in:
-            best_feature = new_pval.idxmin()  # Use idxmin to get the index of the minimum value
+            best_feature = new_pval.idxmin()  # use idxmin to get the index of the minimum value
             included.append(best_feature)
             changed = True
         if not changed:
@@ -876,7 +876,7 @@ def performance_summary_constituents(returns, start_date=None, end_date=None, fr
     start_date = returns.index[0]
     end_date = returns.index[-1]
     
-    # Filter returns within the specified date range
+    # filter returns within the specified date range
     returns = returns.loc[start_date:end_date]
 
     total_period_years = (end_date - start_date).days / 365
@@ -902,7 +902,7 @@ def performance_summary_constituents(returns, start_date=None, end_date=None, fr
 
     metrics_df = pd.DataFrame(metrics_dict, index=['Cumulative return', 'Annualized return', '1y cumulative return', '3y cumulative return', '5y cumulative return' , '8y cumulative return', '3y ann. return', '5y ann. return', '8y ann. return', 'Annualized volatility', 'Sharpe ratio', 'Sortino ratio', 'Max drawdown'])
 
-    # Format numerical columns
+    # format numerical columns
     cols_2dp_perc = ['Cumulative return', 'Annualized return', '1y cumulative return','3y cumulative return', '5y cumulative return' , '8y cumulative return', '3y ann. return', '5y ann. return', '8y ann. return', 'Annualized volatility', 'Max drawdown']
     
     cols_2dp = ['Sharpe ratio', 'Sortino ratio']
@@ -1254,7 +1254,7 @@ def plot_drawdowns(*args, start_date=None, end_date=None, title='Drawdown', show
         mdd = dd.expanding().max()
         df_mdd = pd.concat([df_mdd, mdd], axis=1)
 
-        # Plot Drawdown Area
+        # plot drawdown area
         drawdown_area = go.Scatter(x=dd.index, y=-dd, fill='tozeroy', mode='none', stackgroup=f'dd{col}', name=f'{col}')
         drawdown_color = px.colors.qualitative.Plotly[i % len(px.colors.qualitative.Plotly)]
         fig.add_trace(drawdown_area, row=1, col=1)

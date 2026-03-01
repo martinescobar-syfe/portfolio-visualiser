@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 def clean_underlying_data(df_underlying):
-    """Remove invalid holdings (empty names, zero weights) from the underlying data."""
+    """remove invalid holdings (empty names, zero weights) from the underlying data"""
     if df_underlying is None or df_underlying.empty:
         return df_underlying
     
@@ -41,7 +41,7 @@ def load_static_data(data_path):
     try:
         excel_path = os.path.join(data_path, 'Inv_Data_Hardcoded.xlsx')
         
-        # load all sheets at once
+        # load all sheets at once for performance
         xls = pd.read_excel(excel_path, sheet_name=None)
         
         def get_sheet(name, index_col=0):
@@ -63,11 +63,11 @@ def load_static_data(data_path):
         df_risk_rating = get_sheet('Risk', index_col=0)
         df_underlying = get_sheet('Underlying', index_col=None)
         
-        # Clean underlying data - remove rows with zero weights or invalid holding names
+        # clean underlying data - remove rows with zero weights or invalid holding names
         if df_underlying is not None and not df_underlying.empty:
             df_underlying = clean_underlying_data(df_underlying)
 
-        # build sec_list from asset class sheet
+        # build sec_list from asset class sheet (we derive tickers from the matrix format)
         if 'Asset Class' in xls:
             raw_ac = xls['Asset Class']
             ac_col = next((c for c in raw_ac.columns if c.lower() == 'asset class'), None)
@@ -92,7 +92,7 @@ def load_static_data(data_path):
         else:
             df_sec_list = pd.DataFrame(columns=['Ticker', 'Name', 'Base currency', 'Exchange', 'Remarks'])
             
-        # ensure required columns exist
+        # ensure required columns exist (fallback to N/A if missing)
         for col in ['Name', 'Base currency', 'Exchange', 'Remarks']:
             if col not in df_sec_list.columns:
                 df_sec_list[col] = 'N/A'
@@ -103,12 +103,12 @@ def load_static_data(data_path):
              else:
                  df_sec_list = df_sec_list.reset_index().rename(columns={'index': 'Ticker'})
 
-        # FX data
+        # fx data (we extract USDSGD and USDHKD from daily returns if available)
         fx_cols = ['USDSGD', 'USDHKD']
         if all(col in df_daily_ret.columns for col in fx_cols):
             df_fx = df_daily_ret[fx_cols] / 100
         else:
-             # fallback to static rates
+             # fallback to static rates if fx data not in the excel
              df_fx = pd.DataFrame(index=df_daily_ret.index)
              df_fx['USDSGD'] = 1.35
              df_fx['USDHKD'] = 7.8
@@ -144,7 +144,7 @@ def modify_tickers_based_on_exchange(all_tickers, df_sec_list):
     return modified_tickers
 
 def download_data(data_source, start_date, end_date, all_tickers, bm_tickers, currency, df_sec_list, df_fx, data_path, df_daily_ret=None):
-    """load return data for tickers from yahoo or our excel data"""
+    """load return data for tickers from yahoo or our excel data (Bloomberg source)"""
     if data_source == 'Yahoo Finance':
         modified_tickers = modify_tickers_based_on_exchange(all_tickers, df_sec_list)
         start_str = start_date.strftime('%Y-%m-%d') if start_date else None
@@ -158,7 +158,7 @@ def download_data(data_source, start_date, end_date, all_tickers, bm_tickers, cu
         df_all.index = df_all.index.tz_localize(None)
         ret_all = df_all.pct_change().dropna()
         
-        # Map back to original tickers
+        # map back to original tickers (yfinance modifies them with exchange suffix)
         if isinstance(ret_all, pd.Series):
             ret_all = ret_all.to_frame()
             ret_all.columns = all_tickers
@@ -167,7 +167,7 @@ def download_data(data_source, start_date, end_date, all_tickers, bm_tickers, cu
                  ret_all.columns = all_tickers
     
     elif data_source == 'Bloomberg':
-        # use pre-loaded excel data
+        # use our pre-loaded excel data (sourced from Bloomberg via PORT)
         if df_daily_ret is None or df_daily_ret.empty:
             st.error("Daily return data not available. Please check the Excel file.")
             return pd.DataFrame(), pd.DataFrame()
@@ -198,7 +198,7 @@ def download_data(data_source, start_date, end_date, all_tickers, bm_tickers, cu
 
     ret_all = ret_all.fillna(0)
     
-    # fx adjustment
+    # fx adjustment (convert returns to target currency if base currency differs)
     if df_fx is not None and not df_fx.empty:
         for ticker in ret_all.columns:
             if ticker not in df_sec_list['Ticker'].values:

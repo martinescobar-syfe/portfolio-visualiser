@@ -1,6 +1,4 @@
-"""
-Helper functions for interacting with Metabase API to fetch client data.
-"""
+"""helper functions for interacting with Metabase API to fetch client data"""
 import requests
 import streamlit as st
 import pandas as pd
@@ -14,7 +12,7 @@ HEADERS = {
 }
 
 def run_card(card_id, params=None):
-    """Run a Metabase card/query with optional parameters."""
+    """run a metabase card/query with optional params"""
     try:
         url = f"{METABASE_URL}/api/card/{card_id}/query"
         data = {"parameters": params} if params else {}
@@ -40,13 +38,11 @@ def run_card(card_id, params=None):
         return []
 
 def get_client_info_by_email(email):
-    """
-    Get client info including age and risk score (Card 1642).
-    """
+    """get client info including age and risk score (Card 1642)"""
     params = [{"type": "category", "value": email, "target": ["variable", ["template-tag", "email"]]}]
     rows = run_card(1642, params)
     
-    # Card 1642 returns key-value pairs
+    # card 1642 returns key-value pairs
     info = {
         'age': None,
         'risk_score': None,
@@ -63,9 +59,7 @@ def get_client_info_by_email(email):
     return info
 
 def get_email_by_id(client_id):
-    """
-    Get client email by ID using Card 4905.
-    """
+    """get client email by ID using Card 4905"""
     params = [{"type": "text", "value": str(client_id), "target": ["variable", ["template-tag", "investor_id"]]}]
     rows = run_card(4905, params)
     if rows and 'email' in rows[0]:
@@ -73,10 +67,7 @@ def get_email_by_id(client_id):
     return None
 
 def get_client_info_by_id(client_id):
-    """
-    Get client info by ID. First fetches email, then fetches details using email.
-    Returns dict with age, risk_score, name, email, client_id.
-    """
+    """get client info by ID - first fetches email, then fetches details using that email"""
     email = get_email_by_id(client_id)
     if not email:
         return {'client_id': client_id, 'email': None, 'age': None, 'risk_score': None, 'name': None}
@@ -87,17 +78,14 @@ def get_client_info_by_id(client_id):
     return info
 
 def get_active_portfolios(client_id):
-    """
-    Get active portfolios for a client (Card 1470).
-    Returns a dataframe normalized to match the expected format.
-    """
+    """get active portfolios for a client (Card 1470), returns a dataframe normalised to match our expected format"""
     if not client_id:
         return pd.DataFrame()
         
     params = [{"type": "number", "value": client_id, "target": ["variable", ["template-tag", "client_id"]]}]
     rows = run_card(1470, params)
     
-    # Filter for ACTIVE and ACTIVE_NEW portfolios only
+    # filter for ACTIVE and ACTIVE_NEW portfolios only
     active_rows = [r for r in rows if r.get('status') in ['ACTIVE', 'ACTIVE_NEW']]
     
     if not active_rows:
@@ -105,11 +93,11 @@ def get_active_portfolios(client_id):
         
     df = pd.DataFrame(active_rows)
     
-    # Rename columns to match what the app expects (from CSV)
-    # App expects: 'name', 'type', 'nav_in_sgd', 'invested_amount', 'pnl_inception', 'status'
-    # The Metabase result already has these names mostly correct
+    # rename columns to match what our app expects (from CSV format)
+    # i.e. 'name', 'type', 'nav_in_sgd', 'invested_amount', 'pnl_inception', 'status'
+    # the metabase result already has these names mostly correct
     
-    # Ensure numeric columns are actually numeric
+    # ensure numeric columns are actually numeric
     numeric_cols = ['nav_in_sgd', 'invested_amount', 'pnl_inception', 'balance']
     for col in numeric_cols:
         if col in df.columns:

@@ -584,7 +584,7 @@ if st.button("🚀 Build & Optimise Portfolio", type="primary", use_container_wi
                     limit = c['value']
                     
                     def te_constraint(w, cov=cov_matrix, asset_bm_c=asset_bm_cov, bm_v=bm_var, lim=limit):
-                        """TE constraint"""
+                        """te constraint"""
                         port_var = w @ cov @ w
                         cross_term = 2 * np.dot(w, asset_bm_c)
                         active_var = max(port_var - cross_term + bm_v, 0)
@@ -798,23 +798,23 @@ def load_ff_data():
     except:
         return None
 
-# Helper function for Excel export
+# helper function for excel export
 def create_builder_excel(results, all_port_ret, ret_bm, currency, top_holdings_df=None, sector_df=None, country_df=None, overlap_matrix=None):
-    """Create Excel file with all Builder analysis data across multiple sheets."""
+    """create excel file with all builder analysis data across multiple sheets"""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Sheet 1: NAV (cumulative returns indexed to 1)
+        # sheet 1: NAV (cumulative returns indexed to 1)
         nav_df = (1 + all_port_ret).cumprod()
         nav_df.index.name = 'Date'
         nav_df.to_excel(writer, sheet_name=f'NAV ({currency})')
         
-        # Sheet 2: Daily Returns
+        # sheet 2: daily returns
         daily_ret = all_port_ret.copy()
         daily_ret.index.name = 'Date'
         daily_ret.to_excel(writer, sheet_name=f'Daily Returns ({currency})')
         
-        # Sheet 3: Daily Weights (all dates)
+        # sheet 3: daily weights (all dates)
         daily_weights_list = []
         for port_name, port_data in results.items():
             if 'weights' in port_data:
@@ -828,7 +828,7 @@ def create_builder_excel(results, all_port_ret, ret_bm, currency, top_holdings_d
             all_daily_weights.columns = [c.replace('_wgt', '') for c in all_daily_weights.columns]
             all_daily_weights.to_excel(writer, sheet_name='Daily Weights')
         
-        # Sheet 4: Rebalance Weights only
+        # sheet 4: rebalance weights only
         rebal_weights_list = []
         for port_name, port_data in results.items():
             if 'weights' in port_data:
@@ -844,43 +844,43 @@ def create_builder_excel(results, all_port_ret, ret_bm, currency, top_holdings_d
             all_rebal_weights.columns = [c.replace('_wgt', '') for c in all_rebal_weights.columns]
             all_rebal_weights.to_excel(writer, sheet_name='Rebalance Weights')
         
-        # Sheet 5: Key Summary
+        # sheet 5: key summary
         summary = get_performance_summary(all_port_ret)
         summary.to_excel(writer, sheet_name='Key Summary')
         
-        # Sheet 6: Cumulative Returns
+        # sheet 6: cumulative returns
         cum_ret = (1 + all_port_ret).cumprod() - 1
         cum_ret.index.name = 'Date'
         cum_ret.to_excel(writer, sheet_name=f'Cumulative Returns ({currency})')
         
-        # Sheet 7: Monthly Returns
+        # sheet 7: monthly returns
         monthly_ret = all_port_ret.resample('ME').apply(lambda x: (1 + x).prod() - 1)
         monthly_ret.index.name = 'Date'
         monthly_ret.to_excel(writer, sheet_name='Monthly Returns')
         
-        # Sheet 8: Calendar Returns (yearly)
+        # sheet 8: calendar returns (yearly)
         yearly_ret = all_port_ret.resample('YE').apply(lambda x: (1 + x).prod() - 1)
         yearly_ret.index = yearly_ret.index.year
         yearly_ret.index.name = 'Year'
         yearly_ret.to_excel(writer, sheet_name='Calendar Returns')
         
-        # Sheet 9: Rolling Volatility (252-day)
+        # sheet 9: rolling volatility (252-day)
         rolling_vol = all_port_ret.rolling(window=252).std() * np.sqrt(252)
         rolling_vol.index.name = 'Date'
         rolling_vol.to_excel(writer, sheet_name='Rolling Volatility')
         
-        # Sheet 10: Drawdowns
+        # sheet 10: drawdowns
         cum_ret_nav = (1 + all_port_ret).cumprod()
         running_max = cum_ret_nav.cummax()
         drawdowns = (cum_ret_nav - running_max) / running_max
         drawdowns.index.name = 'Date'
         drawdowns.to_excel(writer, sheet_name='Drawdowns')
         
-        # Sheet 11: Correlation Matrix
+        # sheet 11: correlation matrix
         corr_matrix = all_port_ret.corr()
         corr_matrix.to_excel(writer, sheet_name='Correlation Matrix')
         
-        # Sheet 12: Risk-Return Summary
+        # sheet 12: risk-return summary
         risk_return = pd.DataFrame({
             'Annualized Return': all_port_ret.mean() * 252,
             'Annualized Volatility': all_port_ret.std() * np.sqrt(252),
@@ -888,25 +888,25 @@ def create_builder_excel(results, all_port_ret, ret_bm, currency, top_holdings_d
         })
         risk_return.to_excel(writer, sheet_name='Risk-Return')
         
-        # Sheet 13: Benchmark NAV (if available)
+        # sheet 13: benchmark NAV (if available)
         if ret_bm is not None and not ret_bm.empty:
             bm_nav = (1 + ret_bm).cumprod()
             bm_nav.index.name = 'Date'
             bm_nav.to_excel(writer, sheet_name=f'Benchmark NAV ({currency})')
         
-        # Sheet 14: Top Holdings
+        # sheet 14: top holdings
         if top_holdings_df is not None and not top_holdings_df.empty:
             top_holdings_df.to_excel(writer, sheet_name='Top 10 Holdings')
         
-        # Sheet 15: Sector Allocation
+        # sheet 15: sector allocation
         if sector_df is not None and not sector_df.empty:
             sector_df.to_excel(writer, sheet_name='Sector Allocation')
         
-        # Sheet 16: Country Allocation
+        # sheet 16: country allocation
         if country_df is not None and not country_df.empty:
             country_df.to_excel(writer, sheet_name='Country Allocation')
         
-        # Sheet 17: Overlap Matrix
+        # sheet 17: overlap matrix
         if overlap_matrix is not None and not overlap_matrix.empty:
             overlap_matrix.to_excel(writer, sheet_name='Overlap Matrix')
     
@@ -923,7 +923,7 @@ if st.session_state.builder_portfolio['results']:
     
     st.header("3. Analysis Results")
     
-    # FX Conversion and Export Options
+    # fx conversion and export options
     col_fx, col_export = st.columns([1, 1])
     
     with col_fx:
@@ -936,37 +936,37 @@ if st.session_state.builder_portfolio['results']:
         )
     
     with col_export:
-        st.write("")  # Spacing
+        st.write("")  # spacing
     
-    # Combined Returns
+    # combined returns
     all_port_ret = pd.DataFrame()
     for p_name, p_res in results.items():
         p_ret = p_res['perf'][[c for c in p_res['perf'].columns if c.endswith('_port_ret')]].copy()
         p_ret.columns = [p_name]
         all_port_ret = pd.concat([all_port_ret, p_ret], axis=1)
         
-    # Align with Benchmark
+    # align with benchmark
     common_idx = all_port_ret.index.intersection(ret_bm.index)
     all_port_ret = all_port_ret.loc[common_idx]
     ret_bm = ret_bm.loc[common_idx]
     
-    # Apply FX conversion if SGD selected
+    # apply fx conversion if SGD selected
     if fx_currency == "SGD" and df_fx is not None and 'USDSGD' in df_fx.columns:
         fx_returns = df_fx['USDSGD'].copy()
-        # Convert levels to returns if needed
+        # convert levels to returns if needed
         if fx_returns.abs().max() > 1:
             fx_returns = fx_returns.pct_change().fillna(0)
         
         common_fx_idx = all_port_ret.index.intersection(fx_returns.index)
         if len(common_fx_idx) > 0:
             fx_ret_aligned = fx_returns.loc[common_fx_idx]
-            # Convert USD returns to SGD: (1+r_usd) * (1+r_fx) - 1
+            # convert usd returns to sgd: (1+r_usd) * (1+r_fx) - 1
             for col in all_port_ret.columns:
                 all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
             for col in ret_bm.columns:
                 ret_bm.loc[common_fx_idx, col] = (1 + ret_bm.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
     
-    # Tabs
+    # tabs
     tabs = st.tabs([
         "Key Summary", "Calendar Returns", "Monthly Returns", "Cumulative Returns", 
         "Return/Risk Scatter", "Returns Distribution", "Rolling Volatility", 
@@ -975,7 +975,7 @@ if st.session_state.builder_portfolio['results']:
 
     with tabs[0]:
         summary = get_performance_summary(all_port_ret)
-        # Format
+        # format
         def format_summary_value(val, metric_name):
             if pd.isna(val): return "N/A"
             if metric_name in ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']: return f"{val:.2f}"
@@ -996,7 +996,7 @@ if st.session_state.builder_portfolio['results']:
         if 'reb_flag' in w_df.columns:
             w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
         else:
-            w_rebal = w_df # Fallback
+            w_rebal = w_df # fallback
             
         w_rebal.columns = [c.replace('_wgt', '') for c in w_rebal.columns]
         w_rebal_display = w_rebal.copy()
@@ -1016,7 +1016,7 @@ if st.session_state.builder_portfolio['results']:
         st.plotly_chart(fig, use_container_width=True, key="builder_monthly")
     
     with tabs[3]:
-        # Calculate cumulative returns as percentage (0.94 = 94%, not 1.94)
+        # calculate cumulative returns as percentage (0.94 = 94%, not 1.94)
         cum_ret = (1 + all_port_ret).cumprod() - 1
         fig = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
         st.plotly_chart(fig, use_container_width=True, key="builder_cum")
@@ -1102,7 +1102,7 @@ if st.session_state.builder_portfolio['results']:
     
     charts = get_exposure_charts(last_w, df_sector, df_country, df_asset_class=None)
     
-    # Row 1: Top Holdings
+    # row 1: top holdings
     st.markdown("### Top Holdings (Underlying)")
     t_topn = st.selectbox("Show Top", [10, 15, 20], key="builder_topn")
 
@@ -1240,7 +1240,7 @@ if st.session_state.builder_portfolio['results']:
                  for col in all_factors_numeric.index:
                      fig_f.add_trace(go.Bar(
                          name=col,
-                         x=all_factors_numeric.columns, # Factors on X-axis
+                         x=all_factors_numeric.columns, # factors on x-axis
                          y=all_factors_numeric.loc[col],
                          text=all_factors_numeric.loc[col].map('{:,.2f}'.format),
                          textposition='auto'
@@ -1315,7 +1315,7 @@ if st.session_state.builder_portfolio['results']:
                      X = sm.add_constant(X_factors)
                      model = sm.OLS(y_asset, X).fit()
                      
-                     # VIF
+                     # vif
                      from statsmodels.stats.outliers_influence import variance_inflation_factor
                      vifs = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
                      vif_data = pd.Series(vifs, index=X.columns)
@@ -1328,7 +1328,7 @@ if st.session_state.builder_portfolio['results']:
                      with col_res1:
                          st.markdown("**Regression Diagnostics**")
                          r2 = model.rsquared_adj
-                         alpha = model.params.get('const', 0) * 252 # Annualized Alpha
+                         alpha = model.params.get('const', 0) * 252 # annualized alpha
                          alpha_t = model.tvalues.get('const', 0)
                          
                          model_desc = "Standard FF5" if use_ff_mkt else "Benchmark + FF Factors"
@@ -1447,8 +1447,8 @@ if st.session_state.builder_portfolio['results']:
             color_continuous_scale='Blues',
             zmin=0, zmax=1,
             title="ETF Overlap Matrix",
-            height=800, # Increased height
-            aspect="auto" # Allow non-square aspect if needed, but 'equal' is better for matrix
+            height=800, # increased height
+            aspect="auto" # allow non-square aspect if needed, but 'equal' is better for matrix
         )
         fig_ov.update_layout(
             plot_bgcolor='rgba(0,0,0,0)',
@@ -1467,8 +1467,8 @@ if st.session_state.builder_portfolio['results']:
     st.header("8. Download Excel Report")
     st.markdown(f"Download all analysis data as an Excel file with multiple sheets. **Currency: {fx_currency}**")
     
-    # Prepare data for Excel export
-    # Get top holdings
+    # prepare data for excel export
+    # get top holdings
     top_holdings_for_export = None
     if df_underlying is not None:
         p_name_export = list(results.keys())[0]
@@ -1481,7 +1481,7 @@ if st.session_state.builder_portfolio['results']:
         if not conc_export.empty:
             top_holdings_for_export = conc_export.to_frame(name='Weight')
     
-    # Get sector/country allocation
+    # get sector/country allocation
     sector_for_export = None
     country_for_export = None
     if 'sector_table' in charts and charts['sector_table'] is not None:
@@ -1489,7 +1489,7 @@ if st.session_state.builder_portfolio['results']:
     if 'country_table' in charts and charts['country_table'] is not None:
         country_for_export = charts['country_table']
     
-    # Get overlap matrix if calculated
+    # get overlap matrix if calculated
     overlap_for_export = None
     if df_underlying is not None and len(current_holdings) > 1:
         try:
@@ -1497,7 +1497,7 @@ if st.session_state.builder_portfolio['results']:
         except:
             pass
     
-    # Generate Excel data
+    # generate excel data
     excel_data = create_builder_excel(
         results=results,
         all_port_ret=all_port_ret,

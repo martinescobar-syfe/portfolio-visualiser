@@ -48,7 +48,7 @@ SYFE_CONTEXT = """
 
 def clean_llm_response(text):
     """
-    Cleans common LLM formatting issues (e.g., missing spaces between numbers and words).
+    cleans common LLM formatting issues (e.g. missing spaces between numbers and words)
     """
     import re
     # Fix "50,000and" -> "50,000 and"
@@ -61,20 +61,13 @@ def clean_llm_response(text):
 
 def get_gemini_recommendation(api_key, client_profile):
     """
-    Generates a portfolio recommendation using Gemini.
-    
-    Args:
-        api_key (str): Google Gemini API Key.
-        client_profile (dict): Dictionary containing client details (Age, Risk, Income, etc.)
-        
-    Returns:
-        str: The generated recommendation text.
+    generates a portfolio recommendation using gemini based on client profile
     """
     try:
         genai.configure(api_key=api_key)
         
-        # Format the complex client profile into a readable string
-        # Sanitise keys for better LLM readability
+        # format the complex client profile into a readable string
+        # sanitise keys for better LLM readability
         readable_profile = {}
         key_map = {
             "risk_willingness": "Risk Willingness (1-5)",
@@ -151,7 +144,7 @@ def get_gemini_recommendation(api_key, client_profile):
     {SYFE_CONTEXT}
     """
 
-        # Use Gemini 3 Pro Preview
+        # use gemini 3 pro preview (try models in order of preference)
         models_to_try = [
             'gemini-3-pro-preview',
             'gemini-2.0-flash-exp',
@@ -177,12 +170,11 @@ def get_gemini_recommendation(api_key, client_profile):
 
 def parse_recommendation_table(recommendation_text):
     """
-    Parses the Markdown table from the AI recommendation to extract products and weights.
-    Returns a dictionary of {Ticker: Weight(decimal)}.
+    parses the markdown table from the AI recommendation to extract products and weights, returns {goal_name: {allocations}} dict
     """
     import re
     
-    # Mapping from AI Product Name to Ticker in PV_sec_list.csv
+    # mapping from AI product name to ticker in our sec_list
     product_map = {
         # Core Portfolios
         "Core Equity100": "Core Equity100",
@@ -237,11 +229,11 @@ def parse_recommendation_table(recommendation_text):
     try:
         lines = recommendation_text.split('\n')
         for line in lines:
-            # Look for table rows with new format: | Objective | Goal Name | Horizon | Product | Allocation (%) | Dollar Amount ($) | Rationale |
+            # look for table rows with new format: | Objective | Goal Name | Horizon | Product | Allocation (%) | Dollar Amount ($) | Rationale |
             if '|' in line and '---' not in line and 'Objective' not in line and 'Goal Name' not in line:
                 parts = [p.strip() for p in line.split('|') if p.strip()]
                 if len(parts) >= 5:  # At minimum need Objective, Goal Name, Horizon, Product, Allocation
-                    # New format: 0=Objective, 1=Goal Name, 2=Horizon, 3=Product, 4=Allocation %, 5=Dollar Amount (optional), 6=Rationale (optional)
+                    # new format: 0=Objective, 1=Goal Name, 2=Horizon, 3=Product, 4=Allocation %, 5=Dollar Amount (optional), 6=Rationale (optional)
                     
                     objective_raw = parts[0].strip()
                     goal_name = parts[1].strip()
@@ -249,24 +241,24 @@ def parse_recommendation_table(recommendation_text):
                     product_name = parts[3].strip()
                     alloc_str = parts[4].replace('%', '').strip()
                     
-                    # Validate objective
+                    # validate objective
                     valid_objectives = ["Wealth Growth", "Income Generation", "Capital Preservation"]
                     objective = None
                     
                     if objective_raw in valid_objectives:
                         objective = objective_raw
                     else:
-                        # Try partial match
+                        # try partial match
                         for valid_obj in valid_objectives:
                             if valid_obj in objective_raw:
                                 objective = valid_obj
                                 break
                     
-                    # Fallback if no objective found
+                    # fallback if no objective found
                     if objective is None:
                         objective = "Wealth Growth" # Default
                     
-                    # Extract horizon as integer
+                    # extract horizon as integer
                     try:
                         horizon = int(horizon_str.replace('yrs', '').replace('years', '').replace('yr', '').strip())
                     except:
@@ -275,17 +267,17 @@ def parse_recommendation_table(recommendation_text):
                     try:
                         weight = float(alloc_str) / 100.0
                         
-                        # Map product name to ticker
+                        # map product name to ticker
                         ticker = product_map.get(product_name)
                         if not ticker:
-                            # Fuzzy matching or fallback
+                            # fuzzy matching or fallback
                             for key, val in product_map.items():
                                 if key in product_name:
                                     ticker = val
                                     break
                         
                         if ticker and weight > 0:
-                            # Initialize goal group if not exists
+                            # initialise goal group if not exists
                             if goal_name not in portfolios:
                                 portfolios[goal_name] = {
                                     'objective': objective,
@@ -293,13 +285,13 @@ def parse_recommendation_table(recommendation_text):
                                     'allocations': {}
                                 }
                             
-                            # Add to allocations
+                            # add to allocations
                             if ticker in portfolios[goal_name]['allocations']:
                                 portfolios[goal_name]['allocations'][ticker] += weight
                             else:
                                 portfolios[goal_name]['allocations'][ticker] = weight
                         else:
-                            # Failed to map or weight is 0
+                            # failed to map or weight is 0
                             if weight > 0:
                                 failed_items.append((product_name, weight, goal_name))
                                 
@@ -314,12 +306,12 @@ def parse_recommendation_table(recommendation_text):
 
 def get_recommendation_narrative(api_key, client_profile, allocation, goal_name, amount):
     """
-    Generates a personalized narrative explaining the deterministic allocation.
+    generates a personalised narrative explaining the deterministic allocation
     """
     try:
         genai.configure(api_key=api_key)
         
-        # Format allocation for prompt
+        # format allocation for prompt
         alloc_str = "\n".join([f"- **{k}**: {v:.1%}" for k, v in allocation.items()])
         
         prompt = f"""
@@ -365,7 +357,7 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
 
 
 
-        # List of models to try
+        # list of models to try
         models_to_try = [
             'gemini-2.5-pro',
             'gemini-2.5-flash',
@@ -390,20 +382,12 @@ def get_recommendation_narrative(api_key, client_profile, allocation, goal_name,
 
 def analyze_portfolio_appropriateness(api_key, client_profile, current_holdings):
     """
-    Analyzes if the current portfolio is appropriate for the client using Gemini.
-    
-    Args:
-        api_key (str): Google Gemini API Key.
-        client_profile (dict): Dictionary with 'Age', 'Risk Score', 'Name'.
-        current_holdings (dict): Dictionary of {Ticker: Weight(decimal)} or list of holding dicts.
-        
-    Returns:
-        str: analysis text
+    analyses if the current portfolio is appropriate for the client using gemini
     """
     try:
         genai.configure(api_key=api_key)
         
-        # Format holdings for prompt
+        # format holdings for prompt
         holdings_str = ""
         if isinstance(current_holdings, dict):
              holdings_str = "\n".join([f"- **{k}**: {v:.1%}" for k, v in current_holdings.items()])
@@ -464,8 +448,7 @@ def analyze_portfolio_appropriateness(api_key, client_profile, current_holdings)
 
 def generate_diversification_insights(api_key, score_result, client_weights):
     """
-    Generate 3 AI-powered insights from diversification scores using Gemini,
-    following the instruction set in insight_generation_instructions.md.
+    generate 3 AI-powered insights from diversification scores using gemini
     """
     import json
 

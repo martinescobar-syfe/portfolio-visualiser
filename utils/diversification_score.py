@@ -18,15 +18,15 @@ ASSET_CLASS_MAP = {
 
 SCORING_ASSET_CLASSES = ['Equity', 'Bonds', 'Real Assets', 'Cash']
 
-# Portfolios to exclude from diversification score calculation.
-# These are typically custom portfolios whose underlying ETFs aren't yet
-# decomposed in the static data files.
+# portfolios to exclude from diversification score calculation
+# these are typically custom portfolios whose underlying ETFs aren't yet
+# decomposed in the static data files
 IGNORED_PORTFOLIOS = {'Custom Usd'}
 
-# Region mapping — simplified for now, will be replaced by a backend lookup.
-# Only a short list of countries counts as Developed ex-US; everything else
-# defaults to Emerging Markets. If US exposure is >90%, we treat the whole
-# portfolio as US.
+# region mapping — simplified for now, will be replaced by a backend lookup
+# only a short list of countries counts as Developed ex-US; everything else
+# defaults to Emerging Markets. if US exposure is >90%, we treat the whole
+# portfolio as US
 DEVELOPED_EX_US = {
     'Japan', 'Britain', 'France', 'Germany', 'Canada', 'Australia',
     'Switzerland', 'Netherlands', 'Sweden', 'Denmark', 'Finland',
@@ -35,7 +35,7 @@ DEVELOPED_EX_US = {
     'Luxembourg', 'European Union', 'Eurozone',
 }
 
-# If US weight is above this threshold, skip per-country mapping.
+# if US weight is above this threshold, skip per-country mapping
 US_DOMINANCE_THRESHOLD = 0.90
 
 GEO_BENCHMARK = {
@@ -44,7 +44,7 @@ GEO_BENCHMARK = {
     'Emerging Markets': 0.10,
 }
 
-# Sector benchmarks for scoring
+# sector benchmarks for scoring
 EQUITY_SECTOR_BENCHMARK = {
     'Information Technology': 26.27,
     'Financials': 17.41,
@@ -61,9 +61,9 @@ EQUITY_SECTOR_BENCHMARK = {
     'Commodities': 0.00,
 }
 
-# Fixed income benchmark (AGGU). BICS naming differs slightly from GICS
-# e.g. "Technology" instead of "Information Technology".
-# Source: Bloomberg AGGU sector weights.
+# fixed income benchmark (AGGU). BICS naming differs slightly from GICS
+# e.g. "Technology" instead of "Information Technology"
+# source: Bloomberg AGGU sector weights
 FI_SECTOR_BENCHMARK = {
     'Government': 69.94,
     'Financials': 13.05,
@@ -81,9 +81,9 @@ FI_SECTOR_BENCHMARK = {
     'High Yield bonds': 0.00,
 }
 
-# Map the sector names we see in the Excel to their BICS equivalents.
-# Note: the Excel sheet will eventually be updated so FI sectors also follow
-# GICS-style naming. Until then, this map bridges the gap.
+# map the sector names we see in the Excel to their BICS equivalents
+# NOTE: the Excel sheet will eventually be updated so FI sectors also follow
+# GICS-style naming. until then, this map bridges the gap
 FI_SECTOR_MAP = {
 
     'US Gov. Related bonds': 'Government',
@@ -120,8 +120,8 @@ FI_SECTOR_MAP = {
     'High Yield Bonds': 'High Yield bonds',
 }
 
-# GICS equity sectors. Used to route the equity portion of mixed portfolios
-# (like Core Defensive) to the equity benchmark instead of the FI one.
+# GICS equity sectors. used to route the equity portion of mixed portfolios
+# (like Core Defensive) to the equity benchmark instead of the FI one
 EQUITY_GICS_SECTORS = {
     'Information Technology', 'Financials', 'Industrials',
     'Consumer Discretionary', 'Health Care', 'Communication Services',
@@ -131,17 +131,17 @@ EQUITY_GICS_SECTORS = {
 
 IGNORED_SECTORS = {'Cash and/or Derivatives'}
 
-# Map GICS sector names to their BICS equivalents for FI portfolios whose
-# sector data has been updated to GICS naming (e.g. Income Enhance).
-# "Information Technology" in GICS → "Technology" in BICS, etc.
+# map GICS sector names to their BICS equivalents for FI portfolios whose
+# sector data has been updated to GICS naming (e.g. Income Enhance)
+# "Information Technology" in GICS → "Technology" in BICS, etc
 GICS_TO_BICS_MAP = {
     'Information Technology': 'Technology',
     'Communication Services': 'Communications',
     'Government': 'Government',
 }
-# Sectors that share the same name in both GICS and BICS need no mapping:
+# sectors that share the same name in both GICS and BICS need no mapping —
 # Financials, Industrials, Consumer Discretionary, Health Care,
-# Consumer Staples, Materials, Energy, Utilities, Real Estate.
+# Consumer Staples, Materials, Energy, Utilities, Real Estate
 
 
 # ---------------------------------------------------------------------------
@@ -149,19 +149,7 @@ GICS_TO_BICS_MAP = {
 # ---------------------------------------------------------------------------
 
 def calculate_asset_class_score(asset_weights: dict) -> dict:
-    """
-    Calculate asset class diversification score (1-10 scale).
-
-    Parameters
-    ----------
-    asset_weights : dict
-        {asset_class_bucket: weight} where weights sum to ~1.
-        Buckets should be from SCORING_ASSET_CLASSES + any extras.
-
-    Returns
-    -------
-    dict with keys: score, breadth_score, dominance_score, details
-    """
+    """calc asset class diversification score (1-10 scale). takes in asset_weights dict where weights sum to ~1"""
     if not asset_weights:
         return {'score': None, 'breadth_score': None, 'dominance_score': None, 'details': {},
                 'error': 'No asset class data available — check source data.'}
@@ -171,7 +159,7 @@ def calculate_asset_class_score(asset_weights: dict) -> dict:
         return {'score': None, 'breadth_score': None, 'dominance_score': None, 'details': {},
                 'error': 'All asset class weights are zero — check source data.'}
 
-    # Part A — how many meaningful asset classes are present?
+    # part A — how many meaningful asset classes are present?
     meaningful = {k: v for k, v in weights.items() if v >= 0.05}
     m = len(meaningful)
 
@@ -194,7 +182,7 @@ def calculate_asset_class_score(asset_weights: dict) -> dict:
 
     breadth_score = min(10, b_base + uplift)
 
-    # Part B — is any single asset class too dominant?
+    # part B — is any single asset class too dominant?
     w_max = max(weights.values())
     if w_max <= 0.70:
         dominance_score = 10
@@ -205,7 +193,7 @@ def calculate_asset_class_score(asset_weights: dict) -> dict:
 
     dominance_score = max(1, dominance_score)
 
-    # Combine breadth and dominance 50/50
+    # combine breadth and dominance 50/50
     score = 0.50 * breadth_score + 0.50 * dominance_score
 
     return {
@@ -221,13 +209,7 @@ def calculate_asset_class_score(asset_weights: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _map_country_to_region(country) -> str:
-    """Map a single country name to one of three regions.
-
-    - United States → United States
-    - Allow-listed developed countries → Developed ex-US
-    - Everything else → Emerging Markets
-      (except obvious non-classifiable entries)
-    """
+    """map a single country name to one of our three regions (US, Developed ex-US, Emerging Markets)"""
     if not isinstance(country, str) or pd.isna(country):
         return 'Not Classified'
     stripped = country.strip().lower()
@@ -239,28 +221,17 @@ def _map_country_to_region(country) -> str:
         return 'United States'
     if country in DEVELOPED_EX_US:
         return 'Developed ex-US'
-    # Default: treat all remaining countries as EM
+    # default: treat all remaining countries as EM
     return 'Emerging Markets'
 
 
 def calculate_geography_score(country_weights: dict, benchmark: Optional[dict] = None) -> dict:
-    """
-    Calculate geography diversification score (0-10 scale).
-
-    Parameters
-    ----------
-    country_weights : dict  {country_name: weight}  (weights sum to ~1)
-    benchmark : dict | None  override for GEO_BENCHMARK
-
-    Returns
-    -------
-    dict with keys: score, region_weights, region_details
-    """
+    """calc geography diversification score (0-10 scale) based on country weights vs our benchmark"""
     benchmark = benchmark or GEO_BENCHMARK
     T = 10.0
 
-    # If US exposure alone exceeds the dominance threshold, classify the
-    # entire portfolio as US (handles single-country ETFs like SPY).
+    # if US exposure alone exceeds the dominance threshold, classify the
+    # entire portfolio as US (handles single-country ETFs like SPY)
     us_weight = country_weights.get('United States', 0.0)
     total_weight = sum(v for v in country_weights.values()
                        if isinstance(v, (int, float)) and not pd.isna(v))
@@ -272,8 +243,8 @@ def calculate_geography_score(country_weights: dict, benchmark: Optional[dict] =
             region = _map_country_to_region(country)
             region_weights[region] = region_weights.get(region, 0.0) + w
 
-    # Exclude unclassified but keep raw weights (don't renormalize).
-    # Missing country data should reduce coverage, not inflate other regions.
+    # exclude unclassified but keep raw weights (don't renormalize)
+    # missing country data should reduce coverage, not inflate other regions
     region_norm = {k: v for k, v in region_weights.items() if k != 'Not Classified'}
 
     region_details = {}
@@ -301,10 +272,10 @@ def calculate_geography_score(country_weights: dict, benchmark: Optional[dict] =
 
 # ---------------------------------------------------------------------------
 # 3. Sector Score (20% weight)
-# ---------------------------------------------------------------------------═══════
+# ---------------------------------------------------------------------------
 
 def _classify_portfolio_type(ticker: str, df_asset_class) -> str:
-    """Determine if a portfolio is equity, fixed_income, reit, or cash."""
+    """determine if a portfolio is equity, fixed_income, reit, or cash"""
     if df_asset_class is None or ticker not in df_asset_class.columns:
         name_lower = ticker.lower()
         if any(kw in name_lower for kw in ['equity', 'growth', 'balanced', 'china', 'disruptive', 'esg', 'healthcare', 'srs equity']):
@@ -317,8 +288,8 @@ def _classify_portfolio_type(ticker: str, df_asset_class) -> str:
             return 'cash'
         return 'equity'
 
-    # Mixed/structured portfolios that should stay in the equity bucket
-    # because they are growth-oriented products.
+    # mixed/structured portfolios that should stay in the equity bucket
+    # because they are growth-oriented products
     name_lower = ticker.lower()
     if any(kw in name_lower for kw in ['balanced', 'growth', 'defensive', 'downside']):
         return 'equity'
@@ -336,8 +307,8 @@ def _classify_portfolio_type(ticker: str, df_asset_class) -> str:
 
     max_wt = max(equity_wt, fi_wt, reit_wt, cash_wt)
     if max_wt == 0:
-        # None of the 4 standard classes matched (e.g. Specialized / alternatives).
-        # Fall back to name-based classification.
+        # none of the 4 standard classes matched (e.g. Specialized / alternatives)
+        # fall back to name-based classification
         name_lower = ticker.lower()
         if any(kw in name_lower for kw in ['blackrock', 'monroe', 'silverdale', 'income', 'defensive', 'downside']):
             return 'fixed_income'
@@ -356,17 +327,14 @@ def _classify_portfolio_type(ticker: str, df_asset_class) -> str:
 
 
 def _map_fi_sector(sector_name: str) -> str:
-    """Map Excel FI sector names to benchmark categories."""
+    """map excel FI sector names to benchmark categories"""
     return FI_SECTOR_MAP.get(sector_name, sector_name)
 
 
 import re as _re
 
 def _normalize_ticker_name(name: str) -> str:
-    """Strip parentheses and collapse month+year for fuzzy matching.
-
-    e.g. 'Silverdale Fund (Feb 2029)' → 'silverdale fund feb2029'
-    """
+    """strip parentheses and collapse month+year for fuzzy matching (e.g. 'Silverdale Fund (Feb 2029)' → 'silverdale fund feb2029')"""
     n = name.lower()
     n = _re.sub(r'[()]', '', n)
     n = _re.sub(r'\s+', ' ', n).strip()
@@ -382,19 +350,7 @@ def calculate_sector_score(
     df_sector,
     df_asset_class=None,
 ) -> dict:
-    """
-    Calculate sector diversification score (0-10 scale).
-
-    Handles multi-portfolio clients by classifying each portfolio,
-    computing sector exposure per type, then comparing to the
-    appropriate benchmark.
-
-    REIT portfolios use the ACWI equity benchmark (user requirement).
-
-    Returns
-    -------
-    dict with keys: score, equity_score, fi_score, details
-    """
+    """calc sector diversification score (0-10 scale). classifies each portfolio, computes sector exposure per type, then compares to the appropriate benchmark. REIT portfolios use the ACWI equity benchmark"""
     if df_sector is None or not client_weights:
         return {'score': None, 'equity_score': None, 'fi_score': None,
                 'details': {}, 'unmapped_sectors': {},
@@ -412,13 +368,13 @@ def calculate_sector_score(
         ptype = _classify_portfolio_type(ticker, df_asset_class)
 
         if ptype == 'cash':
-            # Cash portfolios may still have sector exposure (e.g. Cash SGD
-            # flexi holds money-market securities).  Include them in the FI
+            # cash portfolios may still have sector exposure (e.g. Cash SGD
+            # flexi holds money-market securities). include them in the FI
             # bucket when sector data is available; skip only when there is
-            # no data to contribute.
+            # no data to contribute
             ptype = 'fixed_income'
 
-        # Flexible column lookup: case-insensitive, then normalised
+        # flexible column lookup: case-insensitive, then normalised
         # (handles e.g. "Silverdale Fund Feb2029" vs "Silverdale Fund (Feb 2029)")
         matched_col = None
         if ticker in df_sector.columns:
@@ -442,7 +398,7 @@ def calculate_sector_score(
 
         sector_col = pd.to_numeric(df_sector[matched_col], errors='coerce').fillna(0)
 
-        # Flag portfolios whose non-ignored sector data sums to zero
+        # flag portfolios whose non-ignored sector data sums to zero
         valid_sector_sum = sum(
             sw for sector, sw in sector_col.items()
             if sw > 0 and sector not in IGNORED_SECTORS
@@ -452,10 +408,10 @@ def calculate_sector_score(
             continue
 
         if ptype in ('equity', 'reit'):
-            # Equity/REIT portfolios: most sectors stay in the equity
-            # bucket.  "Government" is the exception — it represents bond
+            # equity/REIT portfolios: most sectors stay in the equity
+            # bucket. "Government" is the exception — it represents bond
             # exposure inside balanced/growth funds and should be scored
-            # against the FI benchmark proportionately.
+            # against the FI benchmark proportionately
             EQUITY_TO_FI_SECTORS = {'Government'}
             for sector, sw in sector_col.items():
                 if sw <= 0 or sector in IGNORED_SECTORS:
@@ -476,8 +432,8 @@ def calculate_sector_score(
                 if sw <= 0 or sector in IGNORED_SECTORS:
                     continue
                 # FI portfolios may now have GICS sector names (e.g. Income
-                # Enhance updated to GICS).  Map them to BICS so they land in
-                # the FI benchmark comparison instead of the equity bucket.
+                # Enhance updated to GICS). map them to BICS so they land in
+                # the FI benchmark comparison instead of the equity bucket
                 if sector in GICS_TO_BICS_MAP:
                     mapped = GICS_TO_BICS_MAP[sector]
                     fi_sector_weights[mapped] = fi_sector_weights.get(mapped, 0.0) + sw * port_weight
@@ -490,7 +446,7 @@ def calculate_sector_score(
                     fi_sub += sw
                 elif sector in EQUITY_GICS_SECTORS:
                     # GICS sector that shares the same name in BICS (e.g.
-                    # Financials, Industrials) — route to FI bucket directly.
+                    # Financials, Industrials) — route to FI bucket directly
                     bics_name = sector
                     fi_sector_weights[bics_name] = fi_sector_weights.get(bics_name, 0.0) + sw * port_weight
                     if bics_name not in FI_SECTOR_BENCHMARK:
@@ -505,20 +461,20 @@ def calculate_sector_score(
             equity_total += port_weight * eq_sub
             fi_total += port_weight * fi_sub
 
-    # Normalise to percentages within each type
+    # normalise to percentages within each type
     def normalise_to_pct(d, total):
         if total <= 0:
             return {}
         return {k: (v / total) * 100 for k, v in d.items()}
 
-    # Use actual sector weight sums so each bucket's client % sums to 100
+    # use actual sector weight sums so each bucket's client % sums to 100
     eq_sector_sum = sum(equity_sector_weights.values())
     fi_sector_sum = sum(fi_sector_weights.values())
 
     eq_pct = normalise_to_pct(equity_sector_weights, eq_sector_sum) if eq_sector_sum > 0 else {}
     fi_pct = normalise_to_pct(fi_sector_weights, fi_sector_sum) if fi_sector_sum > 0 else {}
 
-    # Score each type against its benchmark
+    # score each type against its benchmark
     def benchmark_gap_score(client_pct: dict, benchmark: dict):
         raw = 0.0
         details = {}
@@ -531,7 +487,7 @@ def calculate_sector_score(
                 'benchmark': round(bw, 2),
                 'contribution': round(contribution, 2),
             }
-        # Flag client sectors that have no benchmark match
+        # flag client sectors that have no benchmark match
         for sector, cw in client_pct.items():
             if sector not in benchmark:
                 details[sector] = {
@@ -550,7 +506,7 @@ def calculate_sector_score(
     if fi_total > 0:
         fi_score, fi_details = benchmark_gap_score(fi_pct, FI_SECTOR_BENCHMARK)
 
-    # Weighted combination — use actual sector sums to avoid double-counting
+    # weighted combination — use actual sector sums to avoid double-counting
     # from equity portfolios whose FI sectors are routed to the FI bucket
     combined_sum = eq_sector_sum + fi_sector_sum
     if combined_sum > 0:
@@ -582,18 +538,7 @@ def calculate_concentration_score(
     holding_weights: Union[pd.Series, dict],
     n_target: int = 1000,
 ) -> dict:
-    """
-    Calculate concentration score using HHI / Effective-N approach.
-
-    Parameters
-    ----------
-    holding_weights : Series or dict of individual (look-through) weights summing to ~1.
-    n_target : target effective number of stocks.
-
-    Returns
-    -------
-    dict with keys: score, hhi, n_eff, n_holdings
-    """
+    """calc concentration score using HHI / effective-N approach. takes holding weights summing to ~1 and target n_eff"""
     if isinstance(holding_weights, dict):
         holding_weights = pd.Series(holding_weights)
 
@@ -647,27 +592,12 @@ def calculate_diversification_score(
     df_underlying,
     concentration_holdings: Optional[pd.Series] = None,
 ) -> dict:
-    """
-    Orchestrator: compute the four sub-scores and the composite.
-
-    Parameters
-    ----------
-    client_weights : dict  {portfolio_name: weight} summing to 1.
-    df_asset_class : DataFrame  (rows=asset classes, cols=tickers)
-    df_sector      : DataFrame  (rows=sectors, cols=tickers)
-    df_country     : DataFrame  (rows=countries, cols=tickers)
-    df_underlying  : DataFrame  underlying holdings data
-    concentration_holdings : pre-computed look-through holdings (optional)
-
-    Returns
-    -------
-    dict with composite score and all sub-score details.
-    """
+    """orchestrator: compute the four sub-scores (asset, geo, sector, conc) and the weighted composite"""
     from utils.exposure import calculate_exposure, get_concentration_exposure
 
-    # Filter out ignored portfolios but keep raw weights (don't renormalize).
-    # The gap from excluded portfolios should reduce coverage scores, not
-    # inflate the remaining ones.
+    # filter out ignored portfolios but keep raw weights (don't renormalize)
+    # the gap from excluded portfolios should reduce coverage scores, not
+    # inflate the remaining ones
     client_weights = {k: v for k, v in client_weights.items() if k not in IGNORED_PORTFOLIOS}
 
     # 1. Asset class
@@ -703,12 +633,12 @@ def calculate_diversification_score(
     else:
         conc_result = calculate_concentration_score({})
 
-    # Data completeness: flag portfolios whose country or sector data
-    # doesn't sum to ~100%.  Tolerance of 2pp handles minor rounding.
+    # data completeness: flag portfolios whose country or sector data
+    # doesn't sum to ~100%. tolerance of 2pp handles minor rounding
     COMPLETENESS_TOL = 0.02
     data_warnings = []
     for ticker in client_weights:
-        # Country completeness
+        # country completeness
         if df_country is not None and ticker in df_country.columns:
             col = pd.to_numeric(df_country[ticker], errors='coerce').fillna(0)
             country_total = col.sum()
@@ -719,7 +649,7 @@ def calculate_diversification_score(
         elif df_country is not None:
             data_warnings.append(f"**{ticker}** has no country data in the backend")
 
-        # Sector completeness — use the same normalised lookup as the scorer
+        # sector completeness — use the same normalised lookup as the scorer
         if df_sector is not None:
             matched_col = None
             if ticker in df_sector.columns:
@@ -738,7 +668,7 @@ def calculate_diversification_score(
             if matched_col is not None:
                 col = pd.to_numeric(df_sector[matched_col], errors='coerce').fillna(0)
                 sector_total = col.sum()
-                # Data is in decimal format (0-1). Flag if it doesn't sum to ~1.0.
+                # data is in decimal format (0-1). flag if it doesn't sum to ~1.0
                 if abs(sector_total - 1.0) > COMPLETENESS_TOL:
                     data_warnings.append(
                         f"**{ticker}** sector data sums to {sector_total * 100:.1f}% (expected ~100%)"
@@ -746,7 +676,7 @@ def calculate_diversification_score(
             else:
                 data_warnings.append(f"**{ticker}** has no sector data in the backend")
 
-    # Final weighted composite (treat None scores as 0 — they'll show an error in the UI)
+    # final weighted composite (treat None scores as 0 — they'll show an error in the UI)
     composite = (
         WEIGHTS['asset'] * (asset_result['score'] or 0)
         + WEIGHTS['geo'] * (geo_result['score'] or 0)

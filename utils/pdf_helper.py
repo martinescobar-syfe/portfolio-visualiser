@@ -56,7 +56,7 @@ Return ONLY a valid JSON object in this exact format:
 Parse the document now and return ONLY the JSON object.
 """
             
-            # Try models in order
+            # try models in order of preference
             models_to_try = [
                 'gemini-2.5-pro',
                 'gemini-2.5-flash',
@@ -99,7 +99,7 @@ Parse the document now and return ONLY the JSON object.
                         holdings_dict[ticker] = {
                             'name': h.get('name', ticker),
                             'value': float(h.get('value', 0)),
-                            'currency': h.get('currency', 'USD')  # Get currency from AI
+                            'currency': h.get('currency', 'USD')  # get currency from AI
                         }
                 return holdings_dict, response_text
             except json.JSONDecodeError as e:

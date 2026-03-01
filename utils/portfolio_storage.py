@@ -3,12 +3,12 @@ import os
 import streamlit as st
 from supabase import create_client, Client
 
-# Supabase config for shared portfolio storage
+# supabase config for shared portfolio storage
 DEFAULT_SUPABASE_URL = "https://wjuvipxkslzkanvisbuh.supabase.co"
 DEFAULT_SUPABASE_KEY = "sb_publishable_ABW9XYxT6MWkuLxMqwkxeA_Uy8R1E6a"
 
 def get_supabase_client() -> Client:
-    """Connect to Supabase, falling back to defaults if no secrets configured."""
+    """connect to supabase, falling back to defaults if no secrets configured"""
     try:
         url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", DEFAULT_SUPABASE_URL))
         key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", DEFAULT_SUPABASE_KEY))
@@ -20,7 +20,7 @@ def get_supabase_client() -> Client:
     except Exception:
         return None
 
-# Local fallback if Supabase unavailable
+# local fallback if supabase unavailable
 DATA_FILE = "Data/saved_portfolios.json"
 
 def load_portfolios():
@@ -51,7 +51,7 @@ def save_portfolio(name, portfolio_data):
     
     if client:
         try:
-            # upsert - insert or update if name exists
+            # upsert (insert or update if name already exists)
             client.table('portfolios').upsert({
                 'name': name,
                 'data': portfolio_data

@@ -39,9 +39,9 @@ def create_table(df, title):
     if df.empty:
         return elements
     else:
-        # Convert all to string for PDF table stability
+        # convert all to string for pdf table stability
         df_str = df.astype(str)
-        table_data = [df.columns.tolist()]  # Add header row
+        table_data = [df.columns.tolist()]  # add header row
         for _, row in df_str.iterrows():
             table_data.append(list(row))
 
@@ -67,7 +67,7 @@ def create_table(df, title):
             ]
         )
 
-        # Highlight rows based on Portfolio ID logic (if applicable)
+        # highlight rows based on portfolio ID logic (if applicable)
         if 'Portfolio ID' in df.columns:
              for i in range(len(df)):
                   if df.iloc[i]['Portfolio ID'] in ['Growth Portfolios', 'Income & Preservation Portfolios', "Core", "Specialised", "Income+", "REITs", "Cash / MMF"]:
@@ -115,10 +115,7 @@ def add_page_numbers(input_pdf, output_pdf, page_size=landscape(A4)):
         writer.write(f)
 
 def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manual=None):
-    """
-    Modified to accept a list of content blocks (dicts) instead of single table/charts.
-    block = {'type': 'table'|'chart', 'data': ...}
-    """
+    """modified to accept a list of content blocks (dicts) instead of single table/charts"""
     elements = []
     temp_images = []
     
@@ -151,10 +148,10 @@ def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manu
         elif block['type'] == 'table':
             table_elems = create_table(block['df'], block.get('title', ''))
             if table_elems:
-                # Last element is the table object
+                # last element is the table object
                 table = table_elems[-1]
-                if isinstance(table, Table) and not isinstance(table, Spacer): # Safety check
-                    # Auto-width logic as per user code
+                if isinstance(table, Table) and not isinstance(table, Spacer): # safety check
+                    # auto-width logic
                     try:
                         text_lengths = block['df'].astype(str).applymap(len).sum(axis=0)
                         total_text_length = sum(text_lengths)
@@ -165,7 +162,7 @@ def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manu
                             else:
                                 table._argW = col_width_manual
                     except:
-                        pass # Fallback to auto
+                        pass # fallback to auto
                 
                 elements.extend(table_elems)
                 elements.append(Spacer(1, 0.2 * inch))
@@ -175,7 +172,7 @@ def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manu
             if not charts: continue
             
             num_charts = len(charts)
-            cols_per_row = 2 # Fixed for consistency
+            cols_per_row = 2 # fixed for consistency
             chart_width = 4.5 * inch
             chart_height = 3.0 * inch
 
@@ -210,14 +207,14 @@ def create_pdf_with_table_and_charts(output_file, content_blocks, col_width_manu
     except Exception as e:
         print(f"PDF Build Failed: {e}")
     
-    # Cleanup
+    # cleanup
     for img in temp_images:
         if os.path.exists(img):
             os.remove(img)
 
 # integration
 
-# Column name mapping for clean display
+# column name mapping for clean display
 COLUMN_NAME_MAPPING = {
     'nav_in_sgd': 'Net Asset Value (SGD)',
     'nav': 'Net Asset Value',
@@ -239,7 +236,7 @@ COLUMN_NAME_MAPPING = {
     'dividend_option': 'Dividend Option',
 }
 
-# Portfolio type to classification mapping
+# portfolio type to classification mapping
 PORTFOLIO_CLASSIFICATION = {
     'Core Equity100': 'Core',
     'Core Growth': 'Core',
@@ -265,7 +262,7 @@ PORTFOLIO_CLASSIFICATION = {
     'Silverdale Fund (Nov 2027)': 'Private Credit',
 }
 
-# Portfolio type to objective mapping
+# portfolio type to objective mapping
 PORTFOLIO_OBJECTIVE = {
     'Core Equity100': 'Wealth Growth',
     'Core Growth': 'Wealth Growth',
@@ -291,7 +288,7 @@ PORTFOLIO_OBJECTIVE = {
     'SRS Cash SGD flexi': 'Capital Preservation',
 }
 
-# Syfe chart colors
+# syfe chart colors
 SYFE_CHART_COLORS = [
     '#0052CC',  # Primary Blue
     '#36B37E',  # Green
@@ -306,24 +303,24 @@ SYFE_CHART_COLORS = [
 ]
 
 def format_column_name(col_name):
-    """Convert column names to clean display format."""
+    """convert column names to clean display format"""
     if col_name in COLUMN_NAME_MAPPING:
         return COLUMN_NAME_MAPPING[col_name]
-    # Convert snake_case to Title Case
+    # convert snake_case to Title Case as fallback
     return col_name.replace('_', ' ').title()
 
 def format_dataframe_for_pdf(df):
-    """Format DataFrame columns and values for PDF display."""
+    """format dataframe columns and values for pdf display"""
     df = df.copy()
     
-    # Rename columns
+    # rename columns
     new_columns = {col: format_column_name(col) for col in df.columns}
     df = df.rename(columns=new_columns)
     
-    # Format numeric columns
+    # format numeric columns
     for col in df.columns:
         if df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
-            # Check if it's a percentage column
+            # check if it's a percentage column
             if 'Allocation' in col or '%' in col or 'Return' in col:
                 df[col] = df[col].apply(lambda x: f"{x:.2%}" if pd.notna(x) and abs(x) < 10 else f"{x:.2f}%" if pd.notna(x) else '-')
             elif 'Value' in col or 'Amount' in col or 'SGD' in col or 'P&L' in col or 'Balance' in col or 'NAV' in col:
@@ -336,11 +333,11 @@ def format_dataframe_for_pdf(df):
     return df
 
 def aggregate_by_portfolio_type(df):
-    """Aggregate portfolio data by type and calculate summary."""
+    """aggregate portfolio data by type and calc summary"""
     if df.empty:
         return pd.DataFrame()
     
-    # Identify value column
+    # identify value column
     value_col = None
     for col in ['nav_in_sgd', 'nav', 'value', 'balance']:
         if col in df.columns:
@@ -350,7 +347,7 @@ def aggregate_by_portfolio_type(df):
     if value_col is None:
         return df
     
-    # Identify type column
+    # identify type column
     type_col = None
     for col in ['type', 'portfolio_type', 'name']:
         if col in df.columns:
@@ -360,26 +357,26 @@ def aggregate_by_portfolio_type(df):
     if type_col is None:
         return df
     
-    # Aggregate by type
+    # aggregate by type
     agg_df = df.groupby(type_col).agg({
         value_col: 'sum'
     }).reset_index()
     
-    # Calculate allocation
+    # calculate allocation
     total = agg_df[value_col].sum()
     agg_df['allocation'] = agg_df[value_col] / total if total > 0 else 0
     
-    # Add classification and objective
+    # add classification and objective
     agg_df['classification'] = agg_df[type_col].map(PORTFOLIO_CLASSIFICATION).fillna('Other')
     agg_df['objective'] = agg_df[type_col].map(PORTFOLIO_OBJECTIVE).fillna('Other')
     
-    # Sort by value descending
+    # sort by value descending
     agg_df = agg_df.sort_values(value_col, ascending=False)
     
     return agg_df
 
 def create_exposure_pie_chart(data, title, colors=None):
-    """Create a pie chart with Syfe styling using Plotly."""
+    """create a pie chart with our syfe styling using plotly"""
     
     if data is None or (isinstance(data, pd.Series) and data.empty):
         return None
@@ -387,7 +384,7 @@ def create_exposure_pie_chart(data, title, colors=None):
     if isinstance(data, dict):
         data = pd.Series(data)
     
-    # Filter small values and limit to top 10
+    # filter small values and limit to top 10
     data = data[data > 0.001]
     if len(data) > 10:
         top_data = data.head(9)
@@ -424,17 +421,7 @@ def create_exposure_pie_chart(data, title, colors=None):
 
 
 def create_native_pie_chart_drawing(data, title="", width=220, height=180):
-    """
-    Creates a native ReportLab pie chart drawing (for PDF export without Plotly).
-    
-    Args:
-        data: pd.Series or dict with labels as keys and values as data
-        title: Chart title
-        width, height: Drawing dimensions
-    
-    Returns:
-        Drawing object or None
-    """
+    """creates a native reportlab pie chart drawing (for pdf export without plotly)"""
     from reportlab.graphics.shapes import Drawing, String
     from reportlab.graphics.charts.piecharts import Pie
     from reportlab.graphics.charts.legends import Legend
@@ -449,12 +436,12 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
     if data.empty or data.sum() == 0:
         return None
     
-    # Filter small values and normalize
+    # filter small values and normalize
     data = data[data > 0.001]
     total = data.sum()
-    data = data / total  # Normalize to percentages
+    data = data / total  # normalize to percentages
     
-    # Limit to top 8 + Others
+    # limit to top 8 + Others
     if len(data) > 8:
         top_data = data.head(7)
         others = data.iloc[7:].sum()
@@ -462,7 +449,7 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
             top_data = pd.concat([top_data, pd.Series({'Others': others})])
         data = top_data
     
-    # Native colors
+    # native colors
     PIE_COLORS_NATIVE = [
         rl_colors.HexColor("#0052CC"),
         rl_colors.HexColor("#36B37E"),
@@ -476,10 +463,10 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
         rl_colors.HexColor("#172B4D"),
     ]
     
-    # Create drawing
+    # create drawing
     d = Drawing(width, height)
     
-    # Create pie chart
+    # create pie chart
     pie = Pie()
     pie.x = width // 2 - 50
     pie.y = 25
@@ -488,13 +475,13 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
     pie.data = list(data.values)
     pie.labels = None
     
-    # Set colors
+    # set colors
     for i in range(len(data)):
         pie.slices[i].fillColor = PIE_COLORS_NATIVE[i % len(PIE_COLORS_NATIVE)]
         pie.slices[i].strokeColor = rl_colors.white
         pie.slices[i].strokeWidth = 1
     
-    # Create legend
+    # create legend
     legend = Legend()
     legend.x = width - 90
     legend.y = height - 30
@@ -511,7 +498,7 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
     legend.dxTextSpace = 4
     legend.alignment = 'right'
     
-    # Legend items with percentages
+    # legend items with percentages
     legend_items = []
     for i, (label, value) in enumerate(data.items()):
         color = PIE_COLORS_NATIVE[i % len(PIE_COLORS_NATIVE)]
@@ -521,7 +508,7 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
     
     legend.colorNamePairs = legend_items
     
-    # Add title
+    # add title
     title_str = String(width // 2, height - 10, title,
                        fontName='Helvetica-Bold', fontSize=9,
                        fillColor=rl_colors.HexColor("#172B4D"), textAnchor='middle')
@@ -533,7 +520,7 @@ def create_native_pie_chart_drawing(data, title="", width=220, height=180):
     return d
 
 def generate_report_content(modules):
-    """Gather data and charts based on selected modules."""
+    """gather data and charts based on selected modules"""
     content_blocks = []
     
     # 1. Client Data Source
@@ -848,7 +835,7 @@ def render_export_ui(modules_selected):
                     total_nav = 0.0
                     
                     def safe_float(val):
-                        """Convert value to float, handling comma-separated numbers."""
+                        """convert value to float, handling comma-separated numbers"""
                         if pd.isna(val):
                             return 0.0
                         if isinstance(val, (int, float)):
@@ -992,7 +979,7 @@ def render_export_ui(modules_selected):
                         mime="application/pdf"
                     )
                     
-                    # Cleanup
+                    # cleanup
                     if os.path.exists(generated_file):
                         os.remove(generated_file)
                     
@@ -1032,19 +1019,13 @@ def render_export_ui(modules_selected):
                 mime="application/pdf"
             )
             
-            # Cleanup
+            # cleanup
             if os.path.exists(temp_filename): os.remove(temp_filename)
             if os.path.exists(final_filename): os.remove(final_filename)
 
 
 def render_portfolio_summary_export_ui(key_prefix="portfolio_summary"):
-    """
-    Renders a Streamlit UI for generating Portfolio Summary PDFs similar to the 
-    Syfe Portfolio Summary format with tables and exposure charts.
-    
-    This function should be called from the main app or a page where client
-    portfolio data is available in session state.
-    """
+    """renders streamlit UI for portfolio summary PDF generation (syfe-style format)"""
     st.markdown("### 📄 Generate Portfolio Summary PDF")
     
     with st.expander("PDF Report Options", expanded=False):
@@ -1144,7 +1125,7 @@ def render_portfolio_summary_export_ui(key_prefix="portfolio_summary"):
                     key=f"{key_prefix}_download_btn"
                 )
                 
-                # Cleanup
+                # cleanup
                 if os.path.exists(generated_file):
                     os.remove(generated_file)
                     
@@ -1163,28 +1144,14 @@ def generate_portfolio_summary_pdf_from_data(
     report_date=None,
     data_path='Data/'
 ):
-    """
-    Programmatic function to generate a Portfolio Summary PDF.
-    
-    Args:
-        client_id: Client identifier
-        df_portfolios: DataFrame with portfolio data
-        asset_class_exposure: Series with asset class weights
-        country_exposure: Series with country weights
-        sector_exposure: Series with sector weights
-        report_date: Report date (defaults to today)
-        data_path: Path to data folder with templates
-    
-    Returns:
-        bytes: PDF file content
-    """
+    """programmatic generation of portfolio summary PDF from client/portfolio data"""
     if report_date is None:
         report_date = date.today()
     
-    # Prepare data
+    # prepare data
     df_summary = prepare_portfolio_summary_df(df_portfolios)
     
-    # Build exposure dict
+    # build exposure dict
     exposure_data = {}
     if asset_class_exposure is not None:
         exposure_data['asset_class'] = asset_class_exposure
@@ -1193,7 +1160,7 @@ def generate_portfolio_summary_pdf_from_data(
     if sector_exposure is not None:
         exposure_data['sector'] = sector_exposure
     
-    # Generate report
+    # generate report
     generator = PortfolioReportGenerator(
         client_id=client_id,
         report_date=report_date,
@@ -1208,11 +1175,11 @@ def generate_portfolio_summary_pdf_from_data(
         output_filename=output_filename
     )
     
-    # Read and return bytes
+    # read and return bytes
     with open(generated_file, "rb") as f:
         pdf_data = f.read()
     
-    # Cleanup
+    # cleanup
     if os.path.exists(generated_file):
         os.remove(generated_file)
     

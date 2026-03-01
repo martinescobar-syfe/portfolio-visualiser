@@ -1,5 +1,5 @@
 
-# Syfe Color Palette
+# syfe color palette
 PRIMARY_BLUE = "#0052CC"
 SECONDARY_BLUE = "#2684FF"
 TERTIARY_BLUE = "#4C9AFF"
@@ -13,7 +13,7 @@ PURPLE = "#6554C0"
 TEAL = "#00B8D9"
 PINK = "#FF5E7D"
 
-# Objective Colors - consistent across all charts
+# objective colors - consistent across all charts
 DARK_GREY = "#4A4A4A"
 LIGHT_GREY = "#B0B0B0"
 
@@ -24,7 +24,7 @@ OBJECTIVE_COLORS = {
     'Unclassified': '#C1C7D0'
 }
 
-# Color Lists for Charts - Dark Blue to Grey gradient
+# color lists for charts - dark blue to grey gradient
 PALETTE = [
     DARK_BLUE,       # #172B4D - Darkest
     PRIMARY_BLUE,    # #0052CC
@@ -37,15 +37,15 @@ PALETTE = [
     "#F5F5F5",       # Near White Grey
 ]
 
-# Diverging Palette for Heatmaps (Blue-centric)
+# diverging palette for heatmaps (blue-centric)
 HEATMAP_COLORS = [
     [0.0, RED],
     [0.5, "#FFFFFF"],
     [1.0, PRIMARY_BLUE]
 ]
 
-# Consistent Asset Class Color Mapping
-# These colors are used for both portfolio type and asset class allocation charts
+# consistent asset class color mapping
+# these colors are used for both portfolio type and asset class allocation charts
 ASSET_CLASS_COLORS = {
     # Equity types - Red/Orange tones
     'Equity': RED,
@@ -81,8 +81,8 @@ ASSET_CLASS_COLORS = {
     'Unclassified': "#808080",
 }
 
-# Portfolio Type to Asset Class Mapping (for color consistency)
-# Maps portfolio names to their primary asset class for coloring
+# portfolio type to asset class mapping (for color consistency)
+# maps portfolio names to their primary asset class for coloring
 PORTFOLIO_TO_ASSET_CLASS = {
     # Core Portfolios - based on dominant asset class
     'Core Equity100': 'Equity',
@@ -122,8 +122,8 @@ PORTFOLIO_TO_ASSET_CLASS = {
     'SRS Cash SGD flexi': 'Cash',
 }
 
-# Portfolio Type to Objective Mapping (for consistent color coding)
-# Maps portfolio names to their investment objective
+# portfolio type to objective mapping (for consistent color coding)
+# maps portfolio names to their investment objective
 PORTFOLIO_TO_OBJECTIVE = {
     # Wealth Growth - Equity-focused portfolios (Blue)
     'Core Equity100': 'Wealth Growth',
@@ -156,25 +156,16 @@ PORTFOLIO_TO_OBJECTIVE = {
 }
 
 def get_portfolio_color(portfolio_name):
-    """Get color for a portfolio based on its investment objective."""
+    """get color for a portfolio based on its investment objective"""
     objective = PORTFOLIO_TO_OBJECTIVE.get(portfolio_name, 'Unclassified')
     return OBJECTIVE_COLORS.get(objective, "#808080")
 
 def get_asset_class_color(asset_class):
-    """Get color for an asset class."""
+    """get color for an asset class"""
     return ASSET_CLASS_COLORS.get(asset_class, "#808080")
 
 def get_color_map_for_items(items, is_portfolio=True):
-    """
-    Generate a color mapping dictionary for a list of items.
-    
-    Args:
-        items: List of portfolio names or asset class names
-        is_portfolio: If True, treats items as portfolio names. If False, as asset classes.
-    
-    Returns:
-        Dict mapping item names to colors
-    """
+    """generate a color mapping dict for a list of items (portfolio names or asset class names)"""
     color_map = {}
     for item in items:
         if is_portfolio:

@@ -23,9 +23,7 @@ def apply_syfe_layout(fig, title="", height=500):
     return fig
 
 def plot_cumulative_returns(df_cum_ret, benchmark_ret=None):
-    """Plot cumulative returns. 
-    Expects df_cum_ret to already be in percentage form (0.94 for 94% return).
-    """
+    """plot cumulative returns, expects df_cum_ret to already be in percentage form (i.e. 0.94 for 94% return)"""
     fig = go.Figure()
     for i, col in enumerate(df_cum_ret.columns):
         fig.add_trace(go.Scatter(
@@ -40,7 +38,7 @@ def plot_cumulative_returns(df_cum_ret, benchmark_ret=None):
         BM_COLORS = ['#000000', '#525252', '#969696', '#252525']
         
         if isinstance(benchmark_ret, (pd.Series, pd.DataFrame)):
-            # Convert benchmark to cumulative returns (percentage form)
+            # convert benchmark to cumulative returns (percentage form)
             bm_cum = (1 + benchmark_ret).cumprod() - 1
             if isinstance(bm_cum, pd.DataFrame):
                 for i, col in enumerate(bm_cum.columns):
@@ -196,7 +194,7 @@ def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
     """
     from styles.syfe_colors import DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE, LIGHT_BLUE, DARK_GREY, LIGHT_GREY
     
-    # Sort by weight (ascending for horizontal bar - smallest at bottom, largest at top)
+    # sort by weight (ascending for horizontal bar - smallest at bottom, largest at top)
     sorted_weights = weights_series.sort_values(ascending=True)
     
     fig = px.bar(
@@ -204,7 +202,7 @@ def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
         y=sorted_weights.index,
         orientation='h',
         color=sorted_weights.values,
-        # Dark Blue (low) -> Light Blue -> Grey (high) - using PALETTE colors
+        # dark blue (low) -> light blue -> grey (high) - using PALETTE colors
         color_continuous_scale=[
             [0, DARK_BLUE],      # #172B4D
             [0.2, PRIMARY_BLUE], # #0052CC

@@ -38,7 +38,7 @@ def get_portfolio_objective(portfolio_name):
 
 
 def _render_diversification_score(client_weights, df_asset_class, df_sector, df_country, df_underlying, key_prefix):
-    """Render diversification score: hero, 4 clickable cards, detail panel below, auto AI insights."""
+    """render diversification score: hero, 4 clickable cards, detail panel below, auto AI insights"""
     from utils.diversification_score import (
         calculate_diversification_score, WEIGHTS,
         calculate_geography_score, calculate_sector_score,
@@ -70,7 +70,7 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
         if s >= 4: return '#4C9AFF'
         return '#B0B0B0'
 
-    # Big score at the top
+    # big score at the top
     st.markdown(
         f'<div style="text-align:center;padding:24px 0 8px">'
         f'<span style="font-size:56px;font-weight:800;color:{score_color_hex(composite)}">{composite:.1f}</span>'
@@ -80,7 +80,7 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
         unsafe_allow_html=True,
     )
 
-    # Score cards — click one to see its detail table below
+    # score cards — click one to see its detail table below
     state_key = f"{key_prefix}_div_selected"
     if state_key not in st.session_state:
         st.session_state[state_key] = None
@@ -153,7 +153,7 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
                 unsafe_allow_html=True,
             )
 
-    # Data completeness warnings (country / sector not summing to 100%)
+    # data completeness warnings (country / sector not summing to 100%)
     data_warnings = result.get('data_warnings', [])
     if data_warnings:
         warning_items = "".join(f"<li>{w}</li>" for w in data_warnings)
@@ -167,14 +167,14 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
             unsafe_allow_html=True,
         )
 
-    # Detail panel for whichever card is selected
+    # detail panel for whichever card is selected
     selected = st.session_state.get(state_key)
     if selected is None:
         return
 
     st.markdown("---")
 
-    # Growth/Income filter helpers
+    # growth/income filter helpers
     def _split_by_objective(cw):
         growth, income, other = {}, {}, {}
         for t, w in cw.items():
@@ -383,7 +383,7 @@ def _get_conc_brief(conc):
 def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, key_prefix="upload"):
     st.header("1. Client Data Source")
     
-    # Create tabs for different data sources
+    # create tabs for different data sources
     tab_csv, tab_metabase = st.tabs(["📂 CSV Upload", "🔍 Metabase Lookup"])
     
     df_client = None
@@ -407,7 +407,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     if first_id and len(first_id) > 3:
                         client_id = first_id[:10]
                 st.session_state['csv_client_df'] = df_client
-                st.session_state['metabase_client_df'] = df_client  # Also set this for compatibility
+                st.session_state['metabase_client_df'] = df_client  # also set this for compatibility
                 st.session_state['metabase_client_info'] = {
                     'client_id': client_id,
                     'name': uploaded_file.name.replace('.csv', ''),
@@ -455,7 +455,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                                     holdings_cols.append(col)
                             holdings_list = fetched_df[holdings_cols].to_dict('records') if holdings_cols else []
                             ai_analysis = analyze_portfolio_appropriateness(
-                                "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0", # Hardcoded key
+                                "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0", # hardcoded key
                                 st.session_state['client_profile'],
                                 holdings_list
                             )
@@ -485,7 +485,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     display_cols = list(df_display.columns)
                 
                 st.dataframe(df_display[display_cols], use_container_width=True)
-                df_client = df_display # Set for downstream processing
+                df_client = df_display # set for downstream processing
             else:
                 st.warning("Client has no ACTIVE or ACTIVE_NEW portfolios.")
 
@@ -596,42 +596,42 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     ticker = 'Cash SGD flexi'
             elif normalized_type in CLIENT_PORTFOLIO_MAPPING:
                 ticker = CLIENT_PORTFOLIO_MAPPING[normalized_type]
-            # Fallback: "contains" matching for Blackrock, Monroe, Custom, Downside (handles various CSV naming conventions)
+            # fallback: "contains" matching for Blackrock, Monroe, Custom, Downside (handles various CSV naming conventions)
             elif 'BLACKROCK' in normalized_type:
                 ticker = 'Blackrock Private Credit Fund'
             elif 'MONROE' in normalized_type:
                 ticker = 'Monroe Income Plus Fund'
             elif 'CUSTOM' in normalized_type:
-                ticker = 'Custom Usd'  # Map to a recognizable name for alternatives
+                ticker = 'Custom Usd'  # map to a recognizable name for alternatives
             elif 'DOWNSIDE' in normalized_type:
                 ticker = 'Downside Protected'
             elif 'SILVER' in normalized_type or 'SILVERDALE' in normalized_type:
-                # Extract date from name (e.g., "SILVER_DALE_USD_FEB2029" -> "Silverdale Fund Feb2029")
+                # extract date from name (e.g. "SILVER_DALE_USD_FEB2029" -> "Silverdale Fund Feb2029")
                 import re
                 date_match = re.search(r'(NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*(\d{4})', normalized_type)
                 if date_match:
                     month = date_match.group(1).title()
                     year = date_match.group(2)
-                    ticker = f'Silverdale Fund {month}{year}'  # Match Excel format
+                    ticker = f'Silverdale Fund {month}{year}'  # match Excel format
                 else:
-                    ticker = 'Silverdale Fund Feb2029'  # Default
+                    ticker = 'Silverdale Fund Feb2029'  # default
         
             if ticker:
                 client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
                 total_nav += nav
     
         if total_nav > 0:
-            # Calculate weights
+            # calculate weights
             client_weights = {k: v/total_nav for k, v in client_holdings.items()}
         
-            # Calculate Asset Allocation
+            # calculate asset allocation
             asset_allocation = {}
             for ticker, weight in client_weights.items():
                 if ticker in df_asset_class.columns:
-                    # Get asset breakdown for this ticker
+                    # get asset breakdown for this ticker
                     ticker_assets = df_asset_class[ticker]
                     for asset, asset_weight in ticker_assets.items():
-                        # Safely convert asset_weight to float
+                        # safely convert asset_weight to float
                         try:
                             aw = float(asset_weight) if not pd.isna(asset_weight) else 0.0
                         except (ValueError, TypeError):
@@ -639,15 +639,15 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         if aw > 0:
                             asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
                 else:
-                    # Only CUSTOM is hardcoded as Specialized/alternatives (others should be in Excel)
+                    # only CUSTOM is hardcoded as Specialized/alternatives (others should be in our Excel)
                     ticker_lower = ticker.lower()
                     if 'custom' in ticker_lower:
                         asset_allocation['Specialized / alternatives'] = asset_allocation.get('Specialized / alternatives', 0.0) + weight
                     else:
-                        # Fallback for other unknown tickers
+                        # fallback for other unknown tickers
                         asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
 
-            # Calculate Objective Allocation
+            # calculate objective allocation
             objective_allocation = {}
             for ticker, weight in client_weights.items():
                 obj = get_portfolio_objective(ticker)
@@ -655,21 +655,21 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
 
             st.markdown("### Portfolio Summary")
             
-            # Identify top portfolio types
+            # identify top portfolio types
             sorted_ports = sorted(client_weights.items(), key=lambda x: x[1], reverse=True)
             top_port = sorted_ports[0][0] if sorted_ports else "N/A"
             
-            # Identify dominant objective
+            # identify dominant objective
             sorted_objs = sorted(objective_allocation.items(), key=lambda x: x[1], reverse=True)
             top_obj = sorted_objs[0][0] if sorted_objs else "N/A"
             
-            # Identify top underlying (concentration) across all portfolios
+            # identify top underlying (concentration) across all portfolios
             # We need to re-calculate concentration here for the summary text
             top_holdings_str = ""
             if df_underlying is not None and not df_underlying.empty:
-                # Calculate strict top 3 for summary
-                # Re-use exposure logic
-                # Create a series from client_weights
+                # calculate strict top 3 for summary
+                # re-use exposure logic
+                # create a series from client_weights
                 w_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
                 conc_exp = get_concentration_exposure(w_series, df_underlying, top_n=3)
                 if not conc_exp.empty:
@@ -851,7 +851,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     )
                     st.plotly_chart(fig_donut, use_container_width=True, key=f"{key_prefix}_div_donut")
 
-                    # AI insights
+                    # ai insights
                     insight_key = f"{key_prefix}_div_insights"
                     if insight_key not in st.session_state:
                         with st.spinner("Generating insights..."):
@@ -876,7 +876,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                                 unsafe_allow_html=True,
                             )
 
-                    # Data completeness warnings
+                    # data completeness warnings
                     data_warnings = div_result.get('data_warnings', [])
                     if data_warnings:
                         warning_items = "".join(f"<li>{w}</li>" for w in data_warnings)
@@ -968,12 +968,12 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
 
             st.divider()
 
-            # Load into Portfolio 1 Button
+            # load into portfolio 1 button
             c_load1, c_load_new = st.columns(2)
             
             with c_load1:
                 if st.button("Load into Portfolio 1", key=f"{key_prefix}_load_p1"):
-                    # Update underlying data
+                    # update underlying data
                     st.session_state.portfolios[0]['name'] = "Client Portfolio"
                     st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
                     st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
@@ -981,11 +981,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     st.session_state.portfolios[0]['cash_invested'] = total_nav
                     st.session_state.portfolios[0]['cash_currency'] = 'SGD'  # CSV nav_in_sgd is already in SGD
                 
-                    # Update dollar amounts and decimal weights dictionaries
+                    # update dollar amounts and decimal weights dictionaries
                     st.session_state.portfolios[0]['dollar_amounts'] = client_holdings
                     st.session_state.portfolios[0]['decimal_weights'] = client_weights
                 
-                    # Increment refresh counter to force widget update
+                    # increment refresh counter to force widget update
                     st.session_state.refresh_counter += 1
                 
                     st.success("Loaded client portfolio into Portfolio 1!")
@@ -1020,11 +1020,9 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
 
 
 def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key_prefix="pdf_upload"):
-    """
-    Render a PDF upload section for parsing client portfolio PDFs using Gemini AI.
-    Extracts stock holdings and provides country/sector exposure analysis via yfinance.
-    Uses parallel dual-pass parsing for accuracy scoring.
-    """
+    """render a PDF upload section for parsing client portfolio PDFs using Gemini AI.
+    extracts stock holdings and provides country/sector exposure analysis via yfinance.
+    uses parallel dual-pass parsing for accuracy scoring"""
     from utils.pdf_helper import (
         parse_pdf_parallel,
         enrich_with_yfinance,
@@ -1041,7 +1039,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
     
     st.markdown("Upload a PDF document (e.g., brokerage statement) to extract stock holdings and analyze country/sector exposure.")
     
-    # Presentation Currency Selector
+    # presentation currency selector
     col_ccy, col_spacer = st.columns([1, 3])
     with col_ccy:
         presentation_ccy = st.selectbox(
@@ -1051,16 +1049,16 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
             help="Convert all values to this currency using latest yfinance rates"
         )
     
-    # Helper function to get FX rate from yfinance
-    @st.cache_data(ttl=3600)  # Cache for 1 hour
+    # helper function to get fx rate from yfinance
+    @st.cache_data(ttl=3600)  # cache for 1 hour
     def get_fx_rate(from_ccy, to_ccy):
-        """Get FX rate using yfinance. Retries until successful."""
+        """get fx rate using yfinance, retries until successful"""
         if from_ccy == to_ccy:
             return 1.0
         if not from_ccy or not to_ccy:
             return 1.0
         
-        # Normalize currency codes (CNH and CNY are both Chinese Yuan)
+        # normalise currency codes (CNH and CNY are both Chinese Yuan)
         from_ccy = from_ccy.upper().strip()
         to_ccy = to_ccy.upper().strip()
         if from_ccy == 'CNH':
@@ -1077,7 +1075,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Try direct pair first (e.g., SGDUSD=X)
+                # try direct pair first (e.g. SGDUSD=X)
                 ticker = f"{from_ccy}{to_ccy}=X"
                 print(f"  Trying FX: {ticker} (attempt {attempt+1})")
                 fx = yf.Ticker(ticker)
@@ -1088,7 +1086,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                         print(f"  SUCCESS: {ticker} = {rate}")
                         return rate
                 
-                # Try inverse pair and invert
+                # try inverse pair and invert
                 ticker_inv = f"{to_ccy}{from_ccy}=X"
                 print(f"  Trying FX inverse: {ticker_inv} (attempt {attempt+1})")
                 fx_inv = yf.Ticker(ticker_inv)
@@ -1100,7 +1098,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                         print(f"  SUCCESS: 1/{ticker_inv} = {rate}")
                         return rate
                 
-                # Wait before retry
+                # wait before retry
                 if attempt < max_retries - 1:
                     time.sleep(1)
                     
@@ -1109,7 +1107,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                 if attempt < max_retries - 1:
                     time.sleep(1)
         
-        # After all retries failed, return 1.0 (no conversion)
+        # after all retries failed, return 1.0 (no conversion)
         print(f"  FAILED: Could not get rate for {from_ccy} -> {to_ccy}, returning 1.0")
         return 1.0
     
@@ -1121,15 +1119,15 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
     )
     
     if uploaded_pdf:
-        # Store in session state if not already processed
+        # store in session state if not already processed
         pdf_key = f"{key_prefix}_parsed_data"
         
-        # Check if we need to reprocess (new file uploaded)
+        # check if we need to reprocess (new file uploaded)
         current_filename = uploaded_pdf.name
         stored_filename = st.session_state.get(f"{key_prefix}_filename", "")
         
         if current_filename != stored_filename:
-            # New file - process it with parallel dual-pass parsing
+            # new file - process it with parallel dual-pass parsing
             with st.spinner("Parsing PDF with Gemini AI..."):
                 pdf_bytes = uploaded_pdf.read()
                 holdings, accuracy_metrics, raw_responses = parse_pdf_parallel(api_key, pdf_bytes, uploaded_pdf.name, num_passes=2)
@@ -1140,7 +1138,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                         country_exp, sector_exp = calculate_aggregate_exposure(enriched)
                         holdings_df = format_holdings_dataframe(enriched)
                         
-                        # Store in session state
+                        # store in session state
                         st.session_state[pdf_key] = {
                             'holdings': holdings,
                             'enriched': enriched,
@@ -1156,30 +1154,30 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                     st.error(f"Could not extract holdings from PDF.\n\n**Details:**\n{raw_responses}")
                     return
         
-        # Display results if we have them
+        # display results if we have them
         if pdf_key in st.session_state:
             data = st.session_state[pdf_key]
-            holdings_df = data['holdings_df'].copy()  # Make a copy to avoid modifying original
+            holdings_df = data['holdings_df'].copy()  # make a copy to avoid modifying original
             country_exp = data['country_exp']
             sector_exp = data['sector_exp']
             failed = data['failed']
             enriched = data['enriched']
             
-            # Apply currency conversion
-            # Get unique source currencies from the data and fetch FX rates
+            # apply currency conversion
+            # get unique source currencies from the data and fetch fx rates
             fx_rates = {}
             for ticker, info in enriched.items():
                 source_ccy = info.get('currency', 'USD')
                 if source_ccy and source_ccy not in fx_rates:
                     fx_rates[source_ccy] = get_fx_rate(source_ccy, presentation_ccy)
             
-            # Print FX rates to terminal for debugging
+            # print fx rates to terminal for debugging
             print(f"=== FX RATES DEBUG (presentation_ccy={presentation_ccy}) ===")
             for ccy, rate in fx_rates.items():
                 print(f"  {ccy} → {presentation_ccy}: {rate}")
             
-            # Convert values in holdings_df
-            # The Currency column shows the original currency from yfinance
+            # convert values in holdings_df
+            # the currency column shows the original currency from yfinance
             # We convert from that currency to the presentation currency
             def convert_value(row):
                 source_ccy = row.get('Currency', 'USD')
@@ -1189,34 +1187,34 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                 converted = 'Yes' if abs(rate - 1.0) > 0.0001 else 'No'
                 return row['Value ($)'] * rate, rate, converted
             
-            # Apply conversion
+            # apply conversion
             result = holdings_df.apply(convert_value, axis=1, result_type='expand')
             result.columns = ['Converted_Value', 'Rate_Applied', 'Converted?']
             holdings_df['Value'] = result['Converted_Value']
             holdings_df['Converted?'] = result['Converted?']
-            holdings_df['FX Rate'] = result['Rate_Applied']  # Add rate column for debugging
+            holdings_df['FX Rate'] = result['Rate_Applied']  # add rate column for debugging
             
-            # Rename Currency to Original Currency to clarify it's the source currency
+            # rename currency to original currency to clarify it's the source currency
             holdings_df = holdings_df.rename(columns={'Currency': 'Original Currency'})
             
             holdings_df['Weight (%)'] = holdings_df['Value'] / holdings_df['Value'].sum()
             
-            # Rename column to reflect presentation currency
+            # rename column to reflect presentation currency
             holdings_df = holdings_df.rename(columns={'Value': f'Value ({presentation_ccy})'})
             holdings_df = holdings_df.drop(columns=['Value ($)'])
             
-            # Reorder columns - include FX Rate for debugging
+            # reorder columns - include fx rate for debugging
             col_order = ['Ticker', 'Name', f'Value ({presentation_ccy})', 'Weight (%)', 'Country', 'Sector', 'Original Currency', 'FX Rate', 'Converted?']
             holdings_df = holdings_df[[c for c in col_order if c in holdings_df.columns]]
             
             total_value = holdings_df[f'Value ({presentation_ccy})'].sum()
             
-            # Summary with correct currency symbol
+            # summary with correct currency symbol
             ccy_symbols = {'USD': '$', 'SGD': 'S$', 'HKD': 'HK$'}
             ccy_symbol = ccy_symbols.get(presentation_ccy, '$')
             st.success(f"Found {len(holdings_df)} holdings with total value of {ccy_symbol}{total_value:,.2f} {presentation_ccy}")
             
-            # Display accuracy metrics from parallel parsing
+            # display accuracy metrics from parallel parsing
             accuracy_metrics = data.get('accuracy_metrics', {})
             if accuracy_metrics:
                 acc_score = accuracy_metrics.get('accuracy_score', 0)
@@ -1228,11 +1226,11 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                 with col_acc2:
                     st.metric("Ticker Agreement", f"{ticker_agree:.1f}%")
             
-            # Failed tickers warning
+            # failed tickers warning
             if failed:
                 st.warning(f"{len(failed)} ticker(s) could not be found via yfinance: {', '.join(failed)}")
             
-            # Holdings Table (removed emoji)
+            # holdings table
             st.subheader("Extracted Holdings")
             value_col = f'Value ({presentation_ccy})'
             st.dataframe(
@@ -1244,7 +1242,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                 hide_index=True
             )
             
-            # Exposure Charts (removed emoji)
+            # exposure charts
             st.subheader("Exposure Analysis")
             
             col_country, col_sector = st.columns(2)
@@ -1252,7 +1250,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
             with col_country:
                 st.markdown("**Country Exposure**")
                 if country_exp:
-                    # Use project's plot_allocation_pie for consistent styling
+                    # use project's plot_allocation_pie for consistent styling
                     country_series = pd.Series(country_exp)
                     fig_country = plot_allocation_pie(country_series, title='Country Allocation')
                     st.plotly_chart(fig_country, use_container_width=True, key=f"{key_prefix}_country_pie")
@@ -1269,7 +1267,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
             with col_sector:
                 st.markdown("**Sector Exposure**")
                 if sector_exp:
-                    # Use project's plot_allocation_pie for consistent styling
+                    # use project's plot_allocation_pie for consistent styling
                     sector_series = pd.Series(sector_exp)
                     fig_sector = plot_allocation_pie(sector_series, title='Sector Allocation')
                     st.plotly_chart(fig_sector, use_container_width=True, key=f"{key_prefix}_sector_pie")
@@ -1283,13 +1281,13 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                 else:
                     st.info("No sector data available.")
             
-            # Load into Portfolio Analysis
+            # load into portfolio analysis
             st.markdown("---")
             col_load1, col_load_new = st.columns(2)
             
             with col_load1:
                 if st.button("Load into Portfolio 1", key=f"{key_prefix}_load_p1"):
-                    # Create weights from values
+                    # create weights from values
                     client_weights = {}
                     client_holdings_raw = {}
                     
@@ -1297,13 +1295,13 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                         client_weights[ticker] = info['value'] / total_value if total_value > 0 else 0
                         client_holdings_raw[ticker] = info['value']
                     
-                    # Update session state
+                    # update session state
                     st.session_state.portfolios[0]['name'] = "PDF Portfolio"
                     st.session_state.portfolios[0]['tickers'] = list(client_weights.keys())
                     st.session_state.portfolios[0]['allocation_type'] = 'Fixed Weight'
                     st.session_state.portfolios[0]['fixed_weights'] = client_weights
                     st.session_state.portfolios[0]['cash_invested'] = total_value
-                    st.session_state.portfolios[0]['cash_currency'] = presentation_ccy  # Use selected presentation currency
+                    st.session_state.portfolios[0]['cash_currency'] = presentation_ccy  # use selected presentation currency
                     st.session_state.portfolios[0]['dollar_amounts'] = client_holdings_raw
                     st.session_state.portfolios[0]['decimal_weights'] = client_weights
                     
@@ -1313,7 +1311,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
             
             with col_load_new:
                 if st.button("Load as New Portfolio", key=f"{key_prefix}_load_new"):
-                    # Create weights from values
+                    # create weights from values
                     client_weights = {}
                     client_holdings_raw = {}
                     
@@ -1331,7 +1329,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                         'min_weight': 0.0,
                         'max_weight': 1.0,
                         'cash_invested': total_value,
-                        'cash_currency': presentation_ccy,  # Use selected presentation currency
+                        'cash_currency': presentation_ccy,  # use selected presentation currency
                         'fixed_weights': client_weights,
                         'dollar_amounts': client_holdings_raw,
                         'decimal_weights': client_weights
@@ -1341,7 +1339,7 @@ def render_client_pdf_upload(api_key, df_asset_class, df_sector, df_country, key
                     st.success(f"Created new portfolio 'PDF Upload {new_id}'!")
                     st.rerun()
             
-            # Debug expander
+            # debug expander
             with st.expander("Debug: Raw AI Response"):
                 st.text(data.get('raw_response', 'No raw response available'))
 
@@ -1377,7 +1375,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             format="%d%%",
             help="Percentage of monthly income saved/invested.",
             key=f"{key_prefix}_sav"
-        ) / 100.0  # Convert back to decimal for calculations
+        ) / 100.0  # convert back to decimal for calculations
         
     with col_p2:
         liquid_assets = st.number_input(
@@ -1409,7 +1407,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     st.subheader("2.2 Investment Goals")
     st.markdown("Please define your goals below.")
     
-    # Default data for the table
+    # default data for the table
     default_goals = pd.DataFrame(
         [
             {"Goal Name": "Retirement", "Objective": "Wealth Growth", "Target Amount ($)": 1000000, "Lump Sum ($)": 50000, "Tenure (Years)": 20, "Risk Tolerance": "Moderate (20% drawdown)"},
@@ -1469,7 +1467,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
     st.markdown("---")
     if st.button("Generate Smart Recommendation", type="primary", key=f"{key_prefix}_calc"):
         
-        # Derive risk willingness from goals table (use most conservative)
+        # derive risk willingness from goals table (use most conservative)
         risk_map = {
             "Low (10-15% drawdown)": 4,
             "Moderate (20% drawdown)": 3,
@@ -1477,21 +1475,21 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             "Maximum (30%+ drawdown)": 1
         }
         
-        risk_willingness = 3  # Default moderate
+        risk_willingness = 3  # default moderate
         if not goal_df.empty and "Risk Tolerance" in goal_df.columns:
-            # Use the most conservative (highest number = most conservative)
+            # use the most conservative (highest number = most conservative)
             risk_values = [risk_map.get(r, 3) for r in goal_df["Risk Tolerance"].dropna()]
             if risk_values:
-                risk_willingness = max(risk_values)  # Most conservative
+                risk_willingness = max(risk_values)  # most conservative
         
-        # Derive horizon from goals table (use maximum tenure)
-        horizon_years = 10  # Default
+        # derive horizon from goals table (use maximum tenure)
+        horizon_years = 10  # default
         if not goal_df.empty and "Tenure (Years)" in goal_df.columns:
             tenures = goal_df["Tenure (Years)"].dropna()
             if not tenures.empty:
                 horizon_years = tenures.max()
 
-        # Create profile dict
+        # create profile dict
         profile = {
             'risk_willingness': risk_willingness,
             'time_horizon_years': horizon_years,
@@ -1503,7 +1501,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
             'investment_knowledge': knowledge,
             'Interest in AI': "Yes" if interest_in_ai else "No",
             'Qualitative Details': qualitative_details,
-            'Goals': goal_df.to_csv(index=False), # Pass table as CSV text to LLM (includes Risk Tolerance per goal)
+            'Goals': goal_df.to_csv(index=False), # pass table as csv text to LLM (includes Risk Tolerance per goal)
             'Risk Score': 'Calculating...' 
         }
         
@@ -1517,10 +1515,10 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         with st.spinner("Generating AI-powered Recommendation..."):
             rec_text = get_gemini_recommendation(GEMINI_API_KEY, profile)
             
-        # Parse data for Logic
+        # parse data for logic
         portfolios, failed = parse_recommendation_table(rec_text)
 
-        # Create maps
+        # create maps
         goal_map = {}
         target_map = {}
         if not goal_df.empty and "Goal Name" in goal_df.columns and "Lump Sum ($)" in goal_df.columns:
@@ -1529,7 +1527,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 if "Target Amount ($)" in goal_df.columns:
                     target_map[row["Goal Name"]] = row["Target Amount ($)"]
 
-        # Store in session state
+        # store in session state
         st.session_state.rec_results = {
             'score': score,
             'overrides': overrides,
@@ -1548,22 +1546,22 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
         rec_text = results.get('rec_text', '')
         portfolios = results.get('portfolios_data', {})
         
-        # Display Score First
+        # display score first
         st.success(f"**Client Risk Score: {score}/5**")
         if overrides:
             st.warning(f"**Score Adjustments:** {', '.join(overrides)}")
             
-        # Display Narrative (Text Only)
+        # display narrative (text only)
         st.markdown(f"### Proposed Strategy")
         
-        # Parse text to highlight notes, but SKIP the markdown table lines
+        # parse text to highlight notes, but skip the markdown table lines
         lines = rec_text.split('\n')
         narrative_lines = []
         skip_table = False
         
         for line in lines:
             line_stripped = line.strip()
-            # Detect table boundary
+            # detect table boundary
             if line_stripped.startswith("|") and "Objective" in line_stripped:
                 skip_table = True
             elif skip_table and not line_stripped.startswith("|"):
@@ -1577,14 +1575,14 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 st.success(line)
             elif "Detailed Analysis" in line or "Investment Strategy" in line:
                  st.markdown(f"#### {line}")
-            elif line.strip(): # Skip empty lines if excessive
+            elif line.strip(): # skip empty lines if excessive
                 st.markdown(line)
 
-        # Render Structured Table (Deterministic Display)
+        # render structured table (deterministic display)
         if portfolios:
             st.markdown("#### Recommended Allocation")
             
-            # Convert nested dict to flat list for display
+            # convert nested dict to flat list for display
             table_rows = []
             for goal, data in portfolios.items():
                 horizon = data.get('horizon', 10)
@@ -1607,38 +1605,38 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                     hide_index=True
                 )
         else:
-            # Fallback if parsing fails - show raw just in case
+            # fallback if parsing fails - show raw just in case
             st.warning("Could not structure table data. Displaying raw output:")
             st.markdown(rec_text)
         
     if 'rec_results' in st.session_state:
         st.markdown("---")
         if st.button("Add Selected Strategy to Portfolio Analysis", key=f"{key_prefix}_add_strat"):
-            # Logic to add the "Primary" one or let user choose from eligible?
-            # For simplicity, if Rec Text suggests "Core Equity 100", let's try to add that.
-            # Or just add a placeholder/empty portfolio named after the objective/strategy.
+            # logic to add the "Primary" one or let user choose from eligible?
+            # for simplicity, if rec text suggests "Core Equity 100", let's try to add that.
+            # or just add a placeholder/empty portfolio named after the objective/strategy.
             
-            # Let's add the first eligible portfolio or specific top 1
-            # Based on standard flow we need tickers.
-            # Since we don't have hardcoded tickers for "Core Equity 100" inside this code block,
+            # let's add the first eligible portfolio or specific top 1
+            # based on standard flow we need tickers.
+            # since we don't have hardcoded tickers for "Core Equity 100" inside this code block,
             # we rely on the user to construct it or we preload standard templates.
-            # The previous code used LLM to get allocations.
-            # Here "At no time are we changing the output of the AI recommendation" -> This implies we might still need LLM?
+            # the previous code used LLM to get allocations.
+            # here "at no time are we changing the output of the AI recommendation" -> this implies we might still need LLM?
             # "Note at no time are we changing the output of the AI recommendation" -> This was in the prompt start.
             # BUT later: "Replace the current script... Recommender Engine Overhaul... AI generation questionnaire... simplify it... Risk Engine...".
-            # The prompt is slightly contradictory. "Note at no time are we changing the output of the AI recommendation" vs "Recommender Engine Overhaul".
-            # I think the user means: The *content* of the products (Core Equity 100 tickers) hasn't changed, but the *Selection Logic* has.
+            # the prompt is slightly contradictory. "Note at no time are we changing the output of the AI recommendation" vs "Recommender Engine Overhaul".
+            # I think the user means: the *content* of the products (Core Equity 100 tickers) hasn't changed, but the *Selection Logic* has.
             # OR, maybe we should still call Gemini to get the *allocations* for "Core Equity 100"?
-            # Or we assume "Core Equity 100" is a known template.
-            # Given I don't have a template library loaded, I will add an empty portfolio named "Recommended Strategy" 
+            # or we assume "Core Equity 100" is a known template.
+            # given I don't have a template library loaded, I will add an empty portfolio named "Recommended Strategy" 
             # and let the user fill it, OR call Gemini just for value-add?
-            # Re-reading: "Note at no time are we changing the output of the AI recommendation" -> Maybe this refers to the previous artifact's specific table format?
-            # But the detailed "Risk Engine" instructions clearly mandate a DETERMINISTIC score and eligible list.
-            # So the "AI Recommendation" in the prompt likely refers to the *Goal Mapper* logic which I implemented deterministically.
+            # re-reading: "Note at no time are we changing the output of the AI recommendation" -> maybe this refers to the previous artifact's specific table format?
+            # but the detailed "Risk Engine" instructions clearly mandate a DETERMINISTIC score and eligible list.
+            # so the "AI Recommendation" in the prompt likely refers to the *Goal Mapper* logic which I implemented deterministically.
             
-            # To be safe and useful: I will create a new portfolio named with the Top Recommendation Name.
-            # If the name matches `CLIENT_PORTFOLIO_MAPPING` we used earlier, we assume user knows what it is.
-            # Actually, without a template DB, I can't populate tickers.
+            # to be safe and useful: I will create a new portfolio named with the Top Recommendation Name.
+            # if the name matches `CLIENT_PORTFOLIO_MAPPING` we used earlier, we assume user knows what it is.
+            # actually, without a template DB, I can't populate tickers.
             # I will just create a shell portfolio.
             
             results = st.session_state.rec_results
@@ -1658,9 +1656,9 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                     if not tickers:
                         continue
                         
-                    # Lookup Lump Sum and Target Amount from Goal Maps
+                    # lookup lump sum and target amount from goal maps
                     lump_sum = float(goal_map.get(goal_name, 100000.0))
-                    target_amount = float(target_map.get(goal_name, lump_sum * 2))  # Default to 2x lump sum if not specified
+                    target_amount = float(target_map.get(goal_name, lump_sum * 2))  # default to 2x lump sum if not specified
                         
                     st.session_state.portfolios.append({
                         'id': new_id,
@@ -1671,12 +1669,12 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                         'rebal_freq': 'Quarterly',
                         'min_weight': 0.0,
                         'max_weight': 1.0,
-                        'cash_invested': lump_sum, # Use mapped lump sum
-                        'cash_currency': 'SGD',  # Recommender lump sum is in SGD
-                        'target_amount': target_amount, # Target amount from goal
+                        'cash_invested': lump_sum, # use mapped lump sum
+                        'cash_currency': 'SGD',  # recommender lump sum is in SGD
+                        'target_amount': target_amount, # target amount from goal
                         'fixed_weights': allocs,
-                        'decimal_weights': allocs, # Sync
-                        'dollar_amounts': {ticker: lump_sum * weight for ticker, weight in allocs.items()}, # Proportional to lump sum
+                        'decimal_weights': allocs, # sync
+                        'dollar_amounts': {ticker: lump_sum * weight for ticker, weight in allocs.items()}, # proportional to lump sum
                         'objective': p_data.get('objective', 'Wealth Growth'),
                         'horizon': p_data.get('horizon', 10)
                     })
@@ -1685,7 +1683,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
                 if added_count > 0:
                     st.session_state.refresh_counter += 1
                     st.success(f"Added {added_count} recommended strategies to Portfolio Construction!")
-                    # Don't rerun - keep recommendation visible
+                    # don't rerun - keep recommendation visible
                 else:
                     st.warning("No valid portfolios found in recommendation to add.")
             else:
@@ -1694,7 +1692,7 @@ def render_recommender(GEMINI_API_KEY, key_prefix="rec"):
 def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, data_source, start_date, end_date, currency, backtest_offset_days, data_path, df_fi_metrics, df_fx, df_daily_ret, key_prefix="cons"):
     st.header("3. Portfolio Construction")
     
-    # Calculate Data Date Range for Tooltips
+    # calculate data date range for tooltips
     start_str = "N/A"
     end_str = "N/A"
     if df_daily_ret is not None and not df_daily_ret.empty:
@@ -1717,14 +1715,14 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 'min_weight': 0.0,
                 'max_weight': 1.0,
                 'cash_invested': 0.0,
-                'cash_currency': 'USD',  # Manual portfolios default to USD
+                'cash_currency': 'USD',  # manual portfolios default to USD
                 'fixed_weights': {}
             })
             st.rerun()
 
     for i, port in enumerate(st.session_state.portfolios):
         with st.expander(f"{port['name']}", expanded=True):
-            # Add remove button at top right
+            # add remove button at top right
             if len(st.session_state.portfolios) > 1:
                 if st.button(f"🗑️ Remove Portfolio", key=f"{key_prefix}_remove_{i}"):
                     st.session_state.portfolios.pop(i)
@@ -1739,7 +1737,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     help=tooltip_data_msg
                 )
                 
-                # Goal Name Input
+                # goal name input
                 st.session_state.portfolios[i]['goal_name'] = st.text_input(
                     "Goal Name",
                     value=port.get('goal_name', ''),
@@ -1747,7 +1745,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     key=f"{key_prefix}_goal_{i}_{st.session_state.refresh_counter}"
                 )
                 
-                # Validate defaults exist in options (Handle casing mismatches e.g. Blackrock vs Blackrock)
+                # validate defaults exist in options (handle casing mismatches e.g. Blackrock vs Blackrock)
                 # available_tickers comes from df_sec_list['Ticker']
                 # port['tickers'] comes from user session or defaults
                 valid_defaults = []
@@ -1755,7 +1753,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                      if t in available_tickers:
                          valid_defaults.append(t)
                      else:
-                         # Try insensitive match
+                         # try insensitive match
                          match = next((x for x in available_tickers if x.lower() == t.lower()), None)
                          if match:
                              valid_defaults.append(match)
@@ -1767,20 +1765,20 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     key=f"{key_prefix}_tickers_{i}_{st.session_state.refresh_counter}_v2"
                 )
                     
-                # Objective Selection
+                # objective selection
                 valid_objectives = ["Wealth Growth", "Income Generation", "Capital Preservation"]
                 current_objective = port.get('objective', 'Wealth Growth')
                 
-                # Validate and clean the objective if it's invalid
+                # validate and clean the objective if it's invalid
                 if current_objective not in valid_objectives:
-                    # Try to extract a valid objective from combined values
+                    # try to extract a valid objective from combined values
                     for valid_obj in valid_objectives:
                         if valid_obj in current_objective:
                             current_objective = valid_obj
-                            st.session_state.portfolios[i]['objective'] = valid_obj  # Fix it in session state
+                            st.session_state.portfolios[i]['objective'] = valid_obj  # fix it in session state
                             break
                     else:
-                        # If still invalid, default to Wealth Growth
+                        # if still invalid, default to Wealth Growth
                         current_objective = 'Wealth Growth'
                         st.session_state.portfolios[i]['objective'] = 'Wealth Growth'
                 
@@ -1807,7 +1805,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 st.session_state.portfolios[i]['min_weight'] = st.number_input(f"Min Weight", min_value=0.0, max_value=1.0, value=port['min_weight'], step=0.01, key=f"{key_prefix}_min_{i}_{st.session_state.refresh_counter}")
                 st.session_state.portfolios[i]['max_weight'] = st.number_input(f"Max Weight", min_value=0.0, max_value=1.0, value=port['max_weight'], step=0.01, key=f"{key_prefix}_max_{i}_{st.session_state.refresh_counter}")
         
-            # Cash Invested, Currency, and Portfolio Target Input
+            # cash invested, currency, and portfolio target input
             c_cash, c_ccy, c_target = st.columns([2, 1, 2])
             with c_cash:
                 st.session_state.portfolios[i]['cash_invested'] = st.number_input(
@@ -1843,7 +1841,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
             
 
             
-            # Fixed Weight Inputs
+            # fixed weight inputs
             if st.session_state.portfolios[i]['allocation_type'] == 'Fixed Weight':
                 input_type = st.radio("Input Type", ["Amounts ($)", "Weights (Decimal)"], key=f"{key_prefix}_input_type_{i}_{st.session_state.refresh_counter}", horizontal=True)
             
@@ -1855,17 +1853,17 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                     total_amount = 0.0
                     dollar_amounts = {}
                 
-                    # Initialize dollar amounts if not present
+                    # initialize dollar amounts if not present
                     if 'dollar_amounts' not in st.session_state.portfolios[i]:
                         st.session_state.portfolios[i]['dollar_amounts'] = {}
 
                     for idx, ticker in enumerate(port['tickers']):
                         with fixed_cols[idx % 3]:
-                            # Get value using case-insensitive lookup
+                            # get value using case-insensitive lookup
                             current_dollar_amounts = st.session_state.portfolios[i].get('dollar_amounts', {})
                             existing_val = current_dollar_amounts.get(ticker)
                             if existing_val is None:
-                                # Try case-insensitive fallback for tickers like Blackrock/Blackrock
+                                # try case-insensitive fallback for tickers like Blackrock/Blackrock
                                 alt_key = next((k for k in current_dollar_amounts.keys() if k.lower() == ticker.lower()), None)
                                 existing_val = current_dollar_amounts.get(alt_key, 1000.0)
 
@@ -1884,16 +1882,16 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
                 
                     if total_amount > 0:
                         st.info(f"Total Portfolio Value: ${total_amount:,.2f}")
-                        # Calculate weights
+                        # calculate weights
                         for ticker, amount in dollar_amounts.items():
                             fixed_weights[ticker] = amount / total_amount
                     else:
                         st.warning("Total amount is 0. Please enter amounts.")
             
-                else: # Weights (Decimal)
+                else: # weights (decimal)
                     total_weight = 0.0
                 
-                    # Initialize decimal weights if not present
+                    # initialize decimal weights if not present
                     if 'decimal_weights' not in st.session_state.portfolios[i]:
                         st.session_state.portfolios[i]['decimal_weights'] = {}
 
@@ -1920,7 +1918,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
             
                 st.session_state.portfolios[i]['fixed_weights'] = fixed_weights
 
-    # Run Optimization Button
+    # run optimization button
     st.markdown("---")
     if st.button("🚀 Run Optimization", use_container_width=True, type="primary", key=f"{key_prefix}_run_opt"):
         st.session_state.run_optimization = True
@@ -1953,7 +1951,7 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
             results = {}
             for p in st.session_state.portfolios:
                 try:
-                    # Filter valid tickers
+                    # filter valid tickers
                     valid_tickers = [t for t in p['tickers'] if t in ret_all.columns]
                     if not valid_tickers:
                         continue
@@ -1994,23 +1992,23 @@ def render_portfolio_construction(df_sec_list, available_tickers, bm_tickers, da
 
 def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df_asset_class, df_underlying, data_path, bm_tickers, backtest_offset_days, data_source, start_date, end_date, currency, key_prefix="anal", results_data=None):
     
-    # Use provided results or fallback to session state
+    # use provided results or fallback to session state
     if results_data is None:
         results_data = st.session_state.get('optimization_results')
 
     if results_data:
-        # Store results_data for later use in other sections
+        # store results_data for later use in other sections
         res_data = results_data
         results = res_data['results']
         ret_all = res_data['ret_all'].copy()
         ret_bm = res_data['ret_bm'].copy()
         
-        # Calculate start_opt_date for analytics
+        # calculate start_opt_date for analytics
         earliest_start_date = ret_all.index.min()
         start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
 
     # ============================================
-    # SECTION 4: EXPOSURE ANALYSIS
+    # section 4: exposure analysis
     # ============================================
     if st.session_state.optimization_results:
         st.header("4. Exposure Analysis")
@@ -2020,7 +2018,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
         st.markdown("#### Filter Exposures (Aggregated by Cash Invested)")
         
-        # Filter Controls
+        # filter controls
         filter_mode_exp = st.radio(
             "Filter Mode", 
             ["Show All", "By Objective", "By Portfolio"], 
@@ -2028,7 +2026,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             key=f"{key_prefix}_exp_filt_mode_4"
         )
         
-        # Gather Metadata
+        # gather metadata
         port_meta_exp = {}
         for p in st.session_state.portfolios:
             port_meta_exp[p['name']] = {
@@ -2039,7 +2037,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             if port_meta_exp[p['name']]['cash_invested'] == 0:
                 port_meta_exp[p['name']]['cash_invested'] = 100000.0
 
-        # Filter Selection Logic
+        # filter selection logic
         filtered_portfolios_exp = []
         scaling_factors_exp = {}
 
@@ -2066,7 +2064,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             filtered_portfolios_exp = list(results_exp.keys())
             selected_ticker_wgts_exp = set([f"{t}_wgt" for t in sel_tickers_exp])
             
-        # Level 2 Filter: By Goal
+        # level 2 filter: by goal
         if filtered_portfolios_exp:
             available_goals_exp = sorted(list(set([port_meta_exp[p]['goal_name'] for p in filtered_portfolios_exp])))
             if available_goals_exp:
@@ -2096,7 +2094,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             global_ticker_values_exp[ticker_wgt] = val
                         total_agg_value_exp += val
         
-        # Convert back to weights and display charts
+        # convert back to weights and display charts
         if total_agg_value_exp > 0:
             agg_weights_exp = pd.Series({k: v / total_agg_value_exp for k, v in global_ticker_values_exp.items()})
             
@@ -2146,7 +2144,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.warning("No data available for selected filters.")
     
     # ============================================
-    # SECTION 4.1: FIXED INCOME ANALYTICS
+    # section 4.1: fixed income analytics
     # ============================================
     if results_data:
         st.subheader("4.1 Fixed Income Analytics")
@@ -2158,12 +2156,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
         
         try:
-            # Determine which yield metric to use: YTM first, fallback to T12M
+            # determine which yield metric to use: YTM first, fallback to T12M
             has_ytm = 'YTM / est. yield' in df_fi_metrics.index
             has_t12m = 'T12M dividend yield' in df_fi_metrics.index
             
             if has_ytm or has_t12m:
-                # Build a combined yield row: YTM first, fallback to T12M
+                # build a combined yield row: YTM first, fallback to T12M
                 combined_yield = pd.Series(0.0, index=df_fi_metrics.columns, name='Yield (combined)')
                 yield_source_map = {}
                 
@@ -2188,23 +2186,23 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 
                 fi_tickers = combined_yield[combined_yield != 0].index.tolist()
                 
-                # Exclude tickers that don't generate cash flow (aligned with cash flow exclusions)
+                # exclude tickers that don't generate cash flow (aligned with cash flow exclusions)
                 FI_EXCLUDED_PATTERNS = [
-                    'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF
-                    'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios
-                    'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # Thematic
-                    'CUSTOM', 'STRATEGIC',  # Custom portfolios
+                    'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # cash/MMF
+                    'CORE', 'EQUITY', 'GROWTH',  # growth portfolios
+                    'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # thematic
+                    'CUSTOM', 'STRATEGIC',  # custom portfolios
                 ]
                 fi_tickers = [t for t in fi_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
             
                 if fi_tickers:
-                    # Build a metrics df with Duration + combined yield for exposure_analysis_mixed
+                    # build a metrics df with Duration + combined yield for exposure_analysis_mixed
                     fi_metrics_for_calc = pd.DataFrame(index=['Duration', 'YTM / est. yield'], columns=df_fi_metrics.columns, dtype=float)
                     if 'Duration' in df_fi_metrics.index:
                         fi_metrics_for_calc.loc['Duration'] = df_fi_metrics.loc['Duration'].astype(float)
                     else:
                         fi_metrics_for_calc.loc['Duration'] = 0.0
-                    # Use combined yield (YTM first, T12M fallback) in the YTM row
+                    # use combined yield (YTM first, T12M fallback) in the YTM row
                     fi_metrics_for_calc.loc['YTM / est. yield'] = combined_yield
                     
                     port_fi_metrics = pd.DataFrame()
@@ -2213,7 +2211,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     for p_name in results.keys():
                         w_df = results[p_name]['weights']
                         p_tickers = [c.replace('_wgt', '') for c in w_df.columns if c.endswith('_wgt')]
-                        # Also filter portfolio tickers
+                        # also filter portfolio tickers
                         p_tickers = [t for t in p_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
                         common_fi = list(set(p_tickers).intersection(fi_tickers))
                     
@@ -2229,10 +2227,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             )
                             ytm_duration_df.columns = [p_name]
                             
-                            # Rename the yield row to show it uses combined logic
+                            # rename the yield row to show it uses combined logic
                             ytm_duration_df = ytm_duration_df.rename(index={'YTM / est. yield': 'Yield (Estimated)'})
                             
-                            # Add Credit Rating
+                            # add credit rating
                             try:
                                 if 'Credit rating' in df_fi_metrics.index:
                                     cr = pc.calc_avg_credit_rating(
@@ -2249,7 +2247,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             port_fi_metrics = pd.concat([port_fi_metrics, ytm_duration_df], axis=1)
                 
                     if has_fi:
-                        # Format numeric rows, leave Credit rating as-is
+                        # format numeric rows, leave credit rating as-is
                         def format_fi_value(val, row_name):
                             if row_name == 'Credit rating':
                                 return val if pd.notna(val) else 'N/A'
@@ -2271,12 +2269,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
     
     
     # ============================================
-    # SECTION 4.3: BACKTEST RESULTS
+    # section 4.3: backtest results
     # ============================================
     if results_data:
         st.subheader("4.2 Backtest Results")
 
-        # FX Methodology explanation
+        # fx methodology explanation
         fx_methodology = """
 **FX Conversion Methodology:**
 
@@ -2295,8 +2293,8 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 help=fx_methodology
             )
             
-            # Get latest FX rate from data if available
-            latest_fx_rate = 1.27  # Default fallback for USD/SGD
+            # get latest fx rate from data if available
+            latest_fx_rate = 1.27  # default fallback for USD/SGD
             if df_fx is not None and not df_fx.empty:
                 if analysis_currency == "SGD" and 'USDSGD' in df_fx.columns:
                     latest_series = df_fx['USDSGD'].dropna()
@@ -2338,19 +2336,19 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
 
         st.markdown("---")
     
-        # Combine Returns
+        # combine returns
         all_port_ret = pd.DataFrame()
         for p_name, p_res in results.items():
             p_ret = p_res['perf'][[c for c in p_res['perf'].columns if c.endswith('_port_ret')]].copy()
             p_ret.columns = [p_name]
             all_port_ret = pd.concat([all_port_ret, p_ret], axis=1)
     
-        # Apply FX conversion if display currency differs from base currency
-        # Assume base returns are in USD (most common for global portfolios)
-        base_currency = currency  # The currency used during optimization
+        # apply fx conversion if display currency differs from base currency
+        # assume base returns are in USD (most common for global portfolios)
+        base_currency = currency  # the currency used during optimization
         
         if analysis_currency != base_currency:
-            # Get FX returns for conversion
+            # get fx returns for conversion
             fx_ticker = None
             if analysis_currency == 'SGD': fx_ticker = 'USDSGD'
             elif analysis_currency == 'HKD': fx_ticker = 'USDHKD'
@@ -2358,19 +2356,19 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             if df_fx is not None and not df_fx.empty and fx_ticker and fx_ticker in df_fx.columns:
                 fx_returns = df_fx[fx_ticker].copy()
                 
-                # Check if FX data looks like returns or levels
+                # check if fx data looks like returns or levels
                 if fx_returns.abs().max() > 1:
-                    # Looks like levels, convert to returns
+                    # looks like levels, convert to returns
                     fx_returns = fx_returns.pct_change().fillna(0)
                 
-                # Align dates
+                # align dates
                 common_fx_idx = all_port_ret.index.intersection(fx_returns.index)
                 
                 if len(common_fx_idx) > 0:
                     fx_ret_aligned = fx_returns.loc[common_fx_idx]
                     
                     if base_currency == 'USD':
-                        # Convert USD returns to Target: (1+r_usd) * (1+r_fx) - 1
+                        # convert USD returns to target: (1+r_usd) * (1+r_fx) - 1
                         for col in all_port_ret.columns:
                             all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
                         for col in ret_bm.columns:
@@ -2378,41 +2376,41 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 ret_bm.loc[common_fx_idx, col] = (1 + ret_bm.loc[common_fx_idx, col]) * (1 + fx_ret_aligned) - 1
                     
                     elif base_currency == analysis_currency:
-                        pass # No conversion needed
+                        pass # no conversion needed
                     
-                    # Note: We are simplifying by only handling Base=USD or Base=SGD cases mostly.
-                    # If conversion is needed between non-USD pairs, we need cross rates.
-                    # Assuming Base is usually USD or SGD.
+                    # note: we are simplifying by only handling base=USD or base=SGD cases mostly.
+                    # if conversion is needed between non-USD pairs, we need cross rates.
+                    # assuming base is usually USD or SGD.
                     
                     elif base_currency == 'SGD' and analysis_currency == 'USD':
-                         # Convert SGD returns to USD: (1+r_sgd) / (1+r_fx) - 1
-                         # Here fx_returns is USDSGD (USD relative to SGD? No, usually Quote Currency per Base Currency)
+                         # convert SGD returns to USD: (1+r_sgd) / (1+r_fx) - 1
+                         # here fx_returns is USDSGD (USD relative to SGD? no, usually quote currency per base currency)
                          # USDSGD means 1 USD = x SGD.
-                         # Return of USDSGD is return of USD against SGD.
-                         # If we have SGD assets and want USD: r_USD ~ r_SGD - r_FX (approx).
-                         # Exact: 1+r_USD = (1+r_SGD) / (1+r_USDSGD)
+                         # return of USDSGD is return of USD against SGD.
+                         # if we have SGD assets and want USD: r_USD ~ r_SGD - r_FX (approx).
+                         # exact: 1+r_USD = (1+r_SGD) / (1+r_USDSGD)
                         for col in all_port_ret.columns:
                             all_port_ret.loc[common_fx_idx, col] = (1 + all_port_ret.loc[common_fx_idx, col]) / (1 + fx_ret_aligned) - 1
                         for col in ret_bm.columns:
                             if col in ret_bm.columns:
                                 ret_bm.loc[common_fx_idx, col] = (1 + ret_bm.loc[common_fx_idx, col]) / (1 + fx_ret_aligned) - 1
     
-        # Align with Benchmark
+        # align with benchmark
         common_idx = all_port_ret.index.intersection(ret_bm.index)
         all_port_ret = all_port_ret.loc[common_idx]
         ret_bm = ret_bm.loc[common_idx]
     
-        # Tabs
+        # tabs
         tabs = st.tabs([
             "Key Summary", "Calendar Returns", "Monthly Returns", "Cumulative Returns", 
             "Return/Risk Scatter", "Returns Distribution", "Rolling Volatility", 
             "Drawdown", "Correlation Heatmap", "Portfolio vs Benchmark"
         ])
     
-        with tabs[0]: # Key Summary
+        with tabs[0]: # key summary
             summary = get_performance_summary(all_port_ret)
         
-            # Display date information above the table
+            # display date information above the table
             try:
                 exposure_start_date = pd.to_datetime(all_port_ret.index.min()).strftime('%d %b %Y')
                 exposure_end_date = pd.to_datetime(all_port_ret.index.max()).strftime('%d %b %Y')
@@ -2420,26 +2418,26 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             except:
                 st.markdown("**Data timeframe:** N/A", unsafe_allow_html=True)
         
-            # Format the summary DataFrame properly
-            # Metrics are in rows (index), portfolios are in columns
-            # We need to format by row, so we'll create a formatted copy
+            # format the summary DataFrame properly
+            # metrics are in rows (index), portfolios are in columns
+            # we need to format by row, so we'll create a formatted copy
             def format_summary_value(val, metric_name):
                 if pd.isna(val):
                     return "N/A"
-                # Ratios should be displayed as decimals
+                # ratios should be displayed as decimals
                 if metric_name in ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']:
                     return f"{val:.2f}"
-                # Everything else (returns, volatility, drawdown) should be percentages
+                # everything else (returns, volatility, drawdown) should be percentages
                 else:
                     return f"{val:.2%}"
             
-            # Create formatted DataFrame
+            # create formatted DataFrame
             summary_formatted = summary.copy()
             for idx in summary.index:
                 for col in summary.columns:
                     summary_formatted.loc[idx, col] = format_summary_value(summary.loc[idx, col], idx)
             
-            # Rename Max Drawdown to prevent wrapping
+            # rename max drawdown to prevent wrapping
             summary_formatted.rename(index={'Max Drawdown': 'Max DD'}, inplace=True)
             
             st.dataframe(
@@ -2447,18 +2445,18 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 use_container_width=True
             )
         
-        # Note: Rebalance Weights moved to Section 4.4
-        # Note: Fixed Income Analytics moved to Section 4.1
+        # note: rebalance weights moved to section 4.4
+        # note: fixed income analytics moved to section 4.1
         
-        # Old Fixed Income Analytics placeholder - now in Section 4.1
-        if False:  # Disabled
+        # old fixed income analytics placeholder - now in section 4.1
+        if False:  # disabled
             st.subheader("Fixed Income Analytics")
         
-            # Identify FI tickers
+            # identify FI tickers
             try:
-                # Check if 'YTM / est. yield' exists in index
+                # check if 'YTM / est. yield' exists in index
                 if 'YTM / est. yield' in df_fi_metrics.index:
-                    # Get tickers with non-zero YTM
+                    # get tickers with non-zero YTM
                     fi_tickers = df_fi_metrics.columns[df_fi_metrics.loc['YTM / est. yield'] != 0].tolist()
                 
                     if fi_tickers:
@@ -2466,16 +2464,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         has_fi = False
                     
                         for p_name in results.keys():
-                            # Get weights
+                            # get weights
                             w_df = results[p_name]['weights']
                         
-                            # Check if portfolio has any FI tickers
+                            # check if portfolio has any FI tickers
                             p_tickers = [c.replace('_wgt', '') for c in w_df.columns if c.endswith('_wgt')]
                             common_fi = list(set(p_tickers).intersection(fi_tickers))
                         
                             if common_fi:
                                 has_fi = True
-                                # Calculate metrics
+                                # calculate metrics
                                 # exposure_analysis_mixed expects weights with _wgt suffix
                                 ytm_duration_df = pc.exposure_analysis_mixed(
                                     w_df, 
@@ -2487,7 +2485,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 )
                                 ytm_duration_df.columns = [p_name]
                             
-                                # Credit Rating
+                                # credit rating
                                 try:
                                     cr = pc.calc_avg_credit_rating(
                                         w_df, 
@@ -2502,16 +2500,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 
                                 port_fi_metrics = pd.concat([port_fi_metrics, ytm_duration_df], axis=1)
                     
-                        # Add Benchmark FI Metrics if available
+                        # add benchmark FI metrics if available
                         bm_fi_cols = [t for t in bm_tickers if t in fi_tickers]
                         if bm_fi_cols:
                              bm_metrics = df_fi_metrics.loc[['Duration', 'YTM / est. yield', 'Credit rating']][bm_fi_cols]
-                             # If multiple benchmarks, maybe average or show all? 
-                             # For simplicity, just show them as columns
+                             # if multiple benchmarks, maybe average or show all?
+                             # for simplicity, just show them as columns
                              port_fi_metrics = pd.concat([port_fi_metrics, bm_metrics], axis=1)
 
                         if has_fi and not port_fi_metrics.empty:
-                            # Format
+                            # format
                             st.dataframe(port_fi_metrics.style.format("{:.2f}", subset=pd.IndexSlice[['Duration', 'YTM / est. yield'], :]), use_container_width=True)
                         elif not has_fi:
                             st.info("No Fixed Income assets detected in portfolios.")
@@ -2522,31 +2520,31 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             except Exception as e:
                 st.error(f"Error calculating FI metrics: {e}")
         
-        with tabs[1]: # Calendar Returns
-            # Simple resampling for now
+        with tabs[1]: # calendar returns
+            # simple resampling for now
             yearly_ret = all_port_ret.resample('Y').apply(lambda x: (1+x).prod()-1)
             yearly_ret.index = yearly_ret.index.year
             st.dataframe(yearly_ret.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
         
-        with tabs[2]: # Monthly Returns
-            # Show heatmap for first portfolio or selector
+        with tabs[2]: # monthly returns
+            # show heatmap for first portfolio or selector
             p_select = st.selectbox("Select Portfolio", all_port_ret.columns, key=f"{key_prefix}_monthly_sel")
             fig = plot_monthly_heatmap(all_port_ret[[p_select]])
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_monthly_heatmap")
         
-        with tabs[3]: # Cumulative Returns
-            # Calculate cumulative returns as percentage (subtract 1 so 1.94 becomes 0.94 = 94%)
+        with tabs[3]: # cumulative returns
+            # calculate cumulative returns as percentage (subtract 1 so 1.94 becomes 0.94 = 94%)
             cum_ret = (1 + all_port_ret).cumprod() - 1
-            # Pass benchmark returns for comparison
+            # pass benchmark returns for comparison
             fig = plot_cumulative_returns(cum_ret, benchmark_ret=ret_bm)
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_cum_ret")
         
-        with tabs[4]: # Return/Risk Scatter
+        with tabs[4]: # return/risk scatter
             fig = plot_scatter_risk_return(all_port_ret, benchmark_ret=ret_bm)
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_risk_ret")
         
-        with tabs[5]: # Returns Distribution
-            # Simple histogram
+        with tabs[5]: # returns distribution
+            # simple histogram
             import plotly.figure_factory as ff
             hist_data = [all_port_ret[c].dropna() for c in all_port_ret.columns]
             group_labels = all_port_ret.columns
@@ -2554,7 +2552,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             try:
                 fig = ff.create_distplot(hist_data, group_labels, show_hist=False, show_rug=False, colors=PALETTE[:len(group_labels)])
             except np.linalg.LinAlgError:
-                # Fallback for singular matrix (low variance/constant data)
+                # fallback for singular matrix (low variance/constant data)
                 fig = go.Figure()
                 for i, col in enumerate(all_port_ret.columns):
                     fig.add_trace(go.Histogram(x=all_port_ret[col], name=col, marker_color=PALETTE[i % len(PALETTE)], opacity=0.7))
@@ -2563,26 +2561,26 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             fig.update_layout(title_text='Returns Distribution', plot_bgcolor='white')
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_dist")
         
-        with tabs[6]: # Rolling Volatility
+        with tabs[6]: # rolling volatility
             fig = plot_rolling_volatility(all_port_ret)
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_roll_vol")
         
-        with tabs[7]: # Drawdown
+        with tabs[7]: # drawdown
             fig = plot_drawdowns(all_port_ret)
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_dd")
         
-        with tabs[8]: # Correlation Heatmap
+        with tabs[8]: # correlation heatmap
             fig = plot_correlation_heatmap(all_port_ret)
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_corr")
             
-        with tabs[9]: # Portfolio vs Benchmark
+        with tabs[9]: # portfolio vs benchmark
             p_select_bm = st.selectbox("Select Portfolio", all_port_ret.columns, key=f"{key_prefix}_bm_sel")
         
-            # Calculate Relative Metrics
+            # calculate relative metrics
             rel_metrics, roll_excess = calculate_relative_metrics(all_port_ret[p_select_bm], ret_bm.iloc[:, 0])
         
             st.markdown("#### Relative Performance Metrics")
-            # Format: Tracking Error as %, Information Ratio as decimal
+            # format: tracking error as %, information ratio as decimal
             rel_df = rel_metrics.to_frame().T
             rel_format = {}
             for col in rel_df.columns:
@@ -2593,11 +2591,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.dataframe(rel_df.style.format(rel_format), use_container_width=True)
         
             st.markdown("#### Rolling 12M Excess Return")
-            fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # Reuse plot function
+            fig_roll = plot_cumulative_returns(roll_excess.to_frame(name="Rolling Excess Return")) # reuse plot function
             st.plotly_chart(fig_roll, use_container_width=True, key=f"{key_prefix}_roll_excess")
         
     # ============================================
-    # SECTION 4.4: REBALANCE WEIGHTS
+    # section 4.4: rebalance weights
     # ============================================
     if results_data:
         st.subheader("4.3 Rebalance Weights")
@@ -2613,19 +2611,19 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             if w_select:
                 w_df = results[w_select]['weights']
-                # Filter for rebalance dates
+                # filter for rebalance dates
                 w_rebal = w_df[w_df['reb_flag'] == True].drop(columns=['reb_flag'])
             
-                # Clean column names
+                # clean column names
                 w_rebal.columns = [c.replace('_wgt', '') for c in w_rebal.columns]
             
-                # Format index
+                # format index
                 w_rebal.index = w_rebal.index.strftime('%Y-%m-%d')
             
                 st.dataframe(w_rebal.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
         
-    # Old Section 5 - Now handled in Section 4 above
-    if False:  # Disabled - moved to Section 4
+    # old section 5 - now handled in section 4 above
+    if False:  # disabled - moved to Section 4
         st.header("OLD - Exposure Analysis")
         
         res_data = st.session_state.optimization_results
@@ -2633,7 +2631,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
         st.markdown("#### Filter Exposures (Aggregated by Cash Invested)")
         
-        # Filter Controls
+        # filter controls
         filter_mode = st.radio(
             "Filter Mode", 
             ["Show All", "By Objective", "By Portfolio"], 
@@ -2641,7 +2639,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             key=f"{key_prefix}_exp_filt_mode"
         )
         
-        # Gather Metadata
+        # gather metadata
         port_meta = {}
         for p in st.session_state.portfolios:
             port_meta[p['name']] = {
@@ -2652,11 +2650,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             if port_meta[p['name']]['cash_invested'] == 0:
                 port_meta[p['name']]['cash_invested'] = 100000.0
 
-        # Filter Selection Logic
+        # filter selection logic
         filtered_portfolios = []
         scaling_factors = {}
 
-        # Level 1 Filter
+        # level 1 filter
         if filter_mode == "Show All":
             filtered_portfolios = list(results.keys())
             
@@ -2666,7 +2664,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             filtered_portfolios = [p for p in results.keys() if port_meta[p]['objective'] in sel_objs]
             
         elif filter_mode == "By Portfolio":
-            # Gather all unique tickers from all portfolios
+            # gather all unique tickers from all portfolios
             all_tickers = set()
             for p_name in results.keys():
                 w_df = results[p_name]['weights']
@@ -2679,20 +2677,20 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             all_tickers = sorted(list(all_tickers))
             sel_tickers = st.multiselect("Select Underlying Portfolio(s)", all_tickers, default=all_tickers, key=f"{key_prefix}_exp_filt_ticker")
             
-            # Filter to include all portfolios, but only selected tickers within each
+            # filter to include all portfolios, but only selected tickers within each
             filtered_portfolios = list(results.keys())
-            # Store which tickers to include for filtering weights later
+            # store which tickers to include for filtering weights later
             selected_ticker_wgts = set([f"{t}_wgt" for t in sel_tickers])
             
-        # Level 2 Filter: By Goal (Applied on top of Level 1)
-        # Only show goal filter if we have portfolios selected
+        # level 2 filter: by goal (Applied on top of Level 1)
+        # only show goal filter if we have portfolios selected
         if filtered_portfolios:
-            # Get goals present in the currently filtered portfolios
+            # get goals present in the currently filtered portfolios
             available_goals = sorted(list(set([port_meta[p]['goal_name'] for p in filtered_portfolios])))
-            # If there are goals to filter by
+            # if there are goals to filter by
             if available_goals:
                 sel_goals = st.multiselect("Filter by Goal (Optional)", available_goals, default=available_goals, key=f"{key_prefix}_exp_filt_goal")
-                # Refine filtered_portfolios
+                # refine filtered_portfolios
                 filtered_portfolios = [p for p in filtered_portfolios if port_meta[p]['goal_name'] in sel_goals]
 
         global_ticker_values = {}
@@ -2707,11 +2705,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             if effective_cash > 0:
                 for ticker_wgt, weight in w_row.items():
-                    # Skip non-weight columns (e.g. reb_flag)
+                    # skip non-weight columns (e.g. reb_flag)
                     if not ticker_wgt.endswith('_wgt'):
                         continue
                     
-                    # If "By Portfolio" mode, only include selected tickers
+                    # if "By Portfolio" mode, only include selected tickers
                     if filter_mode == "By Portfolio" and ticker_wgt not in selected_ticker_wgts:
                         continue
                     
@@ -2723,11 +2721,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             global_ticker_values[ticker_wgt] = val
                         total_agg_value += val
         
-        # Convert back to weights
+        # convert back to weights
         if total_agg_value > 0:
             agg_weights = pd.Series({k: v / total_agg_value for k, v in global_ticker_values.items()})
             
-            # Pre-calculate main charts
+            # pre-calculate main charts
             from utils.exposure import get_exposure_charts, get_concentration_exposure
             charts = get_exposure_charts(agg_weights, df_sector, df_country, df_asset_class)
             
@@ -2744,7 +2742,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     st.info("Asset Class data unavailable.")
             
             with col_holdings:
-                # Selector for Top N
+                # selector for top N
                 t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_anal_topn_sel")
                 
                 if df_underlying is not None:
@@ -2755,8 +2753,8 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         conc_df['Est. Value ($)'] = conc_df['Weight'] * total_agg_value
                         total_conc = conc_df['Weight'].sum()
                         
-                        # Bar Chart for Top Holdings
-                        conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # Sort for bar chart (bottom to top)
+                        # bar chart for top holdings
+                        conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # sort for bar chart (bottom to top)
                         
                         fig_top_bar = px.bar(
                             conc_df_sorted, 
@@ -2765,7 +2763,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             orientation='h',
                             title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
                             color='Weight',
-                            color_continuous_scale=PALETTE # Use Syfe Palette
+                            color_continuous_scale=PALETTE # use Syfe palette
                         )
                         fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
                         st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_anal_bar_top_holdings")
@@ -2804,8 +2802,8 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         else:
             st.warning("No exposure data found for the selected filters.")
 
-    # This function is a placeholder for logic that might be moved or updated elsewhere.
-    # The original instruction refers to "Add Selected Strategy" logic, which is not present
+    # this function is a placeholder for logic that might be moved or updated elsewhere.
+    # the original instruction refers to "Add Selected Strategy" logic, which is not present
     # in the provided snippet. If this function was intended to contain that logic,
     # it needs to be provided in the context.
     def render_recommender_add_logic(key_prefix="rec_add"):
@@ -2829,12 +2827,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             """)
     
             try:
-                # Try to load from file first
+                # try to load from file first
                 ff_file_path = os.path.join(os.getcwd(), 'Data', 'F-F_Research_Data_5_Factors_2x3_daily.csv')
             
                 try:
                     df_ff_factor = pd.read_csv(ff_file_path, skiprows=3, index_col=0)
-                    # Filter out non-numeric rows (like copyright notice)
+                    # filter out non-numeric rows (like copyright notice)
                     df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
                     df_ff_factor = df_ff_factor.astype(float) / 100
                     df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
@@ -2847,7 +2845,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
                                 with zf.open('F-F_Research_Data_5_Factors_2x3_daily.CSV') as file:
                                     df_ff_factor = pd.read_csv(file, skiprows=3, index_col=0)
-                                    # Filter out non-numeric rows
+                                    # filter out non-numeric rows
                                     df_ff_factor = df_ff_factor[pd.to_numeric(df_ff_factor.index, errors='coerce').notna()]
                                     df_ff_factor = df_ff_factor.astype(float) / 100
                                     df_ff_factor.index = pd.to_datetime(df_ff_factor.index, format='%Y%m%d')
@@ -2855,13 +2853,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             st.error("Failed to download Fama-French data.")
                             st.stop()
             
-                # Align data
+                # align data
                 common_index = ret_all.index.intersection(df_ff_factor.index)
             
                 if len(common_index) == 0:
                     st.warning("No overlapping dates between portfolio data and Fama-French data.")
                 else:
-                    # Calculate ticker factor exposures
+                    # calculate ticker factor exposures
                     all_tickers_list = list(set([t for p in results.values() for t in p['tickers']]))
                 
                     st.subheader("Individual Ticker Factor Exposures")
@@ -2876,20 +2874,20 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             use_container_width=True
                         )
                 
-                    # Calculate portfolio factor exposures
+                    # calculate portfolio factor exposures
                     common_index_2 = all_port_ret.index.intersection(df_ff_factor.index)
                 
                     if len(common_index_2) > 0:
                         st.subheader("Portfolio Factor Exposures")
                         with st.spinner("Calculating portfolio factor exposures..."):
-                            # Calculate portfolio factors
+                            # calculate portfolio factors
                             port_factors = pc.factor_exposure_coefficient(
                                 all_port_ret.loc[common_index_2], 
                                 df_ff_factor.loc[common_index_2], 
                                 list(results.keys())
                             )
                         
-                            # Benchmark selection
+                            # benchmark selection
                             st.markdown("**Benchmark Selection for Comparison**")
                             available_benchmarks = ret_bm.columns.tolist()
                         
@@ -2903,7 +2901,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             else:
                                 selected_benchmarks = available_benchmarks
                         
-                            # Calculate benchmark factors
+                            # calculate benchmark factors
                             common_index_bm = ret_bm.index.intersection(df_ff_factor.index)
                             if len(common_index_bm) > 0 and selected_benchmarks:
                                 bm_factors = pc.factor_exposure_coefficient(
@@ -2912,13 +2910,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     selected_benchmarks
                                 )
                             
-                                # Combine for visualization
+                                # combine for visualization
                                 all_factors = pd.concat([port_factors, bm_factors])
                             
-                                # Convert to numeric for plotting
+                                # convert to numeric for plotting
                                 all_factors_numeric = all_factors.apply(lambda x: pd.to_numeric(x, errors='coerce'))
                             
-                                # Create grouped bar chart
+                                # create grouped bar chart
                                 fig = go.Figure()
                             
                                 for factor in all_factors_numeric.columns:
@@ -2946,13 +2944,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             
                                 st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_factor_chart")
                             
-                                # Display combined table
+                                # display combined table
                                 st.dataframe(
                                     all_factors.style.background_gradient(cmap='Blues', axis=None),
                                     use_container_width=True
                                 )
                             else:
-                                # Just portfolios, no benchmark comparison
+                                # just portfolios, no benchmark comparison
                                 st.dataframe(
                                     port_factors.style.background_gradient(cmap='Blues', axis=None),
                                     use_container_width=True
@@ -2965,7 +2963,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 st.exception(e)
 
     if st.session_state.optimization_results:
-        # Check if any portfolio has cash invested
+        # check if any portfolio has cash invested
         portfolios_with_cash = {
             p_name: p for p_name, p in enumerate(st.session_state.portfolios) 
             if p.get('cash_invested', 0.0) > 0
@@ -2975,7 +2973,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             st.subheader("4.4 Cash Flow Analysis")
             st.markdown("**Projected monthly cash flows based on portfolio yields and cash invested.**")
         
-            # Currency and Portfolio selection row
+            # currency and portfolio selection row
             col_ccy, col_port = st.columns([1, 3])
             
             with col_ccy:
@@ -3006,7 +3004,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             val = float(s.iloc[-1])
                             if val > 1: default_fx_rate = val
 
-                # Toggle for Latest vs Custom FX
+                # toggle for latest vs custom fx
                 use_latest_fx = st.checkbox(
                     "Use Latest FX Rate",
                     value=True,
@@ -3029,7 +3027,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     )
             
             with col_port:
-                # Portfolio selection - group by goal if available
+                # portfolio selection - group by goal if available
                 all_portfolio_names = [p['name'] for idx, p in portfolios_with_cash.items()]
                 selected_portfolios = st.multiselect(
                     "Select Portfolio(s) to Display",
@@ -3038,7 +3036,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     key=f"{key_prefix}_cashflow_portfolio_select"
                 )
             
-            # Goal-based view toggle
+            # goal-based view toggle
             show_goal_breakdown = st.checkbox(
                 "Show Goal-Based Breakdown",
                 value=True,
@@ -3046,7 +3044,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 help="Group cash flows by investment goal"
             )
             
-            # Yield source preference
+            # yield source preference
             yield_preference = st.selectbox(
                 "Yield Source",
                 options=["YTM / Est. Yield", "T12M Dividend Yield"],
@@ -3059,23 +3057,23 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 st.warning("Please select at least one portfolio to display cash flows.")
                 st.stop()
         
-            # Filter portfolios based on selection
+            # filter portfolios based on selection
             filtered_portfolios = {
                 idx: p for idx, p in portfolios_with_cash.items() 
                 if p['name'] in selected_portfolios
             }
             
-            # Define base currency for each portfolio/ticker type
+            # define base currency for each portfolio/ticker type
             # SGD-denominated: REITs, Income Enhance/Preserve, Cash SGD products
             # USD-denominated: Private Credit (Blackrock, Monroe), Thematics
             def get_ticker_base_currency(ticker):
-                """Determine the base currency of a ticker's cash flows."""
+                """determine the base currency of a ticker's cash flows"""
                 ticker_upper = ticker.upper()
                 
                 # USD-denominated assets (check first as they're more specific)
                 if 'BLACKROCK' in ticker_upper or 'MONROE' in ticker_upper:
-                    return 'USD'  # Private Credit funds pay in USD
-                if 'USD' in ticker_upper:  # Explicitly USD products
+                    return 'USD'  # private credit funds pay in USD
+                if 'USD' in ticker_upper:  # explicitly USD products
                     return 'USD'
                 
                 # SGD-denominated assets (default for Syfe Singapore products)
@@ -3083,92 +3081,90 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     return 'SGD'
                 if 'INCOME' in ticker_upper:  # Income Enhance/Preserve pay in SGD
                     return 'SGD'
-                if 'SGD' in ticker_upper:  # Explicitly SGD products
+                if 'SGD' in ticker_upper:  # explicitly SGD products
                     return 'SGD'
                 if 'SRS' in ticker_upper:  # SRS products are SGD
                     return 'SGD'
                     
-                # Default to SGD for other Syfe products
+                # default to SGD for other Syfe products
                 return 'SGD'
             
             def convert_currency(amount, from_ccy, to_ccy, target_fx, cross_usdsgd=1.27):
-                """
-                Convert amount. 
+                """convert amount.
                 target_fx: USD -> to_ccy rate (e.g. 1 USD = 7.8 HKD)
-                cross_usdsgd: USD -> SGD rate (used if from_ccy is SGD)
-                """
+                cross_usdsgd: USD -> SGD rate (used if from_ccy is SGD)"""
                 if from_ccy == to_ccy:
                     return amount
                 
-                # Convert source to USD first
+                # convert source to USD first
                 usd_amount = amount
                 if from_ccy == 'SGD':
                     usd_amount = amount / cross_usdsgd
                 elif from_ccy == 'HKD':
-                    # Not typical source, but for completeness:
-                    # If we had USDHKD rate we would divide. 
-                    # Assuming we don't have it separately here, but we could pass it.
+                    # not typical source, but for completeness:
+                    # if we had USDHKD rate we would divide. 
+                    # assuming we don't have it separately here, but we could pass it.
                     pass 
                 elif from_ccy == 'USD':
                     usd_amount = amount
                     
-                # Convert USD to target
+                # convert USD to target
                 if to_ccy == 'USD':
                     return usd_amount
                 
-                # For non-USD target, we multiply by USD->Target rate
+                # for non-USD target, we multiply by USD->target rate
                 return usd_amount * target_fx
         
-            # Helper function to determine payment frequency
+            # helper function to determine payment frequency
             def get_payment_frequency(ticker):
-                """Returns 'monthly' or 'quarterly' based on ticker type."""
+                """returns 'monthly' or 'quarterly' based on ticker type"""
                 ticker_upper = ticker.upper()
                 
-                # Explicitly check for Blackrock and Monroe - monthly dividends
+                # explicitly check for Blackrock and Monroe - monthly dividends
                 if 'BLACKROCK' in ticker_upper or 'MONROE' in ticker_upper:
                     return 'monthly'
                 
-                # Check if ticker contains REIT indicators (including REIT Risk Managed) - quarterly dividends
+                # check if ticker contains REIT indicators (including REIT Risk Managed) - quarterly dividends
                 if 'REIT' in ticker_upper or 'VNQ' in ticker or 'VNQI' in ticker:
                     return 'quarterly'
                 
-                # Default to monthly for bonds and other income assets
+                # default to monthly for bonds and other income assets
                 return 'monthly'
         
-            # Currency symbol for display
+            # currency symbol for display
             ccy_symbol = "$"
             if display_currency == "SGD": ccy_symbol = "S$"
             elif display_currency == "HKD": ccy_symbol = "HK$"
         
-            # Calculate cash flows
+            # calculate cash flows
             monthly_cash_flows = pd.DataFrame(0.0, 
                                              index=[p['name'] for idx, p in filtered_portfolios.items()],
                                              columns=list(range(1, 13)))
         
-            ticker_cash_flows = {}  # Track by ticker for stacked chart
+            ticker_cash_flows = {}  # track by ticker for stacked chart
         
-            # Track calculation breakdown for transparency
+            # track calculation breakdown for transparency
             calc_breakdown = []
         
-            # Excluded patterns for cash flow analysis (aligned with portfolio_report_generator.py)
+            # excluded patterns for cash flow analysis (aligned with portfolio_report_generator.py)
             CASHFLOW_EXCLUDED_PATTERNS = [
-                'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # Cash/MMF - no dividend payout
-                'CORE', 'EQUITY', 'GROWTH',  # Growth portfolios - dividends auto-reinvested
-                'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # Thematic - auto-reinvested
-                'CUSTOM', 'STRATEGIC',  # Custom portfolios excluded
+                'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # cash/MMF - no dividend payout
+                'CORE', 'EQUITY', 'GROWTH',  # growth portfolios - dividends auto-reinvested
+                'CHINA', 'ESG', 'HEALTHCARE', 'DISRUPTIVE', 'TECHNOLOGY', 'THEMATIC',  # thematic - auto-reinvested
+                'CUSTOM', 'STRATEGIC',  # custom portfolios excluded
             ]
             
             for idx, port in filtered_portfolios.items():
                 p_name = port['name']
                 cash_invested = port['cash_invested']
-                # Get the currency that cash_invested is denominated in
-                # CSV loaded = SGD, Manual = USD, PDF = presentation_ccy
-                cash_currency = port.get('cash_currency', 'USD')  # Default USD for backwards compatibility
+                # get the currency that cash_invested is denominated in
+                # CSV loaded = SGD, manual = USD, PDF = presentation_ccy
+                cash_currency = port.get('cash_currency', 'USD')  # default USD for backwards compatibility
                 
-                # Use fixed weights (user-defined amounts/weights), fall back to backtest weights
+                # use fixed weights (user-defined amounts/weights), fall back to backtest weights
                 fixed_weights = port.get('decimal_weights', port.get('fixed_weights', {}))
                 
-                # Fall back to backtest weights if no fixed weights defined
+                # fall back to backtest weights if no fixed weights defined
                 backtest_weights = None
                 if not fixed_weights and p_name in results:
                     weights_df = results[p_name]['weights']
@@ -3176,7 +3172,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 
                 if fixed_weights or backtest_weights is not None:
                     for ticker in port['tickers']:
-                        # Skip excluded portfolios - no cash payout
+                        # skip excluded portfolios - no cash payout
                         ticker_upper = ticker.upper()
                         if any(pattern in ticker_upper for pattern in CASHFLOW_EXCLUDED_PATTERNS):
                             calc_breakdown.append({
@@ -3191,7 +3187,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             })
                             continue
                         
-                        # Get weight: fixed weights first, backtest fallback
+                        # get weight: fixed weights first, backtest fallback
                         weight = 0.0
                         if fixed_weights and ticker in fixed_weights:
                             weight = float(fixed_weights[ticker])
@@ -3206,13 +3202,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         # invested_in_ticker is in cash_currency
                         invested_in_ticker = cash_invested * weight
                     
-                        # Get yield based on user preference
-                        # All yields in Excel are in percentage format (e.g., 0.87 = 0.87%, 10.72 = 10.72%)
+                        # get yield based on user preference
+                        # all yields in Excel are in percentage format (e.g. 0.87 = 0.87%, 10.72 = 10.72%)
                         annual_yield = 0.0
                         yield_source = 'N/A'
                         if ticker in df_fi_metrics.columns:
                             if yield_preference == "T12M Dividend Yield":
-                                # Primary: T12M dividend yield, fallback: YTM
+                                # primary: T12M dividend yield, fallback: YTM
                                 if 'T12M dividend yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['T12M dividend yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
@@ -3225,7 +3221,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         annual_yield = float(yield_val) / 100
                                         yield_source = 'YTM (fallback)'
                             else:
-                                # Primary: YTM / est. yield, fallback: T12M
+                                # primary: YTM / est. yield, fallback: T12M
                                 if 'YTM / est. yield' in df_fi_metrics.index:
                                     yield_val = df_fi_metrics.loc['YTM / est. yield', ticker]
                                     if pd.notna(yield_val) and yield_val != 0:
@@ -3241,16 +3237,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             if annual_yield > 0 and invested_in_ticker > 0:
                                 payment_freq = get_payment_frequency(ticker)
                                 
-                                # Get ticker's base currency (currency that dividends are paid in)
+                                # get ticker's base currency (currency that dividends are paid in)
                                 ticker_base_ccy = get_ticker_base_currency(ticker)
                             
-                                # Convert invested amount from cash_currency to ticker's base currency
-                                # This is needed because the yield is applied on the ticker's NAV currency
-                                # Determine the correct target FX rate for conversion to ticker_base_ccy
+                                # convert invested amount from cash_currency to ticker's base currency
+                                # this is needed because the yield is applied on the ticker's NAV currency
+                                # determine the correct target FX rate for conversion to ticker_base_ccy
                                 if ticker_base_ccy == 'SGD':
                                     target_fx_for_ticker = ref_usdsgd
                                 elif ticker_base_ccy == 'HKD':
-                                    target_fx_for_ticker = 7.80  # Default USDHKD
+                                    target_fx_for_ticker = 7.80  # default USDHKD
                                 else:  # USD
                                     target_fx_for_ticker = 1.0
                                     
@@ -3262,7 +3258,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     ref_usdsgd
                                 )
                             
-                                # Store ticker-level cash flows for stacked chart
+                                # store ticker-level cash flows for stacked chart
                                 ticker_key = f"{p_name} - {ticker}"
                                 if ticker_key not in ticker_cash_flows:
                                     ticker_cash_flows[ticker_key] = np.zeros(12)
@@ -3270,22 +3266,22 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 annual_cf_display = 0.0
                             
                                 if payment_freq == 'monthly':
-                                    # Calculate payment in ticker's base currency
+                                    # calculate payment in ticker's base currency
                                     monthly_payment = (invested_in_ticker_ccy * annual_yield) / 12
-                                    # Convert to display currency
+                                    # convert to display currency
                                     monthly_payment = convert_currency(monthly_payment, ticker_base_ccy, display_currency, fx_rate, ref_usdsgd)
                                     annual_cf_display = monthly_payment * 12
                                     for month in range(12):
                                         monthly_cash_flows.loc[p_name, month + 1] += monthly_payment
                                         ticker_cash_flows[ticker_key][month] += monthly_payment
                                 else:  # quarterly
-                                    # Calculate payment in ticker's base currency
+                                    # calculate payment in ticker's base currency
                                     quarterly_payment = (invested_in_ticker_ccy * annual_yield) / 4
-                                    # Convert to display currency
+                                    # convert to display currency
                                     quarterly_payment = convert_currency(quarterly_payment, ticker_base_ccy, display_currency, fx_rate, ref_usdsgd)
                                     annual_cf_display = quarterly_payment * 4
                                     for quarter in range(4):
-                                        month = (quarter * 3) + 2  # Months 3, 6, 9, 12 (index 2, 5, 8, 11)
+                                        month = (quarter * 3) + 2  # months 3, 6, 9, 12 (index 2, 5, 8, 11)
                                         monthly_cash_flows.loc[p_name, month + 1] += quarterly_payment
                                         ticker_cash_flows[ticker_key][month] += quarterly_payment
                                 
@@ -3313,15 +3309,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                     f'Annual CF ({display_currency})': f'{ccy_symbol}0.00',
                                 })
         
-            # Store cash flow data in session_state for PDF export
+            # store cash flow data in session_state for PDF export
             st.session_state['cashflow_data'] = ticker_cash_flows
             st.session_state['cashflow_currency'] = display_currency
             
-            # Create stacked bar chart
+            # create stacked bar chart
             fig = go.Figure()
         
-            # Use distinct colors for each ticker
-            colors_list = PALETTE * 10  # Repeat palette if needed
+            # use distinct colors for each ticker
+            colors_list = PALETTE * 10  # repeat palette if needed
         
             for i, (ticker_key, cash_flow_array) in enumerate(ticker_cash_flows.items()):
                 fig.add_trace(go.Bar(
@@ -3349,17 +3345,17 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_cashflow_chart")
         
-            # Summary table
+            # summary table
             st.subheader("Monthly Cash Flow Summary by Portfolio")
             
             if not monthly_cash_flows.empty:
                 monthly_cash_flows.columns = [f"Month {m}" for m in range(1, 13)]
                 monthly_cash_flows['Total Annual'] = monthly_cash_flows.sum(axis=1)
             
-                # Reset index to avoid duplicate index errors if portfolio names are same
+                # reset index to avoid duplicate index errors if portfolio names are same
                 display_df = monthly_cash_flows.reset_index().rename(columns={'index': 'Portfolio'})
                 
-                # Format with selected currency symbol
+                # format with selected currency symbol
                 format_str = f"{ccy_symbol}{{:,.2f}}"
                 st.dataframe(
                     display_df.style.format(format_str, subset=display_df.columns.drop('Portfolio'))
@@ -3370,7 +3366,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             else:
                 st.info("No portfolios selected or no cash flows generated.")
         
-            # Total across all portfolios
+            # total across all portfolios
             total_monthly = monthly_cash_flows.drop(columns=['Total Annual']).sum()
             total_annual = total_monthly.sum()
         
@@ -3380,7 +3376,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             with col2:
                 st.metric(f"Average Monthly Cash Flow ({display_currency})", f"{ccy_symbol}{total_annual/12:,.2f}")
             
-            # Calculation breakdown for transparency
+            # calculation breakdown for transparency
             if calc_breakdown:
                 with st.expander("View Calculation Breakdown", expanded=True):
                     breakdown_df = pd.DataFrame(calc_breakdown)
@@ -3391,12 +3387,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 with st.expander("📊 View Detailed Portfolio Contributions", expanded=False):
                     st.markdown("**Individual Portfolio Cash Flow Contributions**")
                     
-                    # Build detailed breakdown data
+                    # build detailed breakdown data
                     contribution_data = []
                     for ticker_key, cash_flow_array in ticker_cash_flows.items():
                         annual_total = sum(cash_flow_array)
                         if annual_total > 0:
-                            # Extract just the ticker name (remove portfolio prefix if present)
+                            # extract just the ticker name (remove portfolio prefix if present)
                             ticker_name = ticker_key.split(" - ")[-1] if " - " in ticker_key else ticker_key
                             contribution_data.append({
                                 "Portfolio": ticker_key,
@@ -3408,7 +3404,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     if contribution_data:
                         contribution_df = pd.DataFrame(contribution_data)
                         
-                        # Add grand total row
+                        # add grand total row
                         total_monthly = [sum(ticker_cash_flows[k][i] for k in ticker_cash_flows) for i in range(12)]
                         grand_total = sum(total_monthly)
                         total_row = {
@@ -3425,10 +3421,10 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                             hide_index=True
                         )
                         
-                        # Summary by ticker type - grouped and sorted
+                        # summary by ticker type - grouped and sorted
                         st.markdown("**Summary by Portfolio Type**")
                         
-                        # Group by portfolio type (ticker name) and sum cash flows
+                        # group by portfolio type (ticker name) and sum cash flows
                         grouped_cash_flows = {}
                         for ticker_key, cash_flow_array in ticker_cash_flows.items():
                             ticker_name = ticker_key.split(" - ")[-1] if " - " in ticker_key else ticker_key
@@ -3439,7 +3435,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 else:
                                     grouped_cash_flows[ticker_name] = annual_total
                         
-                        # Convert to list and sort by cash flow (descending)
+                        # convert to list and sort by cash flow (descending)
                         summary_data = []
                         for ticker_name, annual_total in sorted(grouped_cash_flows.items(), key=lambda x: x[1], reverse=True):
                             summary_data.append({
@@ -3530,20 +3526,20 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         import math
                         from scipy.stats import norm as scipy_norm
                         
-                        # Try all possible weight sources
+                        # try all possible weight sources
                         weights = None
                         for key in ['fixed_weights', 'decimal_weights', 'dollar_amounts']:
                             w = selected_portfolio.get(key)
                             if w and isinstance(w, dict) and len(w) > 0:
                                 if key == 'dollar_amounts':
-                                    # Convert dollar amounts to weights
+                                    # convert dollar amounts to weights
                                     total = sum(w.values())
                                     weights = {k: v/total for k, v in w.items()} if total > 0 else None
                                 else:
                                     weights = w
                                 break
                         
-                        # Last resort: equal weight from tickers
+                        # last resort: equal weight from tickers
                         if not weights and selected_portfolio.get('tickers'):
                             tickers = selected_portfolio['tickers']
                             weights = {t: 1.0/len(tickers) for t in tickers}
@@ -3559,7 +3555,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                 if ret_data is None or ret_data.empty:
                                     st.error("No return data available. Please run the portfolio analysis first.")
                                 else:
-                                    # Build portfolio daily returns
+                                    # build portfolio daily returns
                                     portfolio_daily_ret = pd.Series(0.0, index=ret_data.index)
                                     valid_tickers = []
                                     for ticker, weight in weights.items():
@@ -3578,12 +3574,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         months_total = time_horizon * 12
                                         months = np.arange(0, months_total + 1)
                                         
-                                        # Use simple daily returns (same as optimiser)
+                                        # use simple daily returns (same as optimiser)
                                         daily_ret_clean = portfolio_daily_ret.dropna()
                                         
 
                                         
-                                        # Common: exponentially-weighted expected annual return
+                                        # common: exponentially-weighted expected annual return
                                         decay = 1 - math.exp(np.log(0.5) / HALFLIFE_DAYS / TRADING_DAYS)
                                         n_obs = len(daily_ret_clean)
                                         exp_wgt = np.zeros(n_obs)
@@ -3593,12 +3589,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         weighted_daily = np.dot(daily_ret_clean.values, exp_wgt) / exp_wgt.sum()
                                         expected_annual_return = (1 + weighted_daily) ** TRADING_DAYS - 1
                                         
-                                        # Common: base annualised vol from full history
+                                        # common: base annualised vol from full history
                                         annual_stdev = daily_ret_clean.std() * np.sqrt(TRADING_DAYS)
                                         
                                         mc = monthly_contribution if monthly_contribution else 0.0
                                         
-                                        # Convert to log-space for the analytical/MC formulas
+                                        # convert to log-space for the analytical/MC formulas
                                         log_annual_return = np.log(1 + expected_annual_return)
                                         
                                         if forecast_method == "Deterministic Analytical":
@@ -3618,7 +3614,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                             method_label = "Deterministic Analytical"
                                         
                                         elif forecast_method == "Monte Carlo":
-                                            # Monte Carlo with fixed seed, constant vol
+                                            # monte carlo with fixed seed, constant vol
                                             rng = np.random.RandomState(SEED)
                                             monthly_mu = log_annual_return / 12
                                             monthly_sigma = annual_stdev / np.sqrt(12)
@@ -3639,13 +3635,13 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         elif forecast_method == "Monte Carlo + GARCH":
                                             from arch import arch_model
                                             
-                                            # Feed simple daily returns scaled to % (arch works best in 1-1000 range)
+                                            # feed simple daily returns scaled to % (arch works best in 1-1000 range)
                                             scaled_ret = daily_ret_clean.values * 100
                                             
                                             garch = arch_model(scaled_ret, vol='Garch', p=1, q=1, mean='Constant', dist='normal')
                                             garch_fit = garch.fit(disp='off')
                                             
-                                            # Use GARCH long-run unconditional variance for multi-year forecasts
+                                            # use GARCH long-run unconditional variance for multi-year forecasts
                                             # omega / (1 - alpha - beta) gives the unconditional daily variance
                                             omega = garch_fit.params['omega']
                                             alpha = garch_fit.params['alpha[1]']
@@ -3675,7 +3671,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                             
                                             method_label = "Monte Carlo + GARCH"
                                         
-                                        # Helper to convert an index path to dollar values with monthly contributions
+                                        # helper to convert an index path to dollar values with monthly contributions
                                         def build_projection(index_path, initial, monthly_c):
                                             vals = [initial]
                                             for m_idx in range(1, len(index_path)):
@@ -3686,7 +3682,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         median_annual_simple = expected_annual_return  # already in simple return space
                                         
                                         if solve_for_payment and forecast_method in ("Monte Carlo", "Monte Carlo + GARCH"):
-                                            # Binary search: find monthly contribution where
+                                            # binary search: find monthly contribution where
                                             # P(final_value >= target) = solve_probability%
                                             
                                             def _calc_prob(mc_test, n_sample=2000):
@@ -3696,7 +3692,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                                 ])
                                                 return (finals >= target_goal).mean() * 100
                                             
-                                            # Solve for each probability level
+                                            # solve for each probability level
                                             prob_levels = [50, 60, 70, 80, 90, 95]
                                             solved_payments = {}
                                             
@@ -3733,7 +3729,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                                 st.dataframe(pd.DataFrame(prob_rows), use_container_width=True, hide_index=True)
                                         
                                         elif solve_for_payment:
-                                            # Deterministic: use percentile path matching solve_probability
+                                            # deterministic: use percentile path matching solve_probability
                                             target_pctile = 100 - (solve_probability or 50)  # 80% prob = use 20th percentile path
                                             solver_path = percentiles.get(target_pctile, percentiles[50])
                                             future_value_of_initial = initial_value * (solver_path[-1] / 100.0)
@@ -3752,11 +3748,11 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         projected = {p: build_projection(path, initial_value, mc) for p, path in percentiles.items()}
                                         years_array = months / 12.0
                                         
-                                        # Fan chart
+                                        # fan chart
                                         fig = go.Figure()
                                         
                                         if len(percentiles) > 3:
-                                            # Monte Carlo fan chart: fill between percentile bands
+                                            # monte carlo fan chart: fill between percentile bands
                                             fig.add_trace(go.Scatter(
                                                 x=np.concatenate([years_array, years_array[::-1]]),
                                                 y=np.concatenate([projected[95], projected[5][::-1]]),
@@ -3782,7 +3778,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                                 name='95th %ile', line=dict(color='#36B37E', width=1, dash='dot'),
                                             ))
                                         else:
-                                            # Deterministic: 3 lines
+                                            # deterministic: 3 lines
                                             fig.add_trace(go.Scatter(
                                                 x=years_array, y=projected[95], mode='lines',
                                                 name='Optimistic (95th)', line=dict(color='#36B37E', width=2, dash='dot'),
@@ -3809,7 +3805,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         )
                                         st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_forecast_chart")
                                         
-                                        # Summary metrics
+                                        # summary metrics
                                         final_median = projected[50][-1]
                                         final_conservative = projected[5][-1]
                                         final_optimistic = projected[95][-1]
@@ -3827,7 +3823,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                                         with c4:
                                             st.metric("Total Contributions", f"${total_contributions:,.0f}")
                                         
-                                        # Probability of hitting target (Monte Carlo only)
+                                        # probability of hitting target (monte carlo only)
                                         if forecast_method in ("Monte Carlo", "Monte Carlo + GARCH"):
                                             final_values = np.array([build_projection(sims[i], initial_value, mc)[-1] for i in range(min(N_SIMS, 1000))])
                                             prob_hit = (final_values >= target_goal).mean() * 100

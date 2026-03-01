@@ -14,7 +14,7 @@ def calculate_exposure(weights, df_exposure):
     for col in weights.index:
         if col.endswith('_wgt'):
             ticker = col.replace('_wgt', '')
-            # Ensure weight is numeric
+            # ensure weight is numeric
             try:
                 w = float(weights[col])
                 ticker_weights[ticker] = w
@@ -102,7 +102,7 @@ def clean_holding_name(name):
     return name_upper
 
 def get_concentration_exposure(weights, df_underlying, top_n=10):
-    """Calculate weighted underlying exposure across all holdings, unifying share classes."""
+    """calc weighted underlying exposure across all holdings, unifying share classes (i.e. GOOG vs GOOGL)"""
     aggregated_holdings = {}
     
     for col_name in weights.index:
@@ -119,7 +119,7 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
         if weight_in_port == 0:
             continue
         
-        # Handle different ticker formats (e.g. "SPY US", "SPY Equity")
+        # handle different ticker formats (e.g. "SPY US", "SPY Equity")
         candidates = [ticker]
         clean_t = ticker.replace(" US", "").replace(" Equity", "").strip()
         if clean_t != ticker:
@@ -129,7 +129,7 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
         name_col = ""
         w_col = ""
         
-        # Look for matching columns in the underlying data
+        # look for matching columns in the underlying data
         for cand in candidates:
             name_patterns = [f"{cand} Holdings", f"{cand} Holding"]
             weight_patterns = [f"{cand} Holdings Weights", f"{cand} Holding Weights", f"{cand} Weights"]
@@ -149,13 +149,13 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
                 break
         
         if not found_cols:
-            # No breakdown available - use the ticker itself
+            # no breakdown available - use the ticker itself
             aggregated_holdings[ticker] = aggregated_holdings.get(ticker, 0.0) + weight_in_port
             continue
         
         sub_df = df_underlying[[name_col, w_col]].dropna(subset=[name_col])
         
-        # Check if weights are in percentage (0-100) or decimal (0-1) format
+        # check if weights are in percentage (0-100) or decimal (0-1) format
         valid_weights = []
         for _, row in sub_df.iterrows():
             h_name = row[name_col]
@@ -169,7 +169,7 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
             except (ValueError, TypeError):
                 continue
         
-        # If weights sum > 1.5, they're probably in percentage format
+        # if weights sum > 1.5, they're probably in percentage format
         total_weights = sum(valid_weights)
         is_percentage_format = total_weights > 1.5
         
@@ -190,7 +190,7 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
             
             clean_name = clean_holding_name(h_name)
             
-            # Convert to decimal if needed
+            # convert to decimal if needed
             if is_percentage_format:
                 contribution = (h_val_float / 100.0) * weight_in_port
             else:
