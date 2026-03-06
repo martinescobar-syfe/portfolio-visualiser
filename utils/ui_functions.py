@@ -719,6 +719,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     if ticker in sel_port_types:
                         filtered_weights[f"{ticker}_wgt"] = weight
 
+            # Exclude ignored portfolios (e.g. Custom Usd) from all charts and scores
+            from utils.diversification_score import IGNORED_PORTFOLIOS
+            filtered_weights = {k: v for k, v in filtered_weights.items()
+                                if k.replace('_wgt', '') not in IGNORED_PORTFOLIOS}
+
             weights_series = pd.Series(filtered_weights)
             total_wgt = weights_series.sum()
             if total_wgt > 0:
@@ -795,24 +800,34 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         }).set_index('Objective')
                         st.dataframe(obj_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
 
-                st.markdown("### 2. Client Exposures")
+                # Build filter label for header
+                if filter_mode == "Show All":
+                    _filter_label = ""
+                elif filter_mode == "By Objective":
+                    _filter_label = f" — {', '.join(sel_objectives)}" if sel_objectives else ""
+                else:
+                    _filter_label = f" — {', '.join(sel_port_types)}" if sel_port_types else ""
+                st.markdown(f"### 2. Client Exposures{_filter_label}")
 
                 # --- Section 2: Diversification Score (left) + Exposure Tabs (right) ---
                 from utils.diversification_score import calculate_diversification_score, WEIGHTS
                 from styles.syfe_colors import DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE
 
+                # Use filtered weights for diversification score (renormalized)
+                div_weights = {k.replace('_wgt', ''): v for k, v in weights_series.items()}
                 div_result = calculate_diversification_score(
-                    client_weights, df_asset_class, df_sector, df_country, df_underlying
+                    div_weights, df_asset_class, df_sector, df_country, df_underlying
                 )
                 composite = div_result['composite_score']
                 sub_labels = ['Asset Class', 'Geography', 'Sector', 'Concentration']
                 sub_keys = ['asset_class', 'geography', 'sector', 'concentration']
                 weight_keys = ['asset', 'geo', 'sector', 'conc']
-                sub_scores = [div_result[k]['score'] if div_result[k].get('score') is not None else 0 for k in sub_keys]
+                sub_scores = [div_result[k].get('score') for k in sub_keys]
                 sub_weights_vals = [WEIGHTS[k] for k in weight_keys]
                 slice_colors = [DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE]
 
                 def _score_rating(s):
+                    if s is None: return 'N/A'
                     if s >= 8: return 'Excellent'
                     if s >= 6: return 'Good'
                     if s >= 4: return 'Fair'
@@ -822,9 +837,11 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
 
                 # --- LEFT: Composite donut + insights ---
                 with col_left:
+                    donut_labels = [f'{l}  ({s:.1f})' if s is not None else f'{l}  (N/A)' for l, s in zip(sub_labels, sub_scores)]
+                    donut_values = [w * (s or 0) for w, s in zip(sub_weights_vals, sub_scores)]
                     fig_donut = go.Figure(data=[go.Pie(
-                        labels=[f'{l}  ({s:.1f})' for l, s in zip(sub_labels, sub_scores)],
-                        values=[w * s for w, s in zip(sub_weights_vals, sub_scores)],
+                        labels=donut_labels,
+                        values=donut_values,
                         hole=0.7,
                         marker=dict(colors=slice_colors, line=dict(color='white', width=2)),
                         textinfo='none',
@@ -894,14 +911,23 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 with col_right:
                     tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
 
+                    def _render_tab_score(score, color):
+                        if score is not None:
+                            st.markdown(
+                                f'<div style="text-align:center;padding:8px 0">'
+                                f'<span style="font-size:28px;font-weight:800;color:{color}">{score:.1f}</span>'
+                                f'<span style="font-size:14px;color:#999"> / 10</span>'
+                                f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score)}</span>'
+                                f'</div>', unsafe_allow_html=True)
+                        else:
+                            st.markdown(
+                                f'<div style="text-align:center;padding:8px 0">'
+                                f'<span style="font-size:28px;font-weight:800;color:#B0B0B0">N/A</span>'
+                                f'<span style="font-size:12px;color:#888;margin-left:8px">Not applicable for this selection</span>'
+                                f'</div>', unsafe_allow_html=True)
+
                     with tab_aa:
-                        score_aa = sub_scores[0]
-                        st.markdown(
-                            f'<div style="text-align:center;padding:8px 0">'
-                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[0]}">{score_aa:.1f}</span>'
-                            f'<span style="font-size:14px;color:#999"> / 10</span>'
-                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_aa)}</span>'
-                            f'</div>', unsafe_allow_html=True)
+                        _render_tab_score(sub_scores[0], slice_colors[0])
                         if 'asset_pie' in charts:
                             st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_tab_asset_pie")
                             with st.expander("View Data"):
@@ -909,13 +935,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         st.caption(_get_asset_brief(div_result['asset_class']))
 
                     with tab_geo:
-                        score_geo = sub_scores[1]
-                        st.markdown(
-                            f'<div style="text-align:center;padding:8px 0">'
-                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[1]}">{score_geo:.1f}</span>'
-                            f'<span style="font-size:14px;color:#999"> / 10</span>'
-                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_geo)}</span>'
-                            f'</div>', unsafe_allow_html=True)
+                        _render_tab_score(sub_scores[1], slice_colors[1])
                         if 'country_pie' in charts:
                             st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_tab_country_pie")
                             with st.expander("View Data"):
@@ -923,13 +943,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         st.caption(_get_geo_brief(div_result['geography']))
 
                     with tab_sec:
-                        score_sec = sub_scores[2]
-                        st.markdown(
-                            f'<div style="text-align:center;padding:8px 0">'
-                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[2]}">{score_sec:.1f}</span>'
-                            f'<span style="font-size:14px;color:#999"> / 10</span>'
-                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_sec)}</span>'
-                            f'</div>', unsafe_allow_html=True)
+                        _render_tab_score(sub_scores[2], slice_colors[2])
                         if 'sector_pie' in charts:
                             st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_tab_sector_pie")
                             with st.expander("View Data"):
@@ -937,16 +951,20 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         st.caption(_get_sector_brief(div_result['sector']))
 
                     with tab_conc:
-                        score_conc = sub_scores[3]
-                        st.markdown(
-                            f'<div style="text-align:center;padding:8px 0">'
-                            f'<span style="font-size:28px;font-weight:800;color:{slice_colors[3]}">{score_conc:.1f}</span>'
-                            f'<span style="font-size:14px;color:#999"> / 10</span>'
-                            f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score_conc)}</span>'
-                            f'</div>', unsafe_allow_html=True)
+                        _render_tab_score(sub_scores[3], slice_colors[3])
                         t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_client")
                         if df_underlying is not None:
-                            conc_raw = get_concentration_exposure(weights_series, df_underlying, top_n=t_topn)
+                            from utils.diversification_score import _classify_portfolio_type
+                            eq_only_weights = {}
+                            for col_name in weights_series.index:
+                                tk = col_name.replace('_wgt', '')
+                                ptype = _classify_portfolio_type(tk, df_asset_class)
+                                if ptype in ('equity', 'reit'):
+                                    eq_only_weights[col_name] = weights_series[col_name]
+                            eq_only_series = pd.Series(eq_only_weights) if eq_only_weights else pd.Series(dtype=float)
+                            if not eq_only_series.empty:
+                                eq_only_series = eq_only_series / eq_only_series.sum()
+                            conc_raw = get_concentration_exposure(eq_only_series, df_underlying, top_n=t_topn) if not eq_only_series.empty else pd.Series(dtype=float)
                             if not conc_raw.empty:
                                 from utils.plotting import plot_horizontal_bar_chart
                                 total_conc = conc_raw.head(t_topn).sum()
@@ -2037,6 +2055,16 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             if port_meta_exp[p['name']]['cash_invested'] == 0:
                 port_meta_exp[p['name']]['cash_invested'] = 100000.0
 
+        # backfill any result keys missing from session-state metadata
+        # (happens when portfolio was renamed after optimization)
+        for rk in results_exp.keys():
+            if rk not in port_meta_exp:
+                port_meta_exp[rk] = {
+                    'objective': 'Unclassified',
+                    'goal_name': 'Unclassified',
+                    'cash_invested': 100000.0,
+                }
+
         # filter selection logic
         filtered_portfolios_exp = []
         scaling_factors_exp = {}
@@ -2099,7 +2127,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             agg_weights_exp = pd.Series({k: v / total_agg_value_exp for k, v in global_ticker_values_exp.items()})
             
             from utils.exposure import get_exposure_charts, get_concentration_exposure
-            charts_exp = get_exposure_charts(agg_weights_exp, df_sector, df_country, df_asset_class, df_underlying)
+            charts_exp = get_exposure_charts(agg_weights_exp, df_sector, df_country, df_asset_class)
             
             col_asset_exp, col_holdings_exp = st.columns([1, 1])
             
@@ -2134,10 +2162,38 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             
             with col_conc_exp:
                 st.markdown("**Top Holdings**")
-                if 'concentration_bar' in charts_exp:
-                    st.plotly_chart(charts_exp['concentration_bar'], use_container_width=True, key=f"{key_prefix}_anal_bar_conc_4")
-                    with st.expander("View Data"):
-                        st.dataframe(charts_exp['concentration_table'].style.format("{:.2%}"), use_container_width=True)
+                t_topn_exp = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_topn_sel_exp_4")
+                if df_underlying is not None:
+                    from utils.diversification_score import _classify_portfolio_type
+                    eq_only_exp = {}
+                    for tk_wgt, wt in agg_weights_exp.items():
+                        if not tk_wgt.endswith('_wgt'):
+                            continue
+                        tk = tk_wgt.replace('_wgt', '')
+                        ptype = _classify_portfolio_type(tk, df_asset_class)
+                        if ptype in ('equity', 'reit'):
+                            eq_only_exp[tk_wgt] = wt
+                    if eq_only_exp:
+                        eq_series_exp = pd.Series(eq_only_exp)
+                        eq_series_exp = eq_series_exp / eq_series_exp.sum()
+                        conc_exp_raw = get_concentration_exposure(eq_series_exp, df_underlying, top_n=t_topn_exp)
+                        if not conc_exp_raw.empty:
+                            from utils.plotting import plot_horizontal_bar_chart
+                            conc_top = conc_exp_raw.head(t_topn_exp)
+                            total_conc_exp = conc_top.sum()
+                            fig_conc = plot_horizontal_bar_chart(
+                                conc_top,
+                                title=f'Top {t_topn_exp} Holdings ({total_conc_exp:.1%} Total)'
+                            )
+                            st.plotly_chart(fig_conc, use_container_width=True, key=f"{key_prefix}_anal_bar_conc_4")
+                            with st.expander("View Data"):
+                                conc_df_exp = conc_top.to_frame(name='Weight')
+                                conc_df_exp['Est. Value ($)'] = conc_df_exp['Weight'] * total_agg_value_exp
+                                st.dataframe(conc_df_exp.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
+                        else:
+                            st.info("No underlying holdings found for equity portfolios.")
+                    else:
+                        st.info("No Equity Portfolios — concentration analysis requires equity or REIT holdings.")
                 else:
                     st.info("Concentration data unavailable.")
         else:
@@ -2650,6 +2706,15 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
             if port_meta[p['name']]['cash_invested'] == 0:
                 port_meta[p['name']]['cash_invested'] = 100000.0
 
+        # backfill any result keys missing from session-state metadata
+        for rk in results.keys():
+            if rk not in port_meta:
+                port_meta[rk] = {
+                    'objective': 'Unclassified',
+                    'goal_name': 'Unclassified',
+                    'cash_invested': 100000.0,
+                }
+
         # filter selection logic
         filtered_portfolios = []
         scaling_factors = {}
@@ -2742,39 +2807,44 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     st.info("Asset Class data unavailable.")
             
             with col_holdings:
-                # selector for top N
+                st.markdown("**Top Holdings**")
                 t_topn = st.selectbox("Show Top", [10, 15, 20], key=f"{key_prefix}_anal_topn_sel")
                 
                 if df_underlying is not None:
                     from utils.exposure import get_concentration_exposure
-                    conc_agg = get_concentration_exposure(agg_weights, df_underlying, top_n=t_topn)
-                    if not conc_agg.empty:
-                        conc_df = conc_agg.head(t_topn).to_frame(name='Weight')
-                        conc_df['Est. Value ($)'] = conc_df['Weight'] * total_agg_value
-                        total_conc = conc_df['Weight'].sum()
-                        
-                        # bar chart for top holdings
-                        conc_df_sorted = conc_df.sort_values('Weight', ascending=True) # sort for bar chart (bottom to top)
-                        
-                        fig_top_bar = px.bar(
-                            conc_df_sorted, 
-                            x='Weight', 
-                            y=conc_df_sorted.index, 
-                            orientation='h',
-                            title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)',
-                            color='Weight',
-                            color_continuous_scale=PALETTE # use Syfe palette
-                        )
-                        fig_top_bar.update_layout(showlegend=False, xaxis_tickformat='.1%')
-                        st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_anal_bar_top_holdings")
-                        
-                        with st.expander("View Data"):
-                            st.dataframe(
-                                conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
-                                use_container_width=True
+                    from utils.diversification_score import _classify_portfolio_type
+                    eq_only_cons = {}
+                    for tk_wgt, wt in agg_weights.items():
+                        if not tk_wgt.endswith('_wgt'):
+                            continue
+                        tk = tk_wgt.replace('_wgt', '')
+                        ptype = _classify_portfolio_type(tk, df_asset_class)
+                        if ptype in ('equity', 'reit'):
+                            eq_only_cons[tk_wgt] = wt
+                    if eq_only_cons:
+                        eq_series_cons = pd.Series(eq_only_cons)
+                        eq_series_cons = eq_series_cons / eq_series_cons.sum()
+                        conc_agg = get_concentration_exposure(eq_series_cons, df_underlying, top_n=t_topn)
+                        if not conc_agg.empty:
+                            from utils.plotting import plot_horizontal_bar_chart
+                            conc_top = conc_agg.head(t_topn)
+                            total_conc = conc_top.sum()
+                            fig_top_bar = plot_horizontal_bar_chart(
+                                conc_top,
+                                title=f'Top {t_topn} Holdings ({total_conc:.1%} Total)'
                             )
+                            st.plotly_chart(fig_top_bar, use_container_width=True, key=f"{key_prefix}_anal_bar_top_holdings")
+                            with st.expander("View Data"):
+                                conc_df = conc_top.to_frame(name='Weight')
+                                conc_df['Est. Value ($)'] = conc_df['Weight'] * total_agg_value
+                                st.dataframe(
+                                    conc_df.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}),
+                                    use_container_width=True
+                                )
+                        else:
+                            st.info("No underlying holdings found for equity portfolios.")
                     else:
-                        st.warning("No underlying holdings found.")
+                        st.info("No Equity Portfolios — concentration analysis requires equity or REIT holdings.")
                 else:
                     st.info("Concentration data not available.")
             

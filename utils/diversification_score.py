@@ -624,12 +624,22 @@ def calculate_diversification_score(
     # 3. Sector
     sector_result = calculate_sector_score(client_weights, df_sector, df_asset_class)
 
-    # 4. Concentration
+    # 4. Concentration — equity/REIT portfolios only
     if concentration_holdings is not None and not concentration_holdings.empty:
         conc_result = calculate_concentration_score(concentration_holdings)
     elif df_underlying is not None:
-        conc_holdings = get_concentration_exposure(weights_series, df_underlying, top_n=9999)
-        conc_result = calculate_concentration_score(conc_holdings)
+        equity_weights = {}
+        for ticker, w in client_weights.items():
+            ptype = _classify_portfolio_type(ticker, df_asset_class)
+            if ptype in ('equity', 'reit'):
+                equity_weights[f"{ticker}_wgt"] = w
+        if equity_weights:
+            eq_series = pd.Series(equity_weights)
+            conc_holdings = get_concentration_exposure(eq_series, df_underlying, top_n=9999)
+            conc_result = calculate_concentration_score(conc_holdings)
+        else:
+            conc_result = {'score': None, 'hhi': None, 'n_eff': None, 'n_holdings': 0,
+                           'error': 'No equity/REIT portfolios — concentration not applicable.'}
     else:
         conc_result = calculate_concentration_score({})
 
@@ -676,13 +686,22 @@ def calculate_diversification_score(
             else:
                 data_warnings.append(f"**{ticker}** has no sector data in the backend")
 
-    # final weighted composite (treat None scores as 0 — they'll show an error in the UI)
-    composite = (
-        WEIGHTS['asset'] * (asset_result['score'] or 0)
-        + WEIGHTS['geo'] * (geo_result['score'] or 0)
-        + WEIGHTS['sector'] * (sector_result['score'] or 0)
-        + WEIGHTS['conc'] * (conc_result['score'] or 0)
-    )
+    # Composite: rescale weights to exclude any None sub-scores so
+    # missing dimensions don't drag the overall score down unfairly.
+    _sub_results = [
+        ('asset', asset_result),
+        ('geo', geo_result),
+        ('sector', sector_result),
+        ('conc', conc_result),
+    ]
+    available = [(k, r) for k, r in _sub_results if r.get('score') is not None]
+    if available:
+        raw_weight_sum = sum(WEIGHTS[k] for k, _ in available)
+        composite = sum(
+            (WEIGHTS[k] / raw_weight_sum) * r['score'] for k, r in available
+        )
+    else:
+        composite = 0.0
 
     return {
         'composite_score': round(composite, 2),

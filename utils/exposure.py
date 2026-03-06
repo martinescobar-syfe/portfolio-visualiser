@@ -85,12 +85,17 @@ def group_tail(series, top_n=9):
         others = pd.Series({'Others': others_val})
         return pd.concat([top, others])
 
+CATCH_ALL_HOLDINGS = {
+    'OTHERS', 'OTHER', 'CASH AND/OR DERIVATIVES', 'CASH',
+    'NOT CLASSIFIED', 'N/A', 'UNKNOWN', 'REMAINDER',
+}
+
 def clean_holding_name(name):
     """clean holding name to unify share classes (GOOG vs GOOGL etc)"""
     if not isinstance(name, str):
-        return str(name)
+        return str(name).strip()
         
-    name_upper = name.upper()
+    name_upper = name.strip().upper()
     suffixes = [' CLASS A', ' CLASS B', ' CLASS C', ' CL A', ' CL B', ' CL C', 
                 ' INC', ' CORP', ' LTD', ' PLC', ' NV', ' AG', ' SA', ' SE', 
                 ' CO', ' HLDG', ' HOLDINGS', ' GROUP', ' GRP']
@@ -190,6 +195,9 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
             
             clean_name = clean_holding_name(h_name)
             
+            if clean_name in CATCH_ALL_HOLDINGS:
+                continue
+            
             # convert to decimal if needed
             if is_percentage_format:
                 contribution = (h_val_float / 100.0) * weight_in_port
@@ -235,10 +243,10 @@ def get_exposure_charts(weights, df_sector, df_country, df_asset_class=None, df_
         charts['asset_bar'] = plot_bar_chart(asset_exp.to_frame(name='Weight').T, title="Asset Class Exposure", barmode='relative')
         charts['asset_pie'] = plot_allocation_pie(asset_exp, title="Asset Class Allocation")
 
-    # concentration (Top Holdings) - use horizontal bar chart with color gradient
+    # concentration (Top Holdings) — show only actual named holdings, no "Others" bucket
     if df_underlying is not None:
         conc_exp = get_concentration_exposure(weights, df_underlying, top_n=concentration_top_n)
-        conc_top = group_tail(conc_exp, top_n=concentration_top_n)
+        conc_top = conc_exp.head(concentration_top_n)
         total_concentration = conc_top.sum()
         charts['concentration_table'] = conc_top.to_frame(name='Weight')
         charts['concentration_bar'] = plot_horizontal_bar_chart(
