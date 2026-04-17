@@ -6,7 +6,16 @@ from datetime import datetime
 import uuid
 import math
 import re
+import threading
 from scipy.stats import norm as scipy_norm
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx
+except Exception:
+    try:
+        from streamlit.runtime.scriptrunner_utils.script_run_context import add_script_run_ctx
+    except Exception:
+        def add_script_run_ctx(_t):  # fallback no-op
+            return
 
 from utils.data_loader import load_static_data, get_data_path
 from utils.ui_functions import (
@@ -197,21 +206,42 @@ def process_client_data(df_client):
     return weights, holdings, total
 
 
+def _normalize_goal(goal):
+    """Normalize legacy goal formats (source=existing/custom) to the unified schema:
+    - portfolios: list of all portfolios in the goal
+    - new_portfolios: subset that represent *new* money (not in current holdings)
+    - lump_sums: per-portfolio one-time lump sum (required for new, optional for existing)
+    """
+    if 'new_portfolios' in goal and 'lump_sums' in goal:
+        return goal
+    src = goal.get('source', 'existing')
+    if src == 'existing':
+        goal['new_portfolios'] = []
+        goal['lump_sums'] = {}
+    else:
+        goal['new_portfolios'] = list(goal.get('portfolios', []))
+        goal['lump_sums'] = dict(goal.get('allocations', {}) or {})
+    goal.pop('source', None)
+    goal.pop('allocations', None)
+    goal.setdefault('benchmark', None)
+    return goal
+
+
+def _compute_goal_navs(goal, client_holdings):
+    """Return {portfolio: dollar_value} for a goal, combining existing NAV and lump sums."""
+    new_set = set(goal.get('new_portfolios', []))
+    lumps = goal.get('lump_sums', {}) or {}
+    navs = {}
+    for p in goal.get('portfolios', []):
+        base = 0.0 if p in new_set else float(client_holdings.get(p, 0) or 0)
+        navs[p] = base + float(lumps.get(p, 0) or 0)
+    return navs
+
+
 def _goal_weighted_params(goal, client_holdings):
     """Compute weighted return, vol, yield for a goal's portfolio mix.
     Returns (total_return, vol, yield) where total_return includes yield."""
-    ports = goal['portfolios']
-    is_custom = goal.get('source', 'existing') != 'existing'
-
-    if is_custom:
-        allocs = goal.get('allocations', {})
-        if allocs:
-            navs = {p: allocs.get(p, 0) for p in ports}
-        else:
-            navs = {p: 1.0 for p in ports}
-    else:
-        navs = {p: client_holdings.get(p, 0) for p in ports}
-
+    navs = _compute_goal_navs(goal, client_holdings)
     total = sum(navs.values())
     if total <= 0:
         return _DEFAULT_EST['ret'], _DEFAULT_EST['vol'], _DEFAULT_EST['yield']
@@ -231,6 +261,67 @@ def _build_projection(index_path, initial, monthly_c):
         growth = index_path[i] / index_path[i - 1]
         vals.append(vals[-1] * growth + monthly_c)
     return np.array(vals)
+
+
+_BENCHMARK_EXCLUDE = {'USDSGD', 'USDHKD'}
+
+
+def _build_benchmark_options(df_daily_ret):
+    """Return a flat list of benchmark options for the goal form.
+
+    Includes Syfe managed portfolios first, then all tickers/indexes available in
+    df_daily_ret (ETFs like ACWI, URTH, SPY, AGG and indexes like M1WO Index).
+    FX pairs and placeholder columns are filtered out; the ticker/index tail is
+    alphabetical so the list is predictable.
+    """
+    managed = [p for p in ALL_MANAGED_PORTFOLIOS]
+    managed_set = set(managed)
+    others = []
+    if df_daily_ret is not None:
+        for c in df_daily_ret.columns:
+            if not isinstance(c, str):
+                continue
+            if c in _BENCHMARK_EXCLUDE or c.startswith('Unnamed'):
+                continue
+            if c in managed_set:
+                continue
+            others.append(c)
+    others = sorted(set(others))
+    return managed + others
+
+
+def _start_insights_thread(ins_key, api_key, div_result, weights):
+    """Kick off a background thread to fetch LLM insights into session_state.
+
+    Idempotent — if already cached or already started, does nothing. The thread
+    gets the current script run context attached so it can write to session_state
+    without a rerun. The main script (and any Streamlit fragments) never block
+    on the LLM call, so user interactions stay responsive.
+    """
+    if ins_key in st.session_state:
+        return
+    flag = f"{ins_key}__thread"
+    if st.session_state.get(flag):
+        return
+
+    def _worker():
+        try:
+            from utils.llm_helper import generate_diversification_insights
+            result = generate_diversification_insights(api_key, div_result, weights)
+        except Exception:
+            result = []
+        try:
+            st.session_state[ins_key] = result
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    try:
+        add_script_run_ctx(t)
+    except Exception:
+        pass
+    t.start()
+    st.session_state[flag] = True
 
 
 def _score_rating(s):
@@ -254,9 +345,14 @@ for key, default in [
     ('cpv_goals', []),
     ('cpv_active_goal_id', None),
     ('cpv_card_page', 0),
+    ('cpv_editing_goal_id', None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+# normalize any legacy-format goals already stored in session state
+for _g in st.session_state.cpv_goals:
+    _normalize_goal(_g)
 
 # ── page header ──────────────────────────────────────────────
 st.title("Portfolio Visualizer")
@@ -354,22 +450,16 @@ if client_weights and total_nav > 0:
             st.caption(goal['description'])
 
         # ── compute goal NAV, weights, and return series upfront ──
-        is_existing = goal.get('source', 'existing') == 'existing'
-        if is_existing:
-            goal_navs = {p: client_holdings.get(p, 0) for p in goal['portfolios']}
-            goal_nav = sum(goal_navs.values())
-            goal_total = goal_nav if goal_nav > 0 else 1
-            goal_weights = {p: v / goal_total for p, v in goal_navs.items() if v > 0}
-        else:
-            allocs = goal.get('allocations', {})
-            if allocs:
-                goal_nav = sum(allocs.values())
-                goal_total = goal_nav if goal_nav > 0 else 1
-                goal_weights = {p: v / goal_total for p, v in allocs.items() if v > 0}
-            else:
-                goal_nav = goal.get('initial_value', 0) or 0
-                n_ports = len(goal['portfolios'])
-                goal_weights = {p: 1.0 / n_ports for p in goal['portfolios']} if n_ports > 0 else {}
+        _normalize_goal(goal)
+        new_set = set(goal.get('new_portfolios', []))
+        has_existing = any(p not in new_set for p in goal.get('portfolios', []))
+        goal_navs = _compute_goal_navs(goal, client_holdings)
+        goal_nav = sum(goal_navs.values())
+        goal_total = goal_nav if goal_nav > 0 else 1
+        goal_weights = {p: v / goal_total for p, v in goal_navs.items() if v > 0}
+        if not goal_weights and goal.get('portfolios'):
+            n_ports = len(goal['portfolios'])
+            goal_weights = {p: 1.0 / n_ports for p in goal['portfolios']}
         goal_obj = "Wealth Growth" if goal['type'] == 'Growth' else "Income Generation"
         kp = f"cpv_goal_{goal['id']}"
 
@@ -380,13 +470,19 @@ if client_weights and total_nav > 0:
         available_ports = [p for p in goal['portfolios'] if p in df_daily_ret.columns] if df_daily_ret is not None else []
         if available_ports and goal_weights:
             port_rets = df_daily_ret[available_ports].dropna(how='all') / 100  # convert from % to decimal
+            # df_daily_ret may contain duplicate dates — collapse to a single row per date.
+            if port_rets.index.duplicated().any():
+                port_rets = port_rets.groupby(level=0).first()
             common_start = port_rets.dropna().index.min()
             port_rets = port_rets.loc[common_start:]
             goal_daily = pd.Series(0.0, index=port_rets.index)
             for p in available_ports:
                 goal_daily += port_rets[p].fillna(0) * goal_weights.get(p, 0)
             goal_daily = goal_daily.dropna()
-            if is_existing:
+            # ensure unique index for downstream reindex / benchmark alignment
+            if goal_daily.index.duplicated().any():
+                goal_daily = goal_daily.groupby(level=0).first()
+            if has_existing and not new_set:
                 returns_label = "Actual Returns"
 
         # ══════════════════════════════════════════════════════════
@@ -579,8 +675,17 @@ if client_weights and total_nav > 0:
 
             kp_perf = f"{kp}_perf"
             cum_ret = (1 + goal_daily).cumprod()
-            running_max = cum_ret.cummax()
-            drawdown_series = (cum_ret - running_max) / running_max * 100
+
+            # align benchmark daily returns to the goal's return window
+            benchmark_name = goal.get('benchmark')
+            bench_daily = None
+            if benchmark_name and df_daily_ret is not None and benchmark_name in df_daily_ret.columns:
+                _bm = df_daily_ret[benchmark_name]
+                if isinstance(_bm, pd.DataFrame):
+                    _bm = _bm.iloc[:, 0]
+                if _bm.index.duplicated().any():
+                    _bm = _bm.groupby(level=0).first()
+                bench_daily = (_bm / 100).reindex(goal_daily.index).fillna(0)
 
             from utils.plotting import plot_monthly_heatmap, plot_cumulative_returns, plot_drawdowns
 
@@ -588,18 +693,39 @@ if client_weights and total_nav > 0:
 
             with perf_tab_cum:
                 cum_pct = (cum_ret - 1).to_frame(goal['name'])
-                fig_cum = plot_cumulative_returns(cum_pct)
+                fig_cum = plot_cumulative_returns(cum_pct, benchmark_ret=bench_daily)
                 st.plotly_chart(fig_cum, use_container_width=True, key=f"{kp_perf}_cum")
+                if benchmark_name and bench_daily is None:
+                    st.caption(f"Benchmark *{benchmark_name}* has no return data available.")
 
             with perf_tab_cal:
-                fig_cal = plot_monthly_heatmap(goal_daily.to_frame(goal['name']))
-                st.plotly_chart(fig_cal, use_container_width=True, key=f"{kp_perf}_cal")
+                if bench_daily is not None:
+                    cc_goal, cc_bm = st.columns(2)
+                    with cc_goal:
+                        st.plotly_chart(
+                            plot_monthly_heatmap(goal_daily.to_frame(goal['name'])),
+                            use_container_width=True, key=f"{kp_perf}_cal_goal",
+                        )
+                    with cc_bm:
+                        st.plotly_chart(
+                            plot_monthly_heatmap(bench_daily.to_frame(f"{benchmark_name} (Benchmark)")),
+                            use_container_width=True, key=f"{kp_perf}_cal_bm",
+                        )
+                else:
+                    fig_cal = plot_monthly_heatmap(goal_daily.to_frame(goal['name']))
+                    st.plotly_chart(fig_cal, use_container_width=True, key=f"{kp_perf}_cal")
 
             with perf_tab_dd:
-                fig_dd = plot_drawdowns(goal_daily.to_frame(goal['name']))
+                dd_df = goal_daily.to_frame(goal['name'])
+                if bench_daily is not None:
+                    dd_df[f"{benchmark_name} (Benchmark)"] = bench_daily
+                fig_dd = plot_drawdowns(dd_df)
                 st.plotly_chart(fig_dd, use_container_width=True, key=f"{kp_perf}_dd")
 
-            st.caption(f"Data: {goal_daily.index.min().strftime('%b %Y')} – {goal_daily.index.max().strftime('%b %Y')}")
+            caption_parts = [f"Data: {goal_daily.index.min().strftime('%b %Y')} – {goal_daily.index.max().strftime('%b %Y')}"]
+            if benchmark_name:
+                caption_parts.append(f"Benchmark: {benchmark_name}")
+            st.caption(" · ".join(caption_parts))
         else:
             st.info("Insufficient return data for the selected portfolios.")
 
@@ -664,23 +790,35 @@ if client_weights and total_nav > 0:
                     )
                     st.plotly_chart(fig_d, use_container_width=True, key=f"{kp}_div_donut")
 
-                    ins_key = f"{kp}_div_ins"
-                    if ins_key not in st.session_state:
-                        try:
-                            from utils.llm_helper import generate_diversification_insights
-                            with st.spinner("Generating insights..."):
-                                st.session_state[ins_key] = generate_diversification_insights(API_KEY, div_result, gw_norm)
-                        except Exception:
-                            st.session_state[ins_key] = []
-                    for ins in (st.session_state.get(ins_key) or []):
-                        cat = ins.get('category', 'observation')
-                        styles = {'strength': ('#E8F5E9', '#2E7D32'), 'improvement': ('#FFF3E0', '#E65100'), 'observation': ('#E3F2FD', '#0052CC')}
-                        bg, accent = styles.get(cat, styles['observation'])
-                        st.markdown(
-                            f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
-                            f'<div style="font-weight:700;color:#172B4D;font-size:13px;margin-bottom:3px">{ins.get("title","")}</div>'
-                            f'<div style="color:#333;font-size:12px;line-height:1.4">{ins.get("body","")}</div></div>',
-                            unsafe_allow_html=True)
+                    # Insights fetched in a background thread; fragment polls
+                    # and renders when available. Main script never blocks.
+                    _GOAL_INS_CATS = {
+                        'strength': ('#E8F5E9', '#2E7D32'),
+                        'improvement': ('#FFF3E0', '#E65100'),
+                        'observation': ('#E3F2FD', '#0052CC'),
+                    }
+
+                    def _render_goal_insight_cards(items):
+                        for ins in (items or []):
+                            cat = ins.get('category', 'observation')
+                            bg, accent = _GOAL_INS_CATS.get(cat, _GOAL_INS_CATS['observation'])
+                            st.markdown(
+                                f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
+                                f'<div style="font-weight:700;color:#172B4D;font-size:13px;margin-bottom:3px">{ins.get("title","")}</div>'
+                                f'<div style="color:#333;font-size:12px;line-height:1.4">{ins.get("body","")}</div></div>',
+                                unsafe_allow_html=True)
+
+                    _goal_ins_key = f"{kp}_div_ins"
+                    _start_insights_thread(_goal_ins_key, API_KEY, div_result, gw_norm)
+
+                    @st.fragment(run_every=("600ms" if _goal_ins_key not in st.session_state else None))
+                    def _goal_insights_fragment():
+                        if _goal_ins_key in st.session_state:
+                            _render_goal_insight_cards(st.session_state.get(_goal_ins_key) or [])
+                            return
+                        st.caption("Generating insights…")
+
+                    _goal_insights_fragment()
 
                 with col_r:
                     tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
@@ -882,23 +1020,37 @@ if client_weights and total_nav > 0:
                 )
                 st.plotly_chart(fig_donut, use_container_width=True, key="cpv_div_donut")
 
-                ins_key = "cpv_div_insights"
-                if ins_key not in st.session_state:
-                    try:
-                        from utils.llm_helper import generate_diversification_insights
-                        with st.spinner("Generating insights..."):
-                            st.session_state[ins_key] = generate_diversification_insights(API_KEY, div_result, client_weights)
-                    except Exception:
-                        st.session_state[ins_key] = []
-                CATS = {'strength': ('#E8F5E9', '#2E7D32', '#172B4D'), 'improvement': ('#FFF3E0', '#E65100', '#172B4D'), 'observation': ('#E3F2FD', '#0052CC', '#172B4D')}
-                for ins in (st.session_state.get(ins_key) or []):
-                    cat = ins.get('category', 'observation')
-                    bg, accent, tc = CATS.get(cat, CATS['observation'])
-                    st.markdown(
-                        f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
-                        f'<div style="font-weight:700;color:{tc};font-size:13px;margin-bottom:3px">{ins.get("title","")}</div>'
-                        f'<div style="color:#333;font-size:12px;line-height:1.4">{ins.get("body","")}</div></div>',
-                        unsafe_allow_html=True)
+                # Insights fetched in a background thread; a fragment polls
+                # session_state and renders when the result arrives. The main
+                # script never blocks, so user interactions (form inputs,
+                # portfolio selection) stay fully responsive.
+                _CPV_INS_CATS = {
+                    'strength': ('#E8F5E9', '#2E7D32', '#172B4D'),
+                    'improvement': ('#FFF3E0', '#E65100', '#172B4D'),
+                    'observation': ('#E3F2FD', '#0052CC', '#172B4D'),
+                }
+
+                def _render_insight_cards(items):
+                    for ins in (items or []):
+                        cat = ins.get('category', 'observation')
+                        bg, accent, tc = _CPV_INS_CATS.get(cat, _CPV_INS_CATS['observation'])
+                        st.markdown(
+                            f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
+                            f'<div style="font-weight:700;color:{tc};font-size:13px;margin-bottom:3px">{ins.get("title","")}</div>'
+                            f'<div style="color:#333;font-size:12px;line-height:1.4">{ins.get("body","")}</div></div>',
+                            unsafe_allow_html=True)
+
+                _CPV_INS_KEY = "cpv_div_insights"
+                _start_insights_thread(_CPV_INS_KEY, API_KEY, div_result, client_weights)
+
+                @st.fragment(run_every=("600ms" if _CPV_INS_KEY not in st.session_state else None))
+                def _cpv_insights_fragment():
+                    if _CPV_INS_KEY in st.session_state:
+                        _render_insight_cards(st.session_state.get(_CPV_INS_KEY) or [])
+                        return
+                    st.caption("Generating insights…")
+
+                _cpv_insights_fragment()
 
                 warnings = div_result.get('data_warnings', [])
                 if warnings:
@@ -978,12 +1130,20 @@ if client_weights and total_nav > 0:
 
         managed_ports = [p for p in client_weights.keys() if p not in IGNORED_PORTFOLIOS]
 
-        # portfolios already claimed by existing-source goals (custom goals don't lock portfolios)
-        _assigned = set()
-        for g in st.session_state.cpv_goals:
-            if g.get('source', 'existing') == 'existing':
-                _assigned.update(g.get('portfolios', []))
-        available_ports = [p for p in managed_ports if p not in _assigned]
+        # portfolios already claimed by other goals (as "existing" contributions).
+        # A portfolio is "claimed" if it's in a goal's portfolios list and not flagged
+        # as new money for that goal. When editing a goal, exclude that goal itself.
+        editing_id = st.session_state.cpv_editing_goal_id
+        def _assigned_existing_ports(exclude_goal_id=None):
+            assigned = set()
+            for g in st.session_state.cpv_goals:
+                if exclude_goal_id and g.get('id') == exclude_goal_id:
+                    continue
+                new_ps = set(g.get('new_portfolios', []) or [])
+                for p in g.get('portfolios', []) or []:
+                    if p not in new_ps:
+                        assigned.add(p)
+            return assigned
 
         # ── existing goal cards ──
         goals = st.session_state.cpv_goals
@@ -1008,18 +1168,32 @@ if client_weights and total_nav > 0:
             cols = st.columns(CARDS_PER_PAGE)
             for i, g in enumerate(page_goals):
                 with cols[i]:
-                    if g.get('source', 'existing') == 'existing':
-                        g_nav = sum(client_holdings.get(p, 0) for p in g['portfolios'])
+                    _normalize_goal(g)
+                    g_navs = _compute_goal_navs(g, client_holdings)
+                    g_nav = sum(g_navs.values())
+                    new_set_g = set(g.get('new_portfolios', []) or [])
+                    has_new = bool(new_set_g)
+                    has_existing_g = any(p not in new_set_g for p in g.get('portfolios', []))
+                    if has_new and has_existing_g:
+                        source_label, source_color = "Mixed", "#6554C0"
+                    elif has_new:
+                        source_label, source_color = "Planned", "#6554C0"
                     else:
-                        g_nav = g.get('initial_value', 0) or 0
+                        source_label, source_color = "Existing", "#666"
                     badge_cls = 'goal-badge-growth' if g['type'] == 'Growth' else 'goal-badge-income'
-                    source_label = "Existing" if g.get('source', 'existing') == 'existing' else "Planned"
-                    source_color = "#666" if source_label == "Existing" else "#6554C0"
-                    target_label = f"${g.get('target_value', 0):,.0f}" if g['type'] == 'Growth' else f"${g.get('target_payout', 0):,.0f}/mo"
-                    port_pills = "".join(
-                        f'<span style="display:inline-block;background:#EAF0FB;color:#0052CC;font-size:11px;'
-                        f'padding:2px 8px;border-radius:10px;margin:2px 4px 2px 0;font-weight:500">{p}</span>'
-                        for p in g['portfolios']
+                    target_label = f"${g.get('target_value', 0) or 0:,.0f}" if g['type'] == 'Growth' else f"${g.get('target_payout', 0) or 0:,.0f}/mo"
+                    port_pills_parts = []
+                    for p in g['portfolios']:
+                        tag = " (new)" if p in new_set_g else ""
+                        port_pills_parts.append(
+                            f'<span style="display:inline-block;background:#EAF0FB;color:#0052CC;font-size:11px;'
+                            f'padding:2px 8px;border-radius:10px;margin:2px 4px 2px 0;font-weight:500">{p}{tag}</span>'
+                        )
+                    port_pills = "".join(port_pills_parts)
+                    bm_line = (
+                        f'<div style="font-size:11px;color:#999;margin-bottom:4px">Benchmark: '
+                        f'<span style="color:#172B4D;font-weight:500">{g.get("benchmark")}</span></div>'
+                        if g.get('benchmark') else ''
                     )
                     st.markdown(
                         f'<div class="goal-card">'
@@ -1033,182 +1207,245 @@ if client_weights and total_nav > 0:
                         f'<div><div style="font-size:11px;color:#999">Current NAV</div><div style="font-size:18px;font-weight:700;color:#172B4D">${g_nav:,.0f}</div></div>'
                         f'<div style="text-align:right"><div style="font-size:11px;color:#999">Target</div><div style="font-size:18px;font-weight:700;color:#0052CC">{target_label}</div></div></div>'
                         f'<div style="font-size:11px;color:#999;margin-bottom:4px">{len(g["portfolios"])} portfolio(s) · {g.get("time_horizon",20)}y horizon</div>'
+                        f'{bm_line}'
                         f'</div>',
                         unsafe_allow_html=True,
                     )
-                    c_open, c_del = st.columns(2)
+                    c_open, c_edit, c_del = st.columns(3)
                     with c_open:
-                        if st.button("View Details", key=f"cpv_open_{g['id']}", use_container_width=True):
+                        if st.button("View", key=f"cpv_open_{g['id']}", use_container_width=True):
                             st.session_state.cpv_active_goal_id = g['id']
+                            st.rerun()
+                    with c_edit:
+                        if st.button("Edit", key=f"cpv_edit_{g['id']}", use_container_width=True):
+                            # seed edit widget state from the goal
+                            st.session_state.cpv_editing_goal_id = g['id']
+                            st.session_state['cpv_f_name'] = g['name']
+                            st.session_state['cpv_f_desc'] = g.get('description', '')
+                            st.session_state['cpv_f_type'] = g['type']
+                            st.session_state['cpv_f_horizon'] = g.get('time_horizon', 20)
+                            if g['type'] == 'Growth':
+                                st.session_state['cpv_f_target_growth'] = int(g.get('target_value') or 500000)
+                            else:
+                                st.session_state['cpv_f_target_income'] = int(g.get('target_payout') or 2500)
+                            st.session_state['cpv_f_monthly'] = int(g.get('monthly_topup', 0) or 0)
+                            st.session_state['cpv_f_benchmark'] = g.get('benchmark') or "— None —"
+                            _new_ps = set(g.get('new_portfolios', []) or [])
+                            st.session_state['cpv_f_ex_ports'] = [p for p in g['portfolios'] if p not in _new_ps]
+                            st.session_state['cpv_f_new_ports'] = [p for p in g['portfolios'] if p in _new_ps]
+                            for p, amt in (g.get('lump_sums', {}) or {}).items():
+                                if p in _new_ps:
+                                    st.session_state[f'cpv_f_new_lump_{p}'] = int(amt)
+                                else:
+                                    st.session_state[f'cpv_f_ex_lump_{p}'] = int(amt)
                             st.rerun()
                     with c_del:
                         if st.button("Delete", key=f"cpv_del_{g['id']}", use_container_width=True):
                             st.session_state.cpv_goals = [x for x in st.session_state.cpv_goals if x['id'] != g['id']]
+                            if st.session_state.cpv_editing_goal_id == g['id']:
+                                st.session_state.cpv_editing_goal_id = None
                             st.rerun()
 
         st.divider()
 
-        # ── goal creation (two tabs) ──
-        st.markdown("#### Create New Goal")
-        tab_existing, tab_custom = st.tabs(["From Existing Portfolios", "Plan a New Goal"])
+        # ══════════════════════════════════════════════════════════
+        # GOAL FORM (unified — create or edit)
+        # ══════════════════════════════════════════════════════════
+        editing_id = st.session_state.cpv_editing_goal_id
+        editing_goal = next((g for g in st.session_state.cpv_goals if g['id'] == editing_id), None) if editing_id else None
 
-        with tab_existing:
-            st.caption("Build a goal from portfolios the client currently holds. Each portfolio can belong to one goal only.")
+        def _reset_goal_form_state():
+            """Clear all reactive widget state used by the goal form."""
+            keys_to_clear = {
+                'cpv_f_name', 'cpv_f_desc', 'cpv_f_type', 'cpv_f_horizon',
+                'cpv_f_target_growth', 'cpv_f_target_income', 'cpv_f_monthly',
+                'cpv_f_benchmark', 'cpv_f_ex_ports', 'cpv_f_new_ports',
+            }
+            for k in list(st.session_state.keys()):
+                if k in keys_to_clear or k.startswith('cpv_f_ex_lump_') or k.startswith('cpv_f_new_lump_'):
+                    del st.session_state[k]
 
-            # portfolio selection lives OUTSIDE the form so NAV updates reactively
-            ex_sel_col, ex_nav_col = st.columns([3, 1])
-            with ex_sel_col:
-                if available_ports:
-                    g_ports = st.multiselect("Select Portfolios", available_ports, key="cpv_ex_ports")
-                else:
-                    st.warning("All portfolios are already assigned to goals.")
-                    g_ports = []
-            auto_nav = sum(client_holdings.get(p, 0) for p in g_ports) if g_ports else 0
-            with ex_nav_col:
-                st.metric("Current Portfolio Value", f"${auto_nav:,.2f}")
+        form_title = "#### Edit Goal" if editing_goal else "#### Create New Goal"
+        st.markdown(form_title)
 
-            if g_ports:
-                pill_spans = []
-                for p in g_ports:
-                    nav_val = client_holdings.get(p, 0)
-                    wgt = (nav_val / auto_nav * 100) if auto_nav > 0 else 0
-                    pill_spans.append(
-                        f'<span style="display:inline-block;background:#EAF0FB;color:#0052CC;'
-                        f'font-size:12px;padding:3px 10px;border-radius:10px;margin:2px 4px 2px 0">'
-                        f'{p}: ${nav_val:,.0f} ({wgt:.1f}%)</span>'
-                    )
-                st.markdown(
-                    '<div style="margin-bottom:8px">' + " ".join(pill_spans) + '</div>',
-                    unsafe_allow_html=True,
+        if editing_goal:
+            header_l, header_r = st.columns([6, 1])
+            with header_l:
+                st.caption(f"Editing **{editing_goal['name']}**. Existing portfolios contribute their current NAV; optional lump sums add to them. New portfolios must include a lump sum.")
+            with header_r:
+                if st.button("Cancel", key="cpv_f_cancel", use_container_width=True):
+                    st.session_state.cpv_editing_goal_id = None
+                    _reset_goal_form_state()
+                    st.rerun()
+        else:
+            st.caption("Pick existing portfolios (client's current holdings) and/or plan new portfolios. New portfolios require a one-time lump sum. Existing portfolios can optionally receive a lump-sum top-up.")
+
+        # Available existing portfolios: client holdings minus those claimed by OTHER goals
+        _assigned_other = _assigned_existing_ports(exclude_goal_id=editing_id)
+        available_existing = [p for p in managed_ports if p not in _assigned_other]
+
+        # ── reactive portfolio selection (outside form so NAVs update live) ──
+        sel_l, sel_r = st.columns(2)
+        with sel_l:
+            st.markdown("**Existing Portfolios** _(from current holdings)_")
+            if available_existing:
+                ex_ports = st.multiselect(
+                    "Select existing portfolios", available_existing,
+                    key="cpv_f_ex_ports", label_visibility="collapsed",
                 )
+            else:
+                st.info("All existing portfolios are already assigned to other goals.")
+                ex_ports = []
+        with sel_r:
+            st.markdown("**New Portfolios** _(Syfe managed portfolios or any ticker)_")
+            # full universe = managed portfolios + every ticker/index in df_daily_ret
+            # (ETFs like ACWI, URTH, SPY, AGG, etc.). FX pairs filtered out.
+            _ex_set = set(ex_ports)
+            new_pool = [p for p in _build_benchmark_options(df_daily_ret) if p not in _ex_set]
+            new_ports = st.multiselect(
+                "Select new portfolios", new_pool,
+                key="cpv_f_new_ports", label_visibility="collapsed",
+                help="Includes Syfe managed portfolios and any ticker/index from the data universe (e.g. ACWI, URTH, SPY, QQQ, AGG, VTI).",
+            )
 
-            with st.form("cpv_goal_form_existing", clear_on_submit=True):
-                fc1, fc2 = st.columns(2)
-                with fc1:
-                    g_name = st.text_input("Goal Name", placeholder="e.g. Retirement Fund", key="cpv_ex_name")
-                with fc2:
-                    g_type = st.selectbox("Goal Type", ["Growth", "Income"], key="cpv_ex_type")
-                g_desc = st.text_area("Goal Description", placeholder="Describe your goal...", height=68, key="cpv_ex_desc")
+        # ── per-portfolio lump sums ──
+        ex_lumps = {}
+        new_lumps = {}
+        if ex_ports:
+            st.markdown("**Existing portfolios — optional additional lump sum**")
+            acols = st.columns(min(len(ex_ports), 4))
+            for idx, p in enumerate(ex_ports):
+                with acols[idx % len(acols)]:
+                    base = float(client_holdings.get(p, 0) or 0)
+                    st.caption(f"NAV: ${base:,.0f}")
+                    ex_lumps[p] = st.number_input(
+                        p, min_value=0, value=0, step=1000, format="%d",
+                        key=f"cpv_f_ex_lump_{p}",
+                    )
+        if new_ports:
+            st.markdown("**New portfolios — one-time lump sum (required)**")
+            ncols = st.columns(min(len(new_ports), 4))
+            for idx, p in enumerate(new_ports):
+                with ncols[idx % len(ncols)]:
+                    new_lumps[p] = st.number_input(
+                        p, min_value=0, value=10000, step=1000, format="%d",
+                        key=f"cpv_f_new_lump_{p}",
+                    )
 
-                fc3, fc4, fc5, fc6 = st.columns(4)
-                with fc3:
-                    g_horizon = st.slider("Time Horizon (Years)", 1, 30, 20, key="cpv_ex_horizon")
-                with fc4:
-                    if g_type == "Growth":
-                        g_target = st.number_input("Target Value ($)", min_value=0, value=500000, step=10000, format="%d", key="cpv_ex_target")
-                    else:
-                        g_target = st.number_input("Target Payout ($/month)", min_value=0, value=2500, step=100, format="%d", key="cpv_ex_target")
-                with fc5:
-                    g_lump = st.number_input("Additional Lump Sum ($)", min_value=0, value=0, step=1000, format="%d", key="cpv_ex_lump")
-                with fc6:
-                    g_monthly = st.number_input("Monthly Top-Up ($)", min_value=0, value=0, step=100, format="%d", key="cpv_ex_monthly")
+        # live allocation preview
+        total_ex_base = sum(float(client_holdings.get(p, 0) or 0) for p in ex_ports)
+        total_ex_lump = sum(ex_lumps.values())
+        total_new_lump = sum(new_lumps.values())
+        total_value = total_ex_base + total_ex_lump + total_new_lump
 
-                submitted = st.form_submit_button("Confirm", type="primary", use_container_width=True)
-                if submitted:
-                    if not g_name:
-                        st.error("Please provide a goal name.")
-                    elif not g_ports:
-                        st.error("Please select at least one portfolio.")
+        if ex_ports or new_ports:
+            pill_spans = []
+            for p in ex_ports:
+                dollar = float(client_holdings.get(p, 0) or 0) + float(ex_lumps.get(p, 0) or 0)
+                wgt = (dollar / total_value * 100) if total_value > 0 else 0
+                pill_spans.append(
+                    f'<span style="display:inline-block;background:#EAF0FB;color:#0052CC;'
+                    f'font-size:12px;padding:3px 10px;border-radius:10px;margin:2px 4px 2px 0">'
+                    f'{p}: ${dollar:,.0f} ({wgt:.1f}%)</span>'
+                )
+            for p in new_ports:
+                dollar = float(new_lumps.get(p, 0) or 0)
+                wgt = (dollar / total_value * 100) if total_value > 0 else 0
+                pill_spans.append(
+                    f'<span style="display:inline-block;background:#F3EAFB;color:#6554C0;'
+                    f'font-size:12px;padding:3px 10px;border-radius:10px;margin:2px 4px 2px 0">'
+                    f'{p} (new): ${dollar:,.0f} ({wgt:.1f}%)</span>'
+                )
+            st.markdown(
+                '<div style="margin-bottom:4px">' + " ".join(pill_spans) + '</div>'
+                + f'<div style="font-size:13px;font-weight:600;color:#172B4D">Total starting value: ${total_value:,.0f}</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── rest of the form (non-reactive) ──
+        with st.form("cpv_goal_form", clear_on_submit=False):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                g_name = st.text_input("Goal Name", placeholder="e.g. Retirement Fund", key="cpv_f_name")
+            with fc2:
+                g_type = st.selectbox("Goal Type", ["Growth", "Income"], key="cpv_f_type")
+            g_desc = st.text_area("Goal Description", placeholder="Describe your goal...", height=68, key="cpv_f_desc")
+
+            fc3, fc4, fc5 = st.columns(3)
+            with fc3:
+                g_horizon = st.slider("Time Horizon (Years)", 1, 30, 20, key="cpv_f_horizon")
+            with fc4:
+                if g_type == "Growth":
+                    g_target = st.number_input("Target Value ($)", min_value=0, value=500000, step=10000, format="%d", key="cpv_f_target_growth")
+                else:
+                    g_target = st.number_input("Target Payout ($/month)", min_value=0, value=2500, step=100, format="%d", key="cpv_f_target_income")
+            with fc5:
+                g_monthly = st.number_input("Monthly Top-Up ($)", min_value=0, value=0, step=100, format="%d", key="cpv_f_monthly")
+
+            bm_options = ["— None —"] + _build_benchmark_options(df_daily_ret)
+            g_benchmark = st.selectbox(
+                "Benchmark (used in Cumulative / Calendar Return charts)",
+                bm_options, key="cpv_f_benchmark",
+                help="Pick any Syfe managed portfolio or ticker/index from the data universe (e.g. ACWI, URTH, SPY, AGG, M1WO Index).",
+            )
+
+            btn_label = "Save Changes" if editing_goal else "Confirm"
+            submitted = st.form_submit_button(btn_label, type="primary", use_container_width=True)
+            if submitted:
+                if not g_name:
+                    st.error("Please provide a goal name.")
+                elif not ex_ports and not new_ports:
+                    st.error("Please select at least one portfolio (existing and/or new).")
+                elif new_ports and any((new_lumps.get(p, 0) or 0) <= 0 for p in new_ports):
+                    st.error("Each new portfolio must have a lump sum greater than zero.")
+                elif total_value <= 0:
+                    st.error("Total starting value must be greater than zero.")
+                else:
+                    all_ports = list(ex_ports) + list(new_ports)
+                    lump_sums = {p: int(ex_lumps.get(p, 0) or 0) for p in ex_ports if (ex_lumps.get(p, 0) or 0) > 0}
+                    lump_sums.update({p: int(new_lumps.get(p, 0) or 0) for p in new_ports})
+                    bm_value = None if g_benchmark == "— None —" else g_benchmark
+
+                    if editing_goal:
+                        editing_goal.update({
+                            'name': g_name,
+                            'description': g_desc,
+                            'type': g_type,
+                            'portfolios': all_ports,
+                            'new_portfolios': list(new_ports),
+                            'lump_sums': lump_sums,
+                            'time_horizon': g_horizon,
+                            'target_value': g_target if g_type == 'Growth' else None,
+                            'target_payout': g_target if g_type == 'Income' else None,
+                            'initial_value': total_value,
+                            'monthly_topup': g_monthly,
+                            'benchmark': bm_value,
+                            'updated_at': datetime.now().isoformat(),
+                        })
+                        st.session_state.cpv_editing_goal_id = None
+                        _reset_goal_form_state()
+                        st.success(f"Goal **{g_name}** updated!")
+                        st.rerun()
                     else:
                         new_goal = {
                             'id': str(uuid.uuid4()),
                             'name': g_name,
                             'description': g_desc,
                             'type': g_type,
-                            'source': 'existing',
-                            'portfolios': g_ports,
+                            'portfolios': all_ports,
+                            'new_portfolios': list(new_ports),
+                            'lump_sums': lump_sums,
                             'time_horizon': g_horizon,
                             'target_value': g_target if g_type == 'Growth' else None,
                             'target_payout': g_target if g_type == 'Income' else None,
-                            'initial_value': auto_nav + g_lump,
+                            'initial_value': total_value,
                             'monthly_topup': g_monthly,
+                            'benchmark': bm_value,
                             'created_at': datetime.now().isoformat(),
                         }
                         st.session_state.cpv_goals.append(new_goal)
+                        _reset_goal_form_state()
                         st.success(f"Goal **{g_name}** created!")
-                        st.rerun()
-
-        with tab_custom:
-            st.caption("Plan a hypothetical goal from any Syfe managed portfolio, not limited to current holdings.")
-
-            c_ports = st.multiselect("Select Portfolios", ALL_MANAGED_PORTFOLIOS, key="cpv_cu_ports")
-
-            # per-portfolio allocation inputs (outside form for reactivity)
-            cu_allocs = {}
-            if c_ports:
-                st.markdown("**Allocation per Portfolio**")
-                alloc_cols = st.columns(min(len(c_ports), 4))
-                for idx, p in enumerate(c_ports):
-                    with alloc_cols[idx % min(len(c_ports), 4)]:
-                        cu_allocs[p] = st.number_input(
-                            p, min_value=0, value=10000, step=1000, format="%d",
-                            key=f"cpv_cu_alloc_{p}",
-                        )
-                cu_total = sum(cu_allocs.values())
-
-                # show weight pills
-                pill_spans = []
-                for p in c_ports:
-                    amt = cu_allocs.get(p, 0)
-                    wgt = (amt / cu_total * 100) if cu_total > 0 else 0
-                    pill_spans.append(
-                        f'<span style="display:inline-block;background:#EAF0FB;color:#0052CC;'
-                        f'font-size:12px;padding:3px 10px;border-radius:10px;margin:2px 4px 2px 0">'
-                        f'{p}: ${amt:,.0f} ({wgt:.1f}%)</span>'
-                    )
-                st.markdown(
-                    '<div style="margin-bottom:4px">' + " ".join(pill_spans) + '</div>'
-                    + f'<div style="font-size:13px;font-weight:600;color:#172B4D">Total: ${cu_total:,.0f}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                cu_total = 0
-
-            with st.form("cpv_goal_form_custom", clear_on_submit=True):
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    c_name = st.text_input("Goal Name", placeholder="e.g. Future Income Plan", key="cpv_cu_name")
-                with cc2:
-                    c_type = st.selectbox("Goal Type", ["Growth", "Income"], key="cpv_cu_type")
-                c_desc = st.text_area("Goal Description", placeholder="Describe your goal...", height=68, key="cpv_cu_desc")
-
-                cc3, cc4, cc5 = st.columns(3)
-                with cc3:
-                    c_horizon = st.slider("Time Horizon (Years)", 1, 30, 20, key="cpv_cu_horizon")
-                with cc4:
-                    if c_type == "Growth":
-                        c_target = st.number_input("Target Value ($)", min_value=0, value=500000, step=10000, format="%d", key="cpv_cu_target")
-                    else:
-                        c_target = st.number_input("Target Payout ($/month)", min_value=0, value=2500, step=100, format="%d", key="cpv_cu_target")
-                with cc5:
-                    c_monthly = st.number_input("Monthly Top-Up ($)", min_value=0, value=0, step=100, format="%d", key="cpv_cu_monthly")
-
-                c_submitted = st.form_submit_button("Confirm", type="primary", use_container_width=True)
-                if c_submitted:
-                    if not c_name:
-                        st.error("Please provide a goal name.")
-                    elif not c_ports:
-                        st.error("Please select at least one portfolio.")
-                    elif cu_total <= 0:
-                        st.error("Total allocation must be greater than zero.")
-                    else:
-                        new_goal = {
-                            'id': str(uuid.uuid4()),
-                            'name': c_name,
-                            'description': c_desc,
-                            'type': c_type,
-                            'source': 'custom',
-                            'portfolios': c_ports,
-                            'allocations': cu_allocs,
-                            'time_horizon': c_horizon,
-                            'target_value': c_target if c_type == 'Growth' else None,
-                            'target_payout': c_target if c_type == 'Income' else None,
-                            'initial_value': cu_total,
-                            'monthly_topup': c_monthly,
-                            'created_at': datetime.now().isoformat(),
-                        }
-                        st.session_state.cpv_goals.append(new_goal)
-                        st.success(f"Goal **{c_name}** created!")
                         st.rerun()
 
 # ── footer ───────────────────────────────────────────────────
