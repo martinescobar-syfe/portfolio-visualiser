@@ -1,5 +1,5 @@
 {
-    "(GT) E100 EQUAL WEIGHT EXAMPLE": {
+    "test": {
         "tickers": [
             "CSPX",
             "DUHP",
@@ -13,6 +13,13 @@
             "XDEW"
         ],
         "benchmark": "ACWI",
+        "bm_tickers": [
+            "ACWI"
+        ],
+        "bm_weights": [
+            1.0
+        ],
+        "bm_count": 1,
         "allocation_type": "Fixed Weight",
         "rebal_freq": "Semi-Annual (Apr/Oct)",
         "fixed_weights": {
