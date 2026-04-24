@@ -40,7 +40,13 @@ def clean_underlying_data(df_underlying):
 def load_static_data(data_path):
     try:
         excel_path = os.path.join(data_path, 'Inv_Data_Hardcoded.xlsx')
-        
+        if not os.path.exists(excel_path):
+            st.error(
+                f"Could not find Inv_Data_Hardcoded.xlsx in {data_path}. "
+                "Please restore the canonical data file."
+            )
+            return None, None, None, None, None, None, None, None, None
+
         # load all sheets at once for performance
         xls = pd.read_excel(excel_path, sheet_name=None)
         
@@ -55,6 +61,11 @@ def load_static_data(data_path):
         df_daily_ret = get_sheet('Daily Return', index_col=0)
         if not df_daily_ret.empty:
             df_daily_ret.index = pd.to_datetime(df_daily_ret.index)
+            # the source sheet occasionally contains duplicate dates (e.g. the
+            # last row repeated). Collapse to first occurrence so downstream
+            # time-series alignment doesn't silently double-count.
+            if df_daily_ret.index.duplicated().any():
+                df_daily_ret = df_daily_ret.groupby(level=0).first()
         
         df_country = get_sheet('Country', index_col=0)
         df_sector = get_sheet('Sector', index_col=0)
@@ -181,9 +192,15 @@ def download_data(data_source, start_date, end_date, all_tickers, bm_tickers, cu
             
         ret_all = ret_all[available_tickers]
         
-        # convert % to decimal if needed
-        if not ret_all.empty and ret_all.abs().max().max() > 1:
-            ret_all = ret_all / 100
+        # convert % to decimal — PER COLUMN, because some tickers (e.g. new
+        # Syfe products like "Equity Alpha") are stored as decimals in the
+        # sheet while the rest are stored as percentages. Applying a global
+        # "/ 100" would make the already-decimal columns 100× too small.
+        if not ret_all.empty:
+            col_max = ret_all.abs().max()
+            pct_cols = col_max[col_max > 1].index
+            if len(pct_cols) > 0:
+                ret_all[pct_cols] = ret_all[pct_cols] / 100
         
         first_valid_index = ret_all.apply(lambda series: series.first_valid_index()).max()
         if pd.notna(first_valid_index):

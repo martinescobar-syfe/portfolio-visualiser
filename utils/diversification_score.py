@@ -18,10 +18,12 @@ ASSET_CLASS_MAP = {
 
 SCORING_ASSET_CLASSES = ['Equity', 'Bonds', 'Real Assets', 'Cash']
 
-# portfolios to exclude from diversification score calculation
-# these are typically custom portfolios whose underlying ETFs aren't yet
-# decomposed in the static data files
-IGNORED_PORTFOLIOS = {'Custom Usd'}
+# portfolios to exclude from diversification score calculation when no
+# underlying breakdown is available. Custom DIY portfolios use the sentinel
+# label ``CUSTOM`` — when an ``actual_holding_weightage`` string is parsed
+# upstream, the caller should pass the resulting ETF breakdown so we can
+# expand the bucket before scoring instead of ignoring it.
+IGNORED_PORTFOLIOS = {'Custom Usd', 'CUSTOM'}
 
 # region mapping — simplified for now, will be replaced by a backend lookup
 # only a short list of countries counts as Developed ex-US; everything else
@@ -591,9 +593,22 @@ def calculate_diversification_score(
     df_country,
     df_underlying,
     concentration_holdings: Optional[pd.Series] = None,
+    custom_breakdown: Optional[dict] = None,
 ) -> dict:
-    """orchestrator: compute the four sub-scores (asset, geo, sector, conc) and the weighted composite"""
-    from utils.exposure import calculate_exposure, get_concentration_exposure
+    """orchestrator: compute the four sub-scores (asset, geo, sector, conc) and the weighted composite.
+
+    ``custom_breakdown`` is an optional dict of {ETF: nav_or_weight} representing
+    the blended underlying holdings of any CUSTOM DIY portfolios in the upload.
+    When supplied, the CUSTOM bucket is expanded into its constituent ETFs
+    *before* scoring so the scores reflect the true underlying exposure.
+    """
+    from utils.exposure import calculate_exposure, get_concentration_exposure, expand_custom_in_weights_dict
+
+    # expand the CUSTOM bucket into its constituent ETFs when we have a
+    # breakdown from ``actual_holding_weightage``. this has to happen before
+    # the IGNORED filter so the ETFs survive.
+    if custom_breakdown:
+        client_weights = expand_custom_in_weights_dict(client_weights, custom_breakdown)
 
     # filter out ignored portfolios but keep raw weights (don't renormalize)
     # the gap from excluded portfolios should reduce coverage scores, not

@@ -22,7 +22,18 @@ from utils.ui_functions import (
     get_portfolio_objective,
     _get_asset_brief, _get_geo_brief, _get_sector_brief, _get_conc_brief,
 )
-from utils.exposure import get_exposure_charts, get_concentration_exposure, calculate_exposure
+from utils.exposure import (
+    get_exposure_charts, get_concentration_exposure, calculate_exposure,
+    CUSTOM_PORTFOLIO_LABEL, parse_custom_holdings, expand_custom_in_weights_dict,
+    benchmark_exposure_series,
+)
+from utils.plotting import plot_exposure_comparison
+from utils.cash_flow import (
+    build_fi_metrics_table,
+    compute_portfolio_cash_flows,
+    get_reference_fx,
+    plot_monthly_cash_flow,
+)
 from utils.diversification_score import (
     calculate_diversification_score, WEIGHTS, IGNORED_PORTFOLIOS,
     calculate_geography_score, calculate_sector_score,
@@ -165,8 +176,15 @@ def _get_est(name):
 
 
 def process_client_data(df_client):
-    """Return (client_weights, client_holdings, total_nav)."""
+    """Return (client_weights, client_holdings, total_nav, custom_etf_nav).
+
+    ``custom_etf_nav`` aggregates the NAV attributed to each underlying ETF
+    across all CUSTOM portfolios whose ``actual_holding_weightage`` we could
+    parse. Downstream exposure and diversification calls can pass this dict
+    to expand the CUSTOM bucket into real ETF exposure.
+    """
     holdings, total = {}, 0.0
+    custom_etf_nav = {}
     for _, row in df_client.iterrows():
         p_type = row.get('type', None)
         currency = str(row.get('currency', 'SGD'))
@@ -191,7 +209,7 @@ def process_client_data(df_client):
         elif 'MONROE' in nt:
             ticker = 'Monroe Income Plus Fund'
         elif 'CUSTOM' in nt:
-            ticker = 'Custom Usd'
+            ticker = CUSTOM_PORTFOLIO_LABEL
         elif 'DOWNSIDE' in nt:
             ticker = 'Downside protected'
         elif 'SILVER' in nt or 'SILVERDALE' in nt:
@@ -200,10 +218,15 @@ def process_client_data(df_client):
         if ticker:
             holdings[ticker] = holdings.get(ticker, 0.0) + nav
             total += nav
+            if ticker == CUSTOM_PORTFOLIO_LABEL:
+                parsed = parse_custom_holdings(row.get('actual_holding_weightage'))
+                if parsed:
+                    for etf, pct in parsed.items():
+                        custom_etf_nav[etf] = custom_etf_nav.get(etf, 0.0) + nav * pct
     if total <= 0:
-        return None, None, 0
+        return None, None, 0, {}
     weights = {k: v / total for k, v in holdings.items()}
-    return weights, holdings, total
+    return weights, holdings, total, custom_etf_nav
 
 
 def _normalize_goal(goal):
@@ -356,81 +379,114 @@ for _g in st.session_state.cpv_goals:
 
 # ── page header ──────────────────────────────────────────────
 st.title("Portfolio Visualizer")
-st.markdown("Upload your portfolio data to analyze holdings, diversification, and plan financial goals.")
+st.markdown("Upload portfolio data to analyze holdings, diversification, and plan financial goals — or start from scratch for a new client.")
+
+# Client type toggle: existing (with portfolios to analyse) vs. new (no
+# holdings yet, skip straight to goal creation).
+if 'cpv_client_type' not in st.session_state:
+    st.session_state['cpv_client_type'] = 'Existing Client'
+client_type = st.radio(
+    "Client Type",
+    ["Existing Client", "New Client"],
+    horizontal=True,
+    key="cpv_client_type",
+    help="Existing clients have current holdings we can analyse. New clients skip straight to goal creation with lump sums.",
+)
+is_new_client = client_type == "New Client"
+
 st.divider()
 
 # ═══════════════════════════════════════════════════════════════
-# DATA SOURCE
+# DATA SOURCE (only for existing clients)
 # ═══════════════════════════════════════════════════════════════
-tab_csv, tab_meta = st.tabs(["📂 CSV Upload", "🔍 Metabase Lookup"])
 df_client = None
 
-with tab_csv:
-    uploaded = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key="cpv_csv_upload")
-    if uploaded:
-        try:
-            df_client = pd.read_csv(uploaded)
-            df_client.columns = df_client.columns.str.lower().str.strip()
-            if 'type' in df_client.columns:
-                df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
-                df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
-            if 'status' in df_client.columns:
-                df_client = df_client[df_client['status'].str.upper().isin(['ACTIVE', 'ACTIVE_NEW'])]
-            st.session_state['cpv_df_client'] = df_client
-            st.success(f"Loaded {len(df_client)} portfolios from CSV")
-        except Exception as e:
-            st.error(f"Error reading CSV: {e}")
+if is_new_client:
+    # clear any stale uploaded data so the dashboard doesn't render with it
+    for _k in ('cpv_df_client', 'cpv_client_info'):
+        if _k in st.session_state:
+            del st.session_state[_k]
+else:
+    tab_csv, tab_meta = st.tabs(["📂 CSV Upload", "🔍 Metabase Lookup"])
 
-with tab_meta:
-    c_id, c_btn = st.columns([3, 1])
-    with c_id:
-        client_id_input = st.text_input("Client ID", key="cpv_meta_id")
-    with c_btn:
-        st.write("")
-        st.write("")
-        lookup = st.button("Fetch Client", key="cpv_meta_btn")
-    if lookup and client_id_input:
-        with st.spinner("Fetching client data from Metabase..."):
+    with tab_csv:
+        uploaded = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key="cpv_csv_upload")
+        if uploaded:
             try:
-                info = get_client_info_by_id(int(client_id_input.strip()))
-                if info.get('client_id'):
-                    fetched = get_active_portfolios(info['client_id'])
-                    st.session_state['cpv_client_info'] = info
-                    st.session_state['cpv_df_client'] = fetched
-                    st.success(f"Found client: {info.get('name')} (ID: {info.get('client_id')})")
-                else:
-                    st.error("Client not found.")
+                df_client = pd.read_csv(uploaded)
+                df_client.columns = df_client.columns.str.lower().str.strip()
+                if 'type' in df_client.columns:
+                    df_client['type'] = df_client['type'].str.replace('BlackRock', 'Blackrock', case=False)
+                    df_client['type'] = df_client['type'].str.replace('Monroe', 'Monroe', case=False)
+                if 'status' in df_client.columns:
+                    df_client = df_client[df_client['status'].str.upper().isin(['ACTIVE', 'ACTIVE_NEW'])]
+                st.session_state['cpv_df_client'] = df_client
+                st.success(f"Loaded {len(df_client)} portfolios from CSV")
             except Exception as e:
-                st.error(f"Error fetching data: {e}")
+                st.error(f"Error reading CSV: {e}")
 
-    if st.session_state.get('cpv_client_info') and st.session_state.get('cpv_df_client') is not None:
-        ci = st.session_state['cpv_client_info']
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Name", ci.get('name'))
-        c2.metric("Age", ci.get('age'))
-        c3.metric("Risk Score", ci.get('risk_score'))
-        dfm = st.session_state['cpv_df_client']
-        if not dfm.empty:
-            cols_show = [c for c in ['name', 'type', 'nav_in_sgd', 'pnl_inception'] if c in dfm.columns]
-            st.dataframe(dfm[cols_show] if cols_show else dfm, use_container_width=True)
-            df_client = dfm
+    with tab_meta:
+        c_id, c_btn = st.columns([3, 1])
+        with c_id:
+            client_id_input = st.text_input("Client ID", key="cpv_meta_id")
+        with c_btn:
+            st.write("")
+            st.write("")
+            lookup = st.button("Fetch Client", key="cpv_meta_btn")
+        if lookup and client_id_input:
+            with st.spinner("Fetching client data from Metabase..."):
+                try:
+                    info = get_client_info_by_id(int(client_id_input.strip()))
+                    if info.get('client_id'):
+                        fetched = get_active_portfolios(info['client_id'])
+                        st.session_state['cpv_client_info'] = info
+                        st.session_state['cpv_df_client'] = fetched
+                        st.success(f"Found client: {info.get('name')} (ID: {info.get('client_id')})")
+                    else:
+                        st.error("Client not found.")
+                except Exception as e:
+                    st.error(f"Error fetching data: {e}")
 
-if df_client is None and 'cpv_df_client' in st.session_state:
-    df_client = st.session_state['cpv_df_client']
+        if st.session_state.get('cpv_client_info') and st.session_state.get('cpv_df_client') is not None:
+            ci = st.session_state['cpv_client_info']
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Name", ci.get('name'))
+            c2.metric("Age", ci.get('age'))
+            c3.metric("Risk Score", ci.get('risk_score'))
+            dfm = st.session_state['cpv_df_client']
+            if not dfm.empty:
+                cols_show = [c for c in ['name', 'type', 'nav_in_sgd', 'pnl_inception'] if c in dfm.columns]
+                st.dataframe(dfm[cols_show] if cols_show else dfm, use_container_width=True)
+                df_client = dfm
+
+    if df_client is None and 'cpv_df_client' in st.session_state:
+        df_client = st.session_state['cpv_df_client']
 
 # ═══════════════════════════════════════════════════════════════
 # PROCESS DATA
 # ═══════════════════════════════════════════════════════════════
 if df_client is not None and not df_client.empty:
-    client_weights, client_holdings, total_nav = process_client_data(df_client)
+    client_weights, client_holdings, total_nav, custom_etf_nav = process_client_data(df_client)
 else:
-    client_weights, client_holdings, total_nav = None, None, 0
+    client_weights, client_holdings, total_nav, custom_etf_nav = None, None, 0, {}
 
-if client_weights and total_nav > 0:
+# New-client mode: we skip the upload + holdings dashboard entirely and let the
+# goal workflow proceed with empty holdings. Downstream code uses empty dicts
+# so that goal forms still work (only "new portfolios" with lump sums).
+if is_new_client:
+    client_weights = {}
+    client_holdings = {}
+    total_nav = 0
+    custom_etf_nav = {}
+
+should_render_dashboard = is_new_client or (client_weights and total_nav > 0)
+
+if should_render_dashboard:
     # store for goal calculations
-    st.session_state['cpv_client_weights'] = client_weights
-    st.session_state['cpv_client_holdings'] = client_holdings
+    st.session_state['cpv_client_weights'] = client_weights or {}
+    st.session_state['cpv_client_holdings'] = client_holdings or {}
     st.session_state['cpv_total_nav'] = total_nav
+    st.session_state['cpv_custom_etf_nav'] = dict(custom_etf_nav or {})
 
     # ───────────────────────────────────────────────────────────
     # GOAL DETAIL VIEW (if a goal is selected)
@@ -469,18 +525,45 @@ if client_weights and total_nav > 0:
         returns_label = "Backtested Returns"
         available_ports = [p for p in goal['portfolios'] if p in df_daily_ret.columns] if df_daily_ret is not None else []
         if available_ports and goal_weights:
-            port_rets = df_daily_ret[available_ports].dropna(how='all') / 100  # convert from % to decimal
+            port_rets = df_daily_ret[available_ports].dropna(how='all').copy()
+
+            # Defensive: a bad source column (e.g. one that accidentally
+            # contains dates/strings instead of numeric returns) will crash
+            # the arithmetic below with TypeError. Coerce everything to
+            # numeric and drop any column that ends up fully empty so the
+            # goal view degrades gracefully with a warning.
+            port_rets = port_rets.apply(pd.to_numeric, errors='coerce')
+            _all_nan_cols = [c for c in port_rets.columns if port_rets[c].isna().all()]
+            if _all_nan_cols:
+                st.warning(
+                    "Some portfolios have no usable return data and will be excluded "
+                    f"from the performance chart: {', '.join(_all_nan_cols)}"
+                )
+                port_rets = port_rets.drop(columns=_all_nan_cols)
+                available_ports = [p for p in available_ports if p not in _all_nan_cols]
+
+            # df_daily_ret columns can be a mix of percent-formatted and decimal-
+            # formatted series (e.g. "Equity Alpha" is already in decimal). Scale
+            # each column independently so everything is on the same decimal scale.
+            if not port_rets.empty:
+                _col_max = port_rets.abs().max()
+                _pct_cols = _col_max[_col_max > 1].index
+                if len(_pct_cols) > 0:
+                    port_rets[_pct_cols] = port_rets[_pct_cols] / 100
             # df_daily_ret may contain duplicate dates — collapse to a single row per date.
             if port_rets.index.duplicated().any():
                 port_rets = port_rets.groupby(level=0).first()
-            common_start = port_rets.dropna().index.min()
-            port_rets = port_rets.loc[common_start:]
-            goal_daily = pd.Series(0.0, index=port_rets.index)
-            for p in available_ports:
-                goal_daily += port_rets[p].fillna(0) * goal_weights.get(p, 0)
-            goal_daily = goal_daily.dropna()
+            if port_rets.empty or not available_ports:
+                goal_daily = None
+            else:
+                common_start = port_rets.dropna().index.min()
+                port_rets = port_rets.loc[common_start:]
+                goal_daily = pd.Series(0.0, index=port_rets.index)
+                for p in available_ports:
+                    goal_daily += port_rets[p].fillna(0) * goal_weights.get(p, 0)
+                goal_daily = goal_daily.dropna()
             # ensure unique index for downstream reindex / benchmark alignment
-            if goal_daily.index.duplicated().any():
+            if goal_daily is not None and goal_daily.index.duplicated().any():
                 goal_daily = goal_daily.groupby(level=0).first()
             if has_existing and not new_set:
                 returns_label = "Actual Returns"
@@ -685,7 +768,10 @@ if client_weights and total_nav > 0:
                     _bm = _bm.iloc[:, 0]
                 if _bm.index.duplicated().any():
                     _bm = _bm.groupby(level=0).first()
-                bench_daily = (_bm / 100).reindex(goal_daily.index).fillna(0)
+                # Per-series percent-vs-decimal detection — same fix as the
+                # goal's portfolio returns above.
+                _bm_decimal = (_bm / 100) if _bm.abs().max() > 1 else _bm
+                bench_daily = _bm_decimal.reindex(goal_daily.index).fillna(0)
 
             from utils.plotting import plot_monthly_heatmap, plot_cumulative_returns, plot_drawdowns
 
@@ -868,258 +954,436 @@ if client_weights and total_nav > 0:
                                 st.plotly_chart(fig_bar, use_container_width=True, key=f"{kp}_conc_bar")
                         st.caption(_get_conc_brief(div_result['concentration']))
 
+        # ══════════════════════════════════════════════════════════
+        # SECTION 5: INCOME ANALYTICS (income goals only)
+        # ══════════════════════════════════════════════════════════
+        if goal['type'] == 'Income' and goal_weights and goal_nav > 0:
+            st.divider()
+            st.subheader("Income Analytics")
+
+            # Controls: display currency, FX toggle, yield source
+            ctrl_a, ctrl_b, ctrl_c = st.columns([1, 1, 2])
+            with ctrl_a:
+                display_currency = st.selectbox(
+                    "Display Currency",
+                    ["SGD", "USD", "HKD"],
+                    index=0,
+                    key=f"{kp}_inc_ccy",
+                )
+            with ctrl_b:
+                yield_pref = st.selectbox(
+                    "Yield Source",
+                    ["YTM", "T12M"],
+                    index=0,
+                    key=f"{kp}_inc_ypref",
+                    help="Primary: YTM / est. yield. Fallback: T12M dividend yield when YTM is unavailable.",
+                )
+            ref_usdsgd, ref_usdhkd = get_reference_fx(df_fx)
+            with ctrl_c:
+                use_latest_fx = st.checkbox(
+                    "Use Latest FX Rate",
+                    value=True,
+                    key=f"{kp}_inc_latest_fx",
+                    help=f"Latest USDSGD: {ref_usdsgd:.4f} · Latest USDHKD: {ref_usdhkd:.4f}",
+                )
+                if use_latest_fx:
+                    fx_usdsgd, fx_usdhkd = ref_usdsgd, ref_usdhkd
+                else:
+                    fx_usdsgd = st.number_input("USD/SGD", 0.5, 5.0, ref_usdsgd, 0.01, format="%.4f", key=f"{kp}_inc_usdsgd")
+                    fx_usdhkd = st.number_input("USD/HKD", 1.0, 20.0, ref_usdhkd, 0.01, format="%.4f", key=f"{kp}_inc_usdhkd")
+
+            ccy_symbol = {'SGD': 'S$', 'USD': 'US$', 'HKD': 'HK$'}.get(display_currency, '$')
+
+            # build per-portfolio NAVs for this goal
+            goal_port_navs = {p: v for p, v in goal_navs.items() if v > 0}
+
+            # FI metrics table
+            st.markdown("**Fixed Income Metrics**")
+            fi_table = build_fi_metrics_table(list(goal_port_navs.keys()), df_fi_metrics, yield_preference=yield_pref)
+            if fi_table.empty:
+                st.info("No fixed-income portfolios with yield data in this goal.")
+            else:
+                fmt = {
+                    'Duration (yrs)': '{:.2f}',
+                    'Yield': '{:.2%}',
+                }
+                st.dataframe(
+                    fi_table.style.format({k: v for k, v in fmt.items() if k in fi_table.columns}),
+                    use_container_width=True,
+                )
+
+            # Monthly cash flow projection
+            st.markdown("**Projected Monthly Cash Flow**")
+            monthly_df, breakdown_df = compute_portfolio_cash_flows(
+                goal_port_navs,
+                df_fi_metrics,
+                yield_preference=yield_pref,
+                display_currency=display_currency,
+                usdsgd=fx_usdsgd,
+                usdhkd=fx_usdhkd,
+            )
+            if monthly_df.empty:
+                st.info("No income-generating portfolios detected in this goal (cash/growth/thematic portfolios are excluded).")
+            else:
+                annual_total = monthly_df.sum().sum()
+                monthly_avg = annual_total / 12.0
+                # summary metrics
+                m_a, m_b, m_c = st.columns(3)
+                m_a.metric("Projected Annual Income", f"{ccy_symbol}{annual_total:,.0f}")
+                m_b.metric("Avg Monthly Income", f"{ccy_symbol}{monthly_avg:,.0f}")
+                # effective yield = annual income (in display ccy) / goal_nav (in SGD-equivalent converted to display ccy)
+                goal_nav_disp = 0.0
+                for _p, _nav in goal_port_navs.items():
+                    from utils.cash_flow import get_ticker_base_currency, convert_currency
+                    base_ccy = get_ticker_base_currency(_p)
+                    goal_nav_disp += convert_currency(_nav, base_ccy, display_currency, fx_usdsgd, fx_usdhkd)
+                eff_yld = annual_total / goal_nav_disp if goal_nav_disp > 0 else 0.0
+                m_c.metric("Effective Yield", f"{eff_yld:.2%}")
+
+                # stacked bar chart
+                fig_cf = plot_monthly_cash_flow(monthly_df, currency_symbol=ccy_symbol)
+                if fig_cf is not None:
+                    st.plotly_chart(fig_cf, use_container_width=True, key=f"{kp}_inc_cf_bar")
+
+                with st.expander("Calculation Breakdown"):
+                    show = breakdown_df.copy()
+                    show['NAV'] = show['NAV'].apply(lambda v: f"${v:,.0f}")
+                    show['Yield'] = show['Yield'].apply(lambda v: f"{v:.2%}")
+                    show['Annual Cash Flow'] = show['Annual Cash Flow'].apply(lambda v: f"{ccy_symbol}{v:,.0f}")
+                    st.dataframe(show, use_container_width=True)
+
     # ───────────────────────────────────────────────────────────
     # MAIN DASHBOARD (no goal selected)
     # ───────────────────────────────────────────────────────────
     else:
         # objective allocation
         objective_alloc = {}
-        for ticker, w in client_weights.items():
+        for ticker, w in (client_weights or {}).items():
             obj = get_portfolio_objective(ticker)
             objective_alloc[obj] = objective_alloc.get(obj, 0) + w
 
         # ═══════════════════════════════════════════════════════
-        # 1. PORTFOLIO SUMMARY
+        # 1. PORTFOLIO SUMMARY  (skipped for new clients with no holdings)
         # ═══════════════════════════════════════════════════════
-        st.markdown("### Portfolio Summary")
-        sorted_ports = sorted(client_weights.items(), key=lambda x: x[1], reverse=True)
-        top_port = sorted_ports[0][0] if sorted_ports else "N/A"
-        sorted_objs = sorted(objective_alloc.items(), key=lambda x: x[1], reverse=True)
-        top_obj = sorted_objs[0][0] if sorted_objs else "N/A"
-
-        top_str = ""
-        if df_underlying is not None and not df_underlying.empty:
-            w_s = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
-            conc = get_concentration_exposure(w_s, df_underlying, top_n=3)
-            if not conc.empty:
-                top_str = ", ".join([f"{n} ({w:.1%})" for n, w in conc.head(3).items()])
-
-        summary = f"Your current portfolio is primarily allocated to **{top_port}**, aligning with a **{top_obj}** objective."
-        if top_str:
-            summary += f" Across your holdings, your top underlying exposures are **{top_str}**."
-        st.info(summary)
-
-        # ═══════════════════════════════════════════════════════
-        # FILTER EXPOSURES
-        # ═══════════════════════════════════════════════════════
-        st.markdown("### 1. Summary")
-        st.markdown("#### Filter Exposures")
-        fc, _ = st.columns([2, 1])
-        with fc:
-            filt_mode = st.radio("Filter Mode", ["Show All", "By Objective", "By Portfolio Type"], horizontal=True, key="cpv_filt_mode")
-
-        filtered = {}
-        if filt_mode == "Show All":
-            filtered = {f"{k}_wgt": v for k, v in client_weights.items()}
-        elif filt_mode == "By Objective":
-            all_obj = sorted(set(get_portfolio_objective(t) for t in client_weights))
-            sel_obj = st.multiselect("Select Objective(s)", all_obj, default=all_obj, key="cpv_filt_obj")
-            for t, w in client_weights.items():
-                if get_portfolio_objective(t) in sel_obj:
-                    filtered[f"{t}_wgt"] = w
+        if is_new_client or not client_weights:
+            st.info(
+                "New client — no existing holdings. Scroll down to create goals with lump-sum contributions."
+                if is_new_client
+                else "No holdings loaded — upload a CSV or use Metabase Lookup above."
+            )
         else:
-            all_pt = sorted(client_weights.keys())
-            sel_pt = st.multiselect("Select Portfolio Type(s)", all_pt, default=all_pt, key="cpv_filt_pt")
-            for t, w in client_weights.items():
-                if t in sel_pt:
-                    filtered[f"{t}_wgt"] = w
+            st.markdown("### Portfolio Summary")
+            sorted_ports = sorted(client_weights.items(), key=lambda x: x[1], reverse=True)
+            top_port = sorted_ports[0][0] if sorted_ports else "N/A"
+            sorted_objs = sorted(objective_alloc.items(), key=lambda x: x[1], reverse=True)
+            top_obj = sorted_objs[0][0] if sorted_objs else "N/A"
 
-        filtered = {k: v for k, v in filtered.items() if k.replace('_wgt', '') not in IGNORED_PORTFOLIOS}
-        ws = pd.Series(filtered)
-        ws_total = ws.sum()
-        if ws_total > 0:
-            ws = ws / ws_total
-
-        if not ws.empty:
-            charts = get_exposure_charts(ws, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
-            filt_pw = {k.replace('_wgt', ''): v for k, v in filtered.items()}
-            filt_total = sum(filt_pw.values())
-            filt_pw_n = {k: v / filt_total for k, v in filt_pw.items()} if filt_total > 0 else filt_pw
-            filt_nav = sum(client_holdings.get(t, 0) for t in filt_pw)
-
-            filt_obj = {}
-            for t, w in filt_pw_n.items():
-                o = get_portfolio_objective(t)
-                filt_obj[o] = filt_obj.get(o, 0) + w
-
-            col_nav, col_obj = st.columns(2)
-            with col_nav:
-                st.markdown("**By Portfolio Type**")
-                p_colors = [get_portfolio_color(n) for n in filt_pw_n]
-                fig_nav = go.Figure(data=[go.Pie(
-                    labels=list(filt_pw_n.keys()), values=list(filt_pw_n.values()),
-                    hole=0.4, marker=dict(colors=p_colors),
-                    textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>',
-                )])
-                fig_nav.update_layout(
-                    title={'text': f'<b>NAV: ${filt_nav:,.2f}</b>', 'font': {'size': 20}},
-                    font={'family': 'Helvetica Neue'}, height=500,
-                    margin=dict(l=40, r=40, t=80, b=40),
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            top_str = ""
+            if df_underlying is not None and not df_underlying.empty:
+                # expand CUSTOM into its real ETFs so the top-holdings line
+                # reflects the actual underlying exposure
+                exp_for_top = (
+                    expand_custom_in_weights_dict(client_weights, custom_etf_nav)
+                    if custom_etf_nav else dict(client_weights)
                 )
-                st.plotly_chart(fig_nav, use_container_width=True, key="cpv_pie_nav")
-                with st.expander("View Data"):
-                    pdf = pd.DataFrame({'Portfolio': list(filt_pw_n.keys()), 'Weight': list(filt_pw_n.values()),
-                                        'Est. Value ($)': [filt_pw_n[k] * filt_nav for k in filt_pw_n]}).set_index('Portfolio')
-                    st.dataframe(pdf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
+                w_s = pd.Series({f"{k}_wgt": v for k, v in exp_for_top.items()})
+                conc = get_concentration_exposure(w_s, df_underlying, top_n=3)
+                if not conc.empty:
+                    top_str = ", ".join([f"{n} ({w:.1%})" for n, w in conc.head(3).items()])
 
-            with col_obj:
-                st.markdown("**By Objective**")
-                o_colors = [OBJECTIVE_COLORS.get(n, '#666') for n in filt_obj]
-                fig_obj = go.Figure(data=[go.Pie(
-                    labels=list(filt_obj.keys()), values=list(filt_obj.values()),
-                    hole=0.4, marker=dict(colors=o_colors),
-                    textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>',
-                )])
-                fig_obj.update_layout(
-                    title={'text': '<b>Objective Allocation</b>', 'font': {'size': 20}},
-                    font={'family': 'Helvetica Neue'}, height=500,
-                    margin=dict(l=40, r=40, t=80, b=40),
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            summary = f"Your current portfolio is primarily allocated to **{top_port}**, aligning with a **{top_obj}** objective."
+            if top_str:
+                summary += f" Across your holdings, your top underlying exposures are **{top_str}**."
+            st.info(summary)
+
+            # ═══════════════════════════════════════════════════════
+            # FILTER EXPOSURES
+            # ═══════════════════════════════════════════════════════
+            st.markdown("### 1. Summary")
+            st.markdown("#### Filter Exposures")
+            fc, tog_col = st.columns([2, 1])
+            with fc:
+                filt_mode = st.radio("Filter Mode", ["Show All", "By Objective", "By Portfolio Type"], horizontal=True, key="cpv_filt_mode")
+            # Toggle only affects the NAV / Objective pie charts. Exposures and
+            # diversification always use the expanded view when a breakdown is
+            # available.
+            break_custom_display = False
+            with tog_col:
+                if custom_etf_nav:
+                    st.write("")
+                    break_custom_display = st.toggle(
+                        "Break custom portfolios into constituents",
+                        value=False,
+                        key="cpv_break_custom",
+                        help="Replace the CUSTOM slice in the NAV and Objective pie charts with its underlying ETF holdings (parsed from actual_holding_weightage).",
+                    )
+
+            filtered = {}
+            if filt_mode == "Show All":
+                filtered = {f"{k}_wgt": v for k, v in client_weights.items()}
+            elif filt_mode == "By Objective":
+                all_obj = sorted(set(get_portfolio_objective(t) for t in client_weights))
+                sel_obj = st.multiselect("Select Objective(s)", all_obj, default=all_obj, key="cpv_filt_obj")
+                for t, w in client_weights.items():
+                    if get_portfolio_objective(t) in sel_obj:
+                        filtered[f"{t}_wgt"] = w
+            else:
+                all_pt = sorted(client_weights.keys())
+                sel_pt = st.multiselect("Select Portfolio Type(s)", all_pt, default=all_pt, key="cpv_filt_pt")
+                for t, w in client_weights.items():
+                    if t in sel_pt:
+                        filtered[f"{t}_wgt"] = w
+
+            # expose exposures using the expanded view — drop any CUSTOM bucket
+            # we couldn't parse so it doesn't bleed into sector/country calcs
+            exposure_filtered = {k.replace('_wgt', ''): v for k, v in filtered.items()}
+            if custom_etf_nav:
+                exposure_filtered = expand_custom_in_weights_dict(exposure_filtered, custom_etf_nav)
+            exposure_filtered = {k: v for k, v in exposure_filtered.items() if k not in IGNORED_PORTFOLIOS}
+            ws = pd.Series({f"{k}_wgt": v for k, v in exposure_filtered.items()})
+            ws_total = ws.sum()
+            if ws_total > 0:
+                ws = ws / ws_total
+
+            if not ws.empty:
+                charts = get_exposure_charts(ws, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
+                if break_custom_display and custom_etf_nav:
+                    filt_pw = dict(exposure_filtered)
+                else:
+                    filt_pw = {k.replace('_wgt', ''): v for k, v in filtered.items()}
+                filt_total = sum(filt_pw.values())
+                filt_pw_n = {k: v / filt_total for k, v in filt_pw.items()} if filt_total > 0 else filt_pw
+                filt_nav = sum(
+                    client_holdings.get(t, 0)
+                    for t in {k.replace('_wgt', '') for k in filtered}
                 )
-                st.plotly_chart(fig_obj, use_container_width=True, key="cpv_pie_obj")
-                with st.expander("View Data"):
-                    odf = pd.DataFrame({'Objective': list(filt_obj.keys()), 'Weight': list(filt_obj.values()),
-                                        'Est. Value ($)': [filt_obj[k] * filt_nav for k in filt_obj]}).set_index('Objective')
-                    st.dataframe(odf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
 
-            # ═══════════════════════════════════════════════════
-            # 2. DIVERSIFICATION SCORE
-            # ═══════════════════════════════════════════════════
-            st.markdown("### 2. Client Exposures")
-            div_w = {k.replace('_wgt', ''): v for k, v in ws.items()}
-            div_result = calculate_diversification_score(div_w, df_asset_class, df_sector, df_country, df_underlying)
-            composite = div_result['composite_score']
-            sub_labels = ['Asset Class', 'Geography', 'Sector', 'Concentration']
-            sub_keys = ['asset_class', 'geography', 'sector', 'concentration']
-            weight_keys = ['asset', 'geo', 'sector', 'conc']
-            sub_scores = [div_result[k].get('score') for k in sub_keys]
-            sub_w = [WEIGHTS[k] for k in weight_keys]
-            s_colors = [DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE]
+                filt_obj = {}
+                for t, w in filt_pw_n.items():
+                    o = get_portfolio_objective(t)
+                    filt_obj[o] = filt_obj.get(o, 0) + w
 
-            col_left, col_right = st.columns([2, 3])
-            with col_left:
-                d_labels = [f'{l}  ({s:.1f})' if s is not None else f'{l}  (N/A)' for l, s in zip(sub_labels, sub_scores)]
-                d_values = [w * (s or 0) for w, s in zip(sub_w, sub_scores)]
-                fig_donut = go.Figure(data=[go.Pie(
-                    labels=d_labels, values=d_values, hole=0.7,
-                    marker=dict(colors=s_colors, line=dict(color='white', width=2)),
-                    textinfo='none', hovertemplate='%{label}<extra></extra>',
-                    sort=False, direction='clockwise',
-                )])
-                fig_donut.update_layout(
-                    showlegend=True,
-                    legend=dict(orientation='h', yanchor='top', y=-0.02, xanchor='center', x=0.5, font=dict(size=11, color='#555'),
-                                itemsizing='constant', itemwidth=30),
-                    height=340, margin=dict(l=5, r=5, t=5, b=60),
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    annotations=[dict(
-                        text=f'<b style="font-size:40px">{composite:.1f}</b><b style="font-size:16px;color:#172B4D"> /10</b>',
-                        x=0.5, y=0.5, font_size=16, showarrow=False, font_color='#172B4D',
-                    )],
+                col_nav, col_obj = st.columns(2)
+                with col_nav:
+                    st.markdown("**By Portfolio Type**")
+                    p_colors = [get_portfolio_color(n) for n in filt_pw_n]
+                    fig_nav = go.Figure(data=[go.Pie(
+                        labels=list(filt_pw_n.keys()), values=list(filt_pw_n.values()),
+                        hole=0.4, marker=dict(colors=p_colors),
+                        textinfo='none', hovertemplate='%{label}: %{percent}<extra></extra>',
+                    )])
+                    fig_nav.update_layout(
+                        title={'text': f'<b>NAV: ${filt_nav:,.2f}</b>', 'font': {'size': 20}},
+                        font={'family': 'Helvetica Neue'}, height=500,
+                        margin=dict(l=40, r=40, t=80, b=40),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    )
+                    st.plotly_chart(fig_nav, use_container_width=True, key="cpv_pie_nav")
+                    with st.expander("View Data"):
+                        pdf = pd.DataFrame({'Portfolio': list(filt_pw_n.keys()), 'Weight': list(filt_pw_n.values()),
+                                            'Est. Value ($)': [filt_pw_n[k] * filt_nav for k in filt_pw_n]}).set_index('Portfolio')
+                        st.dataframe(pdf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
+
+                with col_obj:
+                    st.markdown("**By Objective**")
+                    o_colors = [OBJECTIVE_COLORS.get(n, '#666') for n in filt_obj]
+                    fig_obj = go.Figure(data=[go.Pie(
+                        labels=list(filt_obj.keys()), values=list(filt_obj.values()),
+                        hole=0.4, marker=dict(colors=o_colors),
+                        textinfo='none', hovertemplate='%{label}: %{percent}<extra></extra>',
+                    )])
+                    fig_obj.update_layout(
+                        title={'text': '<b>Objective Allocation</b>', 'font': {'size': 20}},
+                        font={'family': 'Helvetica Neue'}, height=500,
+                        margin=dict(l=40, r=40, t=80, b=40),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    )
+                    st.plotly_chart(fig_obj, use_container_width=True, key="cpv_pie_obj")
+                    with st.expander("View Data"):
+                        odf = pd.DataFrame({'Objective': list(filt_obj.keys()), 'Weight': list(filt_obj.values()),
+                                            'Est. Value ($)': [filt_obj[k] * filt_nav for k in filt_obj]}).set_index('Objective')
+                        st.dataframe(odf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
+
+                # ═══════════════════════════════════════════════════
+                # 2. DIVERSIFICATION SCORE
+                # ═══════════════════════════════════════════════════
+                st.markdown("### 2. Client Exposures")
+
+                # Benchmark overlay for the exposure tabs — opt-in. The
+                # dropdown only appears once the user enables the toggle.
+                _cpv_bm_tickers = sorted(
+                    set(df_asset_class.columns) | set(df_sector.columns) | set(df_country.columns)
                 )
-                st.plotly_chart(fig_donut, use_container_width=True, key="cpv_div_donut")
+                _cpv_tog_col, _cpv_pick_col = st.columns([1, 3])
+                with _cpv_tog_col:
+                    _cpv_show_bm = st.toggle(
+                        "Show benchmark overlay",
+                        value=False,
+                        key="cpv_exposure_bm_toggle",
+                        help="Toggle on to overlay a benchmark's exposure onto the Asset Class / Geography / Sector charts.",
+                    )
+                _cpv_bm_eff = None
+                if _cpv_show_bm and _cpv_bm_tickers:
+                    with _cpv_pick_col:
+                        _cpv_bm_default = 'ACWI' if 'ACWI' in _cpv_bm_tickers else _cpv_bm_tickers[0]
+                        _cpv_bm_eff = st.selectbox(
+                            "Benchmark ticker",
+                            _cpv_bm_tickers,
+                            index=_cpv_bm_tickers.index(_cpv_bm_default),
+                            key="cpv_exposure_bm",
+                        )
 
-                # Insights fetched in a background thread; a fragment polls
-                # session_state and renders when the result arrives. The main
-                # script never blocks, so user interactions (form inputs,
-                # portfolio selection) stay fully responsive.
-                _CPV_INS_CATS = {
-                    'strength': ('#E8F5E9', '#2E7D32', '#172B4D'),
-                    'improvement': ('#FFF3E0', '#E65100', '#172B4D'),
-                    'observation': ('#E3F2FD', '#0052CC', '#172B4D'),
-                }
+                div_w = {k.replace('_wgt', ''): v for k, v in ws.items()}
+                div_result = calculate_diversification_score(div_w, df_asset_class, df_sector, df_country, df_underlying)
+                composite = div_result['composite_score']
+                sub_labels = ['Asset Class', 'Geography', 'Sector', 'Concentration']
+                sub_keys = ['asset_class', 'geography', 'sector', 'concentration']
+                weight_keys = ['asset', 'geo', 'sector', 'conc']
+                sub_scores = [div_result[k].get('score') for k in sub_keys]
+                sub_w = [WEIGHTS[k] for k in weight_keys]
+                s_colors = [DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE]
 
-                def _render_insight_cards(items):
-                    for ins in (items or []):
-                        cat = ins.get('category', 'observation')
-                        bg, accent, tc = _CPV_INS_CATS.get(cat, _CPV_INS_CATS['observation'])
+                col_left, col_right = st.columns([2, 3])
+                with col_left:
+                    d_labels = [f'{l}  ({s:.1f})' if s is not None else f'{l}  (N/A)' for l, s in zip(sub_labels, sub_scores)]
+                    d_values = [w * (s or 0) for w, s in zip(sub_w, sub_scores)]
+                    fig_donut = go.Figure(data=[go.Pie(
+                        labels=d_labels, values=d_values, hole=0.7,
+                        marker=dict(colors=s_colors, line=dict(color='white', width=2)),
+                        textinfo='none', hovertemplate='%{label}<extra></extra>',
+                        sort=False, direction='clockwise',
+                    )])
+                    fig_donut.update_layout(
+                        showlegend=True,
+                        legend=dict(orientation='h', yanchor='top', y=-0.02, xanchor='center', x=0.5, font=dict(size=11, color='#555'),
+                                    itemsizing='constant', itemwidth=30),
+                        height=340, margin=dict(l=5, r=5, t=5, b=60),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                        annotations=[dict(
+                            text=f'<b style="font-size:40px">{composite:.1f}</b><b style="font-size:16px;color:#172B4D"> /10</b>',
+                            x=0.5, y=0.5, font_size=16, showarrow=False, font_color='#172B4D',
+                        )],
+                    )
+                    st.plotly_chart(fig_donut, use_container_width=True, key="cpv_div_donut")
+
+                    # Insights fetched in a background thread; a fragment polls
+                    # session_state and renders when the result arrives. The main
+                    # script never blocks, so user interactions (form inputs,
+                    # portfolio selection) stay fully responsive.
+                    _CPV_INS_CATS = {
+                        'strength': ('#E8F5E9', '#2E7D32', '#172B4D'),
+                        'improvement': ('#FFF3E0', '#E65100', '#172B4D'),
+                        'observation': ('#E3F2FD', '#0052CC', '#172B4D'),
+                    }
+
+                    def _render_insight_cards(items):
+                        for ins in (items or []):
+                            cat = ins.get('category', 'observation')
+                            bg, accent, tc = _CPV_INS_CATS.get(cat, _CPV_INS_CATS['observation'])
+                            st.markdown(
+                                f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
+                                f'<div style="font-weight:700;color:{tc};font-size:13px;margin-bottom:3px">{ins.get("title","")}</div>'
+                                f'<div style="color:#333;font-size:12px;line-height:1.4">{ins.get("body","")}</div></div>',
+                                unsafe_allow_html=True)
+
+                    # Insights must reflect the current filter selection —
+                    # cache per filter signature so changing the filter
+                    # regenerates insights for the current slice.
+                    _cpv_filter_sig = (
+                        f"{filt_mode}|"
+                        f"{','.join(sorted(div_w.keys()))}"
+                    )
+                    _CPV_INS_KEY = f"cpv_div_insights__{hash(_cpv_filter_sig)}"
+                    _start_insights_thread(_CPV_INS_KEY, API_KEY, div_result, div_w)
+
+                    @st.fragment(run_every=("600ms" if _CPV_INS_KEY not in st.session_state else None))
+                    def _cpv_insights_fragment():
+                        if _CPV_INS_KEY in st.session_state:
+                            _render_insight_cards(st.session_state.get(_CPV_INS_KEY) or [])
+                            return
+                        st.caption("Generating insights…")
+
+                    _cpv_insights_fragment()
+
+                    warnings = div_result.get('data_warnings', [])
+                    if warnings:
+                        items = "".join(f"<li>{w}</li>" for w in warnings)
                         st.markdown(
-                            f'<div style="background:{bg};border-left:4px solid {accent};border-radius:8px;padding:12px 14px;margin-bottom:8px">'
-                            f'<div style="font-weight:700;color:{tc};font-size:13px;margin-bottom:3px">{ins.get("title","")}</div>'
-                            f'<div style="color:#333;font-size:12px;line-height:1.4">{ins.get("body","")}</div></div>',
+                            f'<div style="background:#FFF8E1;border-left:4px solid #FFC107;border-radius:8px;padding:12px 14px;margin:8px 0">'
+                            f'<div style="font-weight:700;color:#7B6100;font-size:13px;margin-bottom:4px">Data Completeness Issues</div>'
+                            f'<ul style="color:#333;font-size:12px;line-height:1.5;margin:0;padding-left:16px">{items}</ul></div>',
                             unsafe_allow_html=True)
 
-                _CPV_INS_KEY = "cpv_div_insights"
-                _start_insights_thread(_CPV_INS_KEY, API_KEY, div_result, client_weights)
+                with col_right:
+                    tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
+                    def _render_tab(score, color):
+                        if score is not None:
+                            st.markdown(f'<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:{color}">{score:.1f}</span>'
+                                        f'<span style="font-size:14px;color:#999"> / 10</span>'
+                                        f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score)}</span></div>', unsafe_allow_html=True)
+                        else:
+                            st.markdown('<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:#B0B0B0">N/A</span></div>', unsafe_allow_html=True)
 
-                @st.fragment(run_every=("600ms" if _CPV_INS_KEY not in st.session_state else None))
-                def _cpv_insights_fragment():
-                    if _CPV_INS_KEY in st.session_state:
-                        _render_insight_cards(st.session_state.get(_CPV_INS_KEY) or [])
-                        return
-                    st.caption("Generating insights…")
-
-                _cpv_insights_fragment()
-
-                warnings = div_result.get('data_warnings', [])
-                if warnings:
-                    items = "".join(f"<li>{w}</li>" for w in warnings)
-                    st.markdown(
-                        f'<div style="background:#FFF8E1;border-left:4px solid #FFC107;border-radius:8px;padding:12px 14px;margin:8px 0">'
-                        f'<div style="font-weight:700;color:#7B6100;font-size:13px;margin-bottom:4px">Data Completeness Issues</div>'
-                        f'<ul style="color:#333;font-size:12px;line-height:1.5;margin:0;padding-left:16px">{items}</ul></div>',
-                        unsafe_allow_html=True)
-
-            with col_right:
-                tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
-                def _render_tab(score, color):
-                    if score is not None:
-                        st.markdown(f'<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:{color}">{score:.1f}</span>'
-                                    f'<span style="font-size:14px;color:#999"> / 10</span>'
-                                    f'<span style="font-size:12px;color:#888;margin-left:8px">{_score_rating(score)}</span></div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:#B0B0B0">N/A</span></div>', unsafe_allow_html=True)
-
-                with tab_aa:
-                    _render_tab(sub_scores[0], s_colors[0])
-                    if 'asset_pie' in charts:
-                        st.plotly_chart(charts['asset_pie'], use_container_width=True, key="cpv_tab_aa")
+                    def _cpv_render_exp_tab(tab_key, tab_title, df_bm_src, table_key, brief):
+                        client_table = charts.get(table_key)
+                        if client_table is None or client_table.empty:
+                            return
+                        client_series = client_table['Weight'] if 'Weight' in client_table.columns else client_table.iloc[:, 0]
+                        bm_series = benchmark_exposure_series(_cpv_bm_eff, df_bm_src) if _cpv_bm_eff else pd.Series(dtype=float)
+                        fig_cmp = plot_exposure_comparison(
+                            client_series,
+                            benchmark_series=bm_series,
+                            title=f"{tab_title} — Client vs {_cpv_bm_eff}" if _cpv_bm_eff else tab_title,
+                            benchmark_label=_cpv_bm_eff or 'Benchmark',
+                        )
+                        st.plotly_chart(fig_cmp, use_container_width=True, key=f"cpv_tab_{tab_key}_cmp")
                         with st.expander("View Data"):
-                            st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
-                    st.caption(_get_asset_brief(div_result['asset_class']))
+                            disp = client_table.rename(columns={'Weight': 'Client'}).copy()
+                            if not bm_series.empty:
+                                disp['Benchmark'] = bm_series.reindex(disp.index, fill_value=0.0)
+                                disp['Δ (Client − Bm)'] = disp['Client'] - disp['Benchmark']
+                            fmt = {c: '{:.2%}' for c in disp.columns if c in ('Client', 'Benchmark', 'Δ (Client − Bm)')}
+                            st.dataframe(disp.style.format(fmt), use_container_width=True)
+                        if brief:
+                            st.caption(brief)
 
-                with tab_geo:
-                    _render_tab(sub_scores[1], s_colors[1])
-                    if 'country_pie' in charts:
-                        st.plotly_chart(charts['country_pie'], use_container_width=True, key="cpv_tab_geo")
-                        with st.expander("View Data"):
-                            st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                    st.caption(_get_geo_brief(div_result['geography']))
+                    with tab_aa:
+                        _render_tab(sub_scores[0], s_colors[0])
+                        _cpv_render_exp_tab('aa', 'Asset Class', df_asset_class, 'asset_table', _get_asset_brief(div_result['asset_class']))
 
-                with tab_sec:
-                    _render_tab(sub_scores[2], s_colors[2])
-                    if 'sector_pie' in charts:
-                        st.plotly_chart(charts['sector_pie'], use_container_width=True, key="cpv_tab_sec")
-                        with st.expander("View Data"):
-                            st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                    st.caption(_get_sector_brief(div_result['sector']))
+                    with tab_geo:
+                        _render_tab(sub_scores[1], s_colors[1])
+                        _cpv_render_exp_tab('geo', 'Country', df_country, 'country_table', _get_geo_brief(div_result['geography']))
 
-                with tab_conc:
-                    _render_tab(sub_scores[3], s_colors[3])
-                    topn = st.selectbox("Show Top", [10, 15, 20], key="cpv_topn")
-                    if df_underlying is not None:
-                        eq_w = {}
-                        for col_name in ws.index:
-                            tk = col_name.replace('_wgt', '')
-                            if _classify_portfolio_type(tk, df_asset_class) in ('equity', 'reit'):
-                                eq_w[col_name] = ws[col_name]
-                        eq_s = pd.Series(eq_w) if eq_w else pd.Series(dtype=float)
-                        if not eq_s.empty:
-                            eq_s = eq_s / eq_s.sum()
-                        conc_raw = get_concentration_exposure(eq_s, df_underlying, top_n=topn) if not eq_s.empty else pd.Series(dtype=float)
-                        if not conc_raw.empty:
-                            t_conc = conc_raw.head(topn).sum()
-                            fig_bar = plot_horizontal_bar_chart(conc_raw.head(topn), title=f'Top {topn} Holdings ({t_conc:.1%} Total)')
-                            st.plotly_chart(fig_bar, use_container_width=True, key="cpv_tab_conc_bar")
-                            with st.expander("View Data"):
-                                cdf = conc_raw.head(topn).to_frame(name='Weight')
-                                cdf['Est. Value ($)'] = cdf['Weight'] * total_nav
-                                st.dataframe(cdf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
-                    st.caption(_get_conc_brief(div_result['concentration']))
+                    with tab_sec:
+                        _render_tab(sub_scores[2], s_colors[2])
+                        _cpv_render_exp_tab('sec', 'Sector', df_sector, 'sector_table', _get_sector_brief(div_result['sector']))
 
-        else:
-            st.warning("No data matches the selected filters.")
+                    with tab_conc:
+                        _render_tab(sub_scores[3], s_colors[3])
+                        topn = st.selectbox("Show Top", [10, 15, 20], key="cpv_topn")
+                        if df_underlying is not None:
+                            eq_w = {}
+                            for col_name in ws.index:
+                                tk = col_name.replace('_wgt', '')
+                                if _classify_portfolio_type(tk, df_asset_class) in ('equity', 'reit'):
+                                    eq_w[col_name] = ws[col_name]
+                            eq_s = pd.Series(eq_w) if eq_w else pd.Series(dtype=float)
+                            if not eq_s.empty:
+                                eq_s = eq_s / eq_s.sum()
+                            conc_raw = get_concentration_exposure(eq_s, df_underlying, top_n=topn) if not eq_s.empty else pd.Series(dtype=float)
+                            if not conc_raw.empty:
+                                t_conc = conc_raw.head(topn).sum()
+                                fig_bar = plot_horizontal_bar_chart(conc_raw.head(topn), title=f'Top {topn} Holdings ({t_conc:.1%} Total)')
+                                st.plotly_chart(fig_bar, use_container_width=True, key="cpv_tab_conc_bar")
+                                with st.expander("View Data"):
+                                    cdf = conc_raw.head(topn).to_frame(name='Weight')
+                                    cdf['Est. Value ($)'] = cdf['Weight'] * total_nav
+                                    st.dataframe(cdf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
+                        st.caption(_get_conc_brief(div_result['concentration']))
+
+            else:
+                st.warning("No data matches the selected filters.")
 
         st.divider()
 
@@ -1128,7 +1392,7 @@ if client_weights and total_nav > 0:
         # ═══════════════════════════════════════════════════════
         st.markdown("### 3. Goals")
 
-        managed_ports = [p for p in client_weights.keys() if p not in IGNORED_PORTFOLIOS]
+        managed_ports = [p for p in (client_weights or {}).keys() if p not in IGNORED_PORTFOLIOS]
 
         # portfolios already claimed by other goals (as "existing" contributions).
         # A portfolio is "claimed" if it's in a goal's portfolios list and not flagged
@@ -1362,13 +1626,18 @@ if client_weights and total_nav > 0:
                 unsafe_allow_html=True,
             )
 
+        # ── Goal Type (outside the form so the Target field can reactively
+        # switch between "Target Value" and "Target Payout" as soon as the
+        # user changes Growth ↔ Income). Widgets inside st.form are frozen
+        # until submit, which is why this lives above the form. ──
+        pre_c1, pre_c2 = st.columns(2)
+        with pre_c1:
+            g_name = st.text_input("Goal Name", placeholder="e.g. Retirement Fund", key="cpv_f_name")
+        with pre_c2:
+            g_type = st.selectbox("Goal Type", ["Growth", "Income"], key="cpv_f_type")
+
         # ── rest of the form (non-reactive) ──
         with st.form("cpv_goal_form", clear_on_submit=False):
-            fc1, fc2 = st.columns(2)
-            with fc1:
-                g_name = st.text_input("Goal Name", placeholder="e.g. Retirement Fund", key="cpv_f_name")
-            with fc2:
-                g_type = st.selectbox("Goal Type", ["Growth", "Income"], key="cpv_f_type")
             g_desc = st.text_area("Goal Description", placeholder="Describe your goal...", height=68, key="cpv_f_desc")
 
             fc3, fc4, fc5 = st.columns(3)

@@ -1,7 +1,113 @@
 
+import re
 import pandas as pd
 import plotly.graph_objects as go
 from utils.plotting import plot_bar_chart, plot_allocation_pie, plot_horizontal_bar_chart
+
+
+# sentinel label used when a client row is a custom DIY portfolio
+CUSTOM_PORTFOLIO_LABEL = 'CUSTOM'
+
+
+def parse_custom_holdings(raw):
+    """Parse an `actual_holding_weightage` string into {ticker: decimal_weight}.
+
+    The Metabase / CSV export stores custom holdings as a single comma-separated
+    string like ``"SMH 33.67%, VTV 14.67%, XLE 17.24%"``. Some exports may use
+    semicolons instead of commas, decimal commas (European style), or omit the
+    trailing ``%``. We normalize those here.
+    """
+    if not isinstance(raw, str):
+        return {}
+    s = raw.strip()
+    if not s or s.lower() in ('nan', 'none', 'null'):
+        return {}
+
+    # treat both ',' and ';' as separators; keep decimals that use '.' only
+    # (the pct numbers themselves don't have commas in this dataset).
+    parts = re.split(r'[;,]\s*', s)
+    out = {}
+    for p in parts:
+        p = p.strip().strip(',').strip(';')
+        if not p:
+            continue
+        # split from the right so tickers with spaces (rare, e.g. "SPY US") still parse
+        m = re.match(r'^(?P<ticker>.+?)\s+(?P<pct>-?\d+(?:[.,]\d+)?)\s*%?\s*$', p)
+        if not m:
+            continue
+        ticker = m.group('ticker').strip().upper()
+        pct_str = m.group('pct').replace(',', '.')
+        try:
+            pct = float(pct_str)
+        except ValueError:
+            continue
+        if pct <= 0:
+            continue
+        # string is expressed as percentages (0-100); normalize to decimal
+        out[ticker] = out.get(ticker, 0.0) + pct / 100.0
+    return out
+
+
+def expand_custom_in_weights_dict(weights_dict, custom_etf_breakdown, custom_label=CUSTOM_PORTFOLIO_LABEL):
+    """Replace the aggregate ``CUSTOM`` bucket with its constituent ETF weights.
+
+    Both ``weights_dict`` and ``custom_etf_breakdown`` are ticker→weight dicts
+    (no ``_wgt`` suffix). The breakdown can be any non-negative numbers (NAV
+    dollars or fractions); it will be renormalized internally.
+    """
+    if not weights_dict or custom_label not in weights_dict:
+        return dict(weights_dict) if weights_dict else {}
+    cust_w = float(weights_dict.get(custom_label, 0) or 0)
+    result = {k: v for k, v in weights_dict.items() if k != custom_label}
+    if cust_w <= 0 or not custom_etf_breakdown:
+        return result
+    total = sum(v for v in custom_etf_breakdown.values() if v and v > 0)
+    if total <= 0:
+        # no usable breakdown — keep the CUSTOM bucket so downstream fallbacks
+        # (specialized / alternatives) still kick in
+        result[custom_label] = cust_w
+        return result
+    for etf, nav in custom_etf_breakdown.items():
+        if not nav or nav <= 0:
+            continue
+        frac = nav / total
+        result[etf] = result.get(etf, 0.0) + cust_w * frac
+    return result
+
+
+def benchmark_exposure_series(benchmark_ticker, df_exposure):
+    """Return a normalized Series of a single-ticker benchmark's exposure.
+
+    Uses the same df_sector / df_country / df_asset_class matrices as the
+    client exposure calc so the comparison is like-for-like. Returns an
+    empty Series if the benchmark ticker is unknown.
+    """
+    if not benchmark_ticker or df_exposure is None:
+        return pd.Series(dtype=float)
+    if benchmark_ticker not in df_exposure.columns:
+        return pd.Series(dtype=float)
+    col = pd.to_numeric(df_exposure[benchmark_ticker], errors='coerce').fillna(0.0)
+    col = col[col > 0]
+    total = col.sum()
+    if total <= 0:
+        return pd.Series(dtype=float)
+    # always renormalise so the comparison is on the same scale regardless
+    # of whether the source column was stored as percentages or decimals
+    return (col / total).sort_values(ascending=False)
+
+
+def expand_custom_in_weights_series(weights_series, custom_etf_breakdown, custom_label=CUSTOM_PORTFOLIO_LABEL):
+    """Same as ``expand_custom_in_weights_dict`` but for a ``_wgt``-suffixed pd.Series."""
+    if weights_series is None or len(weights_series) == 0:
+        return weights_series
+    suffix_key = f"{custom_label}_wgt"
+    if suffix_key not in weights_series.index:
+        return weights_series
+    # unwrap suffix, expand, re-wrap
+    raw = {k.replace('_wgt', ''): float(v) for k, v in weights_series.items() if k.endswith('_wgt')}
+    expanded = expand_custom_in_weights_dict(raw, custom_etf_breakdown, custom_label=custom_label)
+    return pd.Series({f"{k}_wgt": v for k, v in expanded.items()})
+
 
 def calculate_exposure(weights, df_exposure):
     """calc aggregate exposure by sector/country via matrix mult"""
@@ -37,6 +143,14 @@ def calculate_exposure(weights, df_exposure):
         weights_aligned = weights[common_tickers]
         exposure_matrix = df_exposure[common_tickers]
         exposure_matrix = exposure_matrix.apply(pd.to_numeric, errors='coerce').fillna(0)
+        # some tickers (e.g. "Equity Alpha") have their country/sector columns
+        # stored as percentages (sum≈100) while the rest are stored as
+        # decimals (sum≈1). Normalise any percent-style column down to
+        # decimal form so the weighted sum doesn't blow up 100×.
+        col_sums = exposure_matrix.sum(axis=0)
+        pct_cols = col_sums[col_sums > 1.5].index
+        if len(pct_cols) > 0:
+            exposure_matrix.loc[:, pct_cols] = exposure_matrix.loc[:, pct_cols] / 100.0
         # weighted exposure
         agg_exposure = exposure_matrix.dot(weights_aligned)
     

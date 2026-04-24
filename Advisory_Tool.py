@@ -18,7 +18,7 @@ from utils.ui_functions import (
 
 # page config
 st.set_page_config(
-    page_title="Portfolio Visualizer",
+    page_title="Advisory Tool",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -114,7 +114,7 @@ if 'refresh_counter' not in st.session_state:
 # sidebar
 with st.sidebar:
     # logo placeholder
-    st.markdown("## Syfe Portfolio Visualizer")
+    st.markdown("## Syfe Advisory Tool")
 
 
 # main tabs - consolidated flow
@@ -127,7 +127,7 @@ available_tickers = sorted(df_sec_list['Ticker'].tolist())
 bm_tickers = ['SPY', 'ACWI', 'URTH']  # defaults, user can change in base settings
 
 with st.container():
-    st.markdown("## Portfolio Visualiser")
+    st.markdown("## Advisory Tool")
     
     # client type toggle
     client_type = st.radio(

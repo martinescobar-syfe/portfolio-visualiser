@@ -148,7 +148,7 @@ def plot_allocation_pie(weights, title="Portfolio Allocation", use_asset_colors=
         hole=.4,
         marker=dict(colors=colors),
         textinfo='none',
-        hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+        hovertemplate='%{label}: %{percent}<extra></extra>'
     )])
     
     fig = apply_syfe_layout(fig, title=title)
@@ -180,6 +180,82 @@ def plot_bar_chart(df, title="", barmode='group', use_asset_colors=None):
     fig.update_yaxes(tickformat=".2%")
     return fig
 
+def plot_exposure_comparison(
+    client_series,
+    benchmark_series=None,
+    title="",
+    client_label="Client",
+    benchmark_label="Benchmark",
+    top_n=12,
+):
+    """Grouped vertical bar chart comparing two exposure series (e.g. client vs benchmark).
+
+    Both series are expected to be normalized to sum to ~1 (decimal weights).
+    Only the top-N categories (by client weight + benchmark weight) are shown;
+    the rest are rolled into an "Others" bucket so the chart stays readable.
+    """
+    from styles.syfe_colors import PRIMARY_BLUE, DARK_GREY
+
+    client_series = pd.Series(client_series).fillna(0).astype(float)
+    if benchmark_series is None or len(benchmark_series) == 0:
+        benchmark_series = pd.Series(dtype=float)
+    else:
+        benchmark_series = pd.Series(benchmark_series).fillna(0).astype(float)
+
+    # combine categories present in either series
+    all_cats = client_series.index.union(benchmark_series.index)
+    c = client_series.reindex(all_cats, fill_value=0.0)
+    b = benchmark_series.reindex(all_cats, fill_value=0.0)
+
+    # rank by combined magnitude, collapse tail into Others
+    combined = (c + b).sort_values(ascending=False)
+    keep = combined.head(top_n).index.tolist()
+    other = [cat for cat in combined.index if cat not in keep]
+
+    if other:
+        c_other = c.loc[other].sum()
+        b_other = b.loc[other].sum()
+        c_top = c.loc[keep]
+        b_top = b.loc[keep]
+        if c_other > 0 or b_other > 0:
+            c_top = pd.concat([c_top, pd.Series({'Others': c_other})])
+            b_top = pd.concat([b_top, pd.Series({'Others': b_other})])
+    else:
+        c_top = c.loc[keep]
+        b_top = b.loc[keep]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name=client_label,
+        x=c_top.index,
+        y=c_top.values,
+        marker_color=PRIMARY_BLUE,
+        hovertemplate='%{x}<br>' + client_label + ': %{y:.2%}<extra></extra>',
+    ))
+    if not benchmark_series.empty:
+        fig.add_trace(go.Bar(
+            name=benchmark_label,
+            x=b_top.index,
+            y=b_top.values,
+            marker_color=DARK_GREY,
+            hovertemplate='%{x}<br>' + benchmark_label + ': %{y:.2%}<extra></extra>',
+        ))
+
+    fig.update_layout(
+        title={'text': f'<b>{title}</b>', 'font': {'size': 18}} if title else None,
+        barmode='group',
+        font={'family': 'Helvetica Neue, Arial'},
+        height=440,
+        margin=dict(l=30, r=20, t=60 if title else 20, b=60),
+        xaxis={'showgrid': False, 'tickangle': -35, 'title': ''},
+        yaxis={'tickformat': '.0%', 'showgrid': True, 'gridcolor': 'rgba(128,128,128,0.15)', 'title': 'Weight'},
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+    return fig
+
+
 def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
     """
     Create a horizontal bar chart with color gradient using PALETTE colors.
@@ -202,6 +278,7 @@ def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
         y=sorted_weights.index,
         orientation='h',
         color=sorted_weights.values,
+        labels={'x': 'Weight', 'y': '', 'color': 'Weight'},
         # dark blue (low) -> light blue -> grey (high) - using PALETTE colors
         color_continuous_scale=[
             [0, DARK_BLUE],      # #172B4D
@@ -225,7 +302,8 @@ def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)'
     )
-    
+    fig.update_traces(hovertemplate='%{y}: %{x:.2%}<extra></extra>')
+
     return fig
 
 def plot_rolling_volatility(df_ret, window=126, annualized=261):

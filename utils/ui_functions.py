@@ -27,7 +27,12 @@ import io
 def get_portfolio_objective(portfolio_name):
     """get objective from portfolio name"""
     name_lower = portfolio_name.lower()
-    
+
+    # custom DIY portfolios are Syfe Select thematic products — satellite /
+    # growth-oriented, map to Wealth Growth
+    if name_lower in ('custom', 'custom usd'):
+        return 'Wealth Growth'
+
     if any(keyword in name_lower for keyword in ['china', 'disruptive', 'esg', 'clean', 'healthcare', 'equity', 'growth']):
         return 'Wealth Growth'
     if any(keyword in name_lower for keyword in ['income', 'enhance', 'reit', 'blackrock', 'monroe']):
@@ -563,9 +568,20 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             'Cash USD flexi': 'Capital Preservation'
         }
     
+        from utils.exposure import (
+            CUSTOM_PORTFOLIO_LABEL,
+            parse_custom_holdings,
+            expand_custom_in_weights_dict,
+            expand_custom_in_weights_series,
+        )
+
         client_holdings = {}
         total_nav = 0.0
-        
+        # Aggregated $NAV each underlying ETF gets from CUSTOM rows whose
+        # ``actual_holding_weightage`` we could parse. Used to expand the
+        # CUSTOM bucket into real ETFs for exposure / scoring.
+        custom_etf_nav = {}
+
         def safe_float(val, default=0.0):
             if pd.isna(val):
                 return default
@@ -602,7 +618,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             elif 'MONROE' in normalized_type:
                 ticker = 'Monroe Income Plus Fund'
             elif 'CUSTOM' in normalized_type:
-                ticker = 'Custom Usd'  # map to a recognizable name for alternatives
+                ticker = CUSTOM_PORTFOLIO_LABEL
             elif 'DOWNSIDE' in normalized_type:
                 ticker = 'Downside Protected'
             elif 'SILVER' in normalized_type or 'SILVERDALE' in normalized_type:
@@ -619,14 +635,36 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             if ticker:
                 client_holdings[ticker] = client_holdings.get(ticker, 0.0) + nav
                 total_nav += nav
-    
+
+                # capture ETF breakdown for CUSTOM rows when the
+                # actual_holding_weightage column is populated
+                if ticker == CUSTOM_PORTFOLIO_LABEL:
+                    parsed = parse_custom_holdings(row.get('actual_holding_weightage'))
+                    if parsed:
+                        for etf, pct in parsed.items():
+                            custom_etf_nav[etf] = custom_etf_nav.get(etf, 0.0) + nav * pct
+
+        # expose the parsed custom breakdown for downstream components (PDF
+        # export, analysis, pages/Client_PV.py goal flows)
+        st.session_state['custom_etf_nav'] = dict(custom_etf_nav)
+
         if total_nav > 0:
             # calculate weights
             client_weights = {k: v/total_nav for k, v in client_holdings.items()}
-        
+
+            # For exposures / scores we want the CUSTOM bucket expanded into
+            # its underlying ETFs whenever we have a parsed breakdown. This
+            # view is used for asset-class / concentration / diversification
+            # calculations; the original ``client_weights`` is preserved for
+            # the portfolio-level NAV pie.
+            expanded_client_weights = (
+                expand_custom_in_weights_dict(client_weights, custom_etf_nav)
+                if custom_etf_nav else dict(client_weights)
+            )
+
             # calculate asset allocation
             asset_allocation = {}
-            for ticker, weight in client_weights.items():
+            for ticker, weight in expanded_client_weights.items():
                 if ticker in df_asset_class.columns:
                     # get asset breakdown for this ticker
                     ticker_assets = df_asset_class[ticker]
@@ -639,12 +677,13 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         if aw > 0:
                             asset_allocation[asset] = asset_allocation.get(asset, 0.0) + (aw * weight)
                 else:
-                    # only CUSTOM is hardcoded as Specialized/alternatives (others should be in our Excel)
+                    # CUSTOM rows with no parsable actual_holding_weightage still
+                    # land in Specialized / alternatives as a conservative
+                    # fallback; all other unknowns go to Unclassified.
                     ticker_lower = ticker.lower()
-                    if 'custom' in ticker_lower:
+                    if ticker == CUSTOM_PORTFOLIO_LABEL or 'custom' in ticker_lower:
                         asset_allocation['Specialized / alternatives'] = asset_allocation.get('Specialized / alternatives', 0.0) + weight
                     else:
-                        # fallback for other unknown tickers
                         asset_allocation['Unclassified'] = asset_allocation.get('Unclassified', 0.0) + weight
 
             # calculate objective allocation
@@ -667,10 +706,9 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             # We need to re-calculate concentration here for the summary text
             top_holdings_str = ""
             if df_underlying is not None and not df_underlying.empty:
-                # calculate strict top 3 for summary
-                # re-use exposure logic
-                # create a series from client_weights
-                w_series = pd.Series({f"{k}_wgt": v for k, v in client_weights.items()})
+                # calculate strict top 3 for summary; use the expanded view so
+                # custom ETFs can contribute
+                w_series = pd.Series({f"{k}_wgt": v for k, v in expanded_client_weights.items()})
                 conc_exp = get_concentration_exposure(w_series, df_underlying, top_n=3)
                 if not conc_exp.empty:
                     top_3 = conc_exp.head(3)
@@ -692,7 +730,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
             # --- Section 1: Summary (Portfolio Type + Objective pies) ---
             st.markdown("### 1. Summary")
             st.markdown("#### Filter Exposures")
-            c_filter, c_dummy = st.columns([2, 1])
+            c_filter, c_toggle = st.columns([2, 1])
 
             with c_filter:
                 filter_mode = st.radio(
@@ -701,6 +739,21 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     horizontal=True,
                     key=f"{key_prefix}_filt_mode"
                 )
+
+            # Toggle: when a CUSTOM bucket exists in the selection, offer to
+            # replace it with its underlying ETFs in the NAV/Objective pies.
+            # Exposures always use the expanded view — this toggle only
+            # affects the two portfolio-level pies above.
+            break_custom_display = False
+            with c_toggle:
+                if custom_etf_nav:
+                    st.write("")
+                    break_custom_display = st.toggle(
+                        "Break custom portfolios into constituents",
+                        value=False,
+                        key=f"{key_prefix}_break_custom",
+                        help="Replace the CUSTOM slice in the NAV and Objective pie charts with its underlying ETF holdings (parsed from actual_holding_weightage).",
+                    )
 
             filtered_weights = {}
 
@@ -719,15 +772,28 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     if ticker in sel_port_types:
                         filtered_weights[f"{ticker}_wgt"] = weight
 
-            # Exclude ignored portfolios (e.g. Custom Usd) from all charts and scores
+            # build an expanded view of the filtered weights for exposures
+            # (sector / country / asset / concentration) so the CUSTOM bucket
+            # contributes its real underlying holdings rather than getting
+            # dropped by IGNORED_PORTFOLIOS
             from utils.diversification_score import IGNORED_PORTFOLIOS
-            filtered_weights = {k: v for k, v in filtered_weights.items()
-                                if k.replace('_wgt', '') not in IGNORED_PORTFOLIOS}
-
-            weights_series = pd.Series(filtered_weights)
-            total_wgt = weights_series.sum()
-            if total_wgt > 0:
-                weights_series = weights_series / total_wgt
+            exposure_filtered = {
+                k.replace('_wgt', ''): v for k, v in filtered_weights.items()
+            }
+            if custom_etf_nav:
+                exposure_filtered = expand_custom_in_weights_dict(exposure_filtered, custom_etf_nav)
+            # anything still in the ignored set (e.g. CUSTOM with no
+            # parseable breakdown) is dropped from exposure calcs
+            exposure_filtered = {
+                k: v for k, v in exposure_filtered.items()
+                if k not in IGNORED_PORTFOLIOS
+            }
+            exposure_series = pd.Series({f"{k}_wgt": v for k, v in exposure_filtered.items()})
+            exp_total = exposure_series.sum()
+            if exp_total > 0:
+                exposure_series = exposure_series / exp_total
+            # weights_series is the canonical view used by the exposure engine
+            weights_series = exposure_series
 
             if not weights_series.empty:
                 charts = get_exposure_charts(weights_series, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
@@ -739,10 +805,20 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 if 'asset_table' in charts:
                     st.session_state['asset_class_exposure'] = charts['asset_table']['Weight']
 
-                filtered_portfolio_weights = {k.replace("_wgt", ""): v for k, v in filtered_weights.items()}
+                # Portfolio-level pie weights: respect the toggle. With toggle
+                # off we show the original filtered portfolios (CUSTOM stays
+                # as a single slice). With toggle on we use the expanded view
+                # so the pie shows the underlying ETFs directly.
+                if break_custom_display and custom_etf_nav:
+                    filtered_portfolio_weights = dict(exposure_filtered)
+                else:
+                    filtered_portfolio_weights = {k.replace("_wgt", ""): v for k, v in filtered_weights.items()}
                 total_filtered = sum(filtered_portfolio_weights.values())
                 filtered_portfolio_weights_norm = {k: v / total_filtered for k, v in filtered_portfolio_weights.items()} if total_filtered > 0 else filtered_portfolio_weights
-                filtered_nav = sum(client_holdings.get(ticker, 0) for ticker in filtered_portfolio_weights.keys())
+                filtered_nav = sum(
+                    client_holdings.get(ticker, 0)
+                    for ticker in {k.replace("_wgt", "") for k in filtered_weights}
+                )
 
                 from styles.syfe_colors import get_portfolio_color, OBJECTIVE_COLORS
                 filtered_obj_allocation = {}
@@ -759,7 +835,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         labels=list(filtered_portfolio_weights_norm.keys()),
                         values=list(filtered_portfolio_weights_norm.values()),
                         hole=0.4, marker=dict(colors=port_colors),
-                        textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+                        textinfo='none', hovertemplate='%{label}: %{percent}<extra></extra>'
                     )])
                     fig_nav.update_layout(
                         title={'text': f'<b>NAV: ${filtered_nav:,.2f}</b>', 'font': {'size': 20}},
@@ -783,7 +859,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                         labels=list(filtered_obj_allocation.keys()),
                         values=list(filtered_obj_allocation.values()),
                         hole=0.4, marker=dict(colors=obj_colors),
-                        textinfo='none', hovertemplate='%{label}: %{value:.4f}<extra></extra>'
+                        textinfo='none', hovertemplate='%{label}: %{percent}<extra></extra>'
                     )])
                     fig_obj.update_layout(
                         title={'text': '<b>Objective Allocation</b>', 'font': {'size': 20}},
@@ -812,6 +888,34 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                 # --- Section 2: Diversification Score (left) + Exposure Tabs (right) ---
                 from utils.diversification_score import calculate_diversification_score, WEIGHTS
                 from styles.syfe_colors import DARK_BLUE, PRIMARY_BLUE, SECONDARY_BLUE, TERTIARY_BLUE
+                from utils.exposure import benchmark_exposure_series
+                from utils.plotting import plot_exposure_comparison
+
+                # Benchmark overlay — opt-in. Toggle first; when enabled a
+                # ticker dropdown appears and its sector/country/asset-class
+                # breakdown is rendered alongside the client series.
+                _available_bm_tickers = sorted(
+                    set(df_asset_class.columns) | set(df_sector.columns) | set(df_country.columns)
+                )
+                bm_col_tog, bm_col_pick = st.columns([1, 3])
+                with bm_col_tog:
+                    show_bm_overlay = st.toggle(
+                        "Show benchmark overlay",
+                        value=False,
+                        key=f"{key_prefix}_exposure_bm_toggle",
+                        help="Toggle on to overlay a benchmark's exposure onto the Asset Class / Geography / Sector charts.",
+                    )
+                _bm_effective = None
+                if show_bm_overlay and _available_bm_tickers:
+                    with bm_col_pick:
+                        _bm_default = 'ACWI' if 'ACWI' in _available_bm_tickers else _available_bm_tickers[0]
+                        benchmark_ticker = st.selectbox(
+                            "Benchmark ticker",
+                            _available_bm_tickers,
+                            index=_available_bm_tickers.index(_bm_default),
+                            key=f"{key_prefix}_exposure_bm",
+                        )
+                        _bm_effective = benchmark_ticker
 
                 # Use filtered weights for diversification score (renormalized)
                 div_weights = {k.replace('_wgt', ''): v for k, v in weights_series.items()}
@@ -868,13 +972,19 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     )
                     st.plotly_chart(fig_donut, use_container_width=True, key=f"{key_prefix}_div_donut")
 
-                    # ai insights
-                    insight_key = f"{key_prefix}_div_insights"
+                    # ai insights — cache per filter selection so changing the
+                    # filter regenerates insights for the current slice. The
+                    # weights passed to the LLM must match the filtered view.
+                    _filter_sig = (
+                        f"{filter_mode}|"
+                        f"{','.join(sorted(div_weights.keys()))}"
+                    )
+                    insight_key = f"{key_prefix}_div_insights__{hash(_filter_sig)}"
                     if insight_key not in st.session_state:
                         with st.spinner("Generating insights..."):
                             from utils.llm_helper import generate_diversification_insights
                             api_key = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
-                            st.session_state[insight_key] = generate_diversification_insights(api_key, div_result, client_weights)
+                            st.session_state[insight_key] = generate_diversification_insights(api_key, div_result, div_weights)
 
                     if st.session_state.get(insight_key):
                         CATEGORY_STYLES = {
@@ -926,29 +1036,53 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                                 f'<span style="font-size:12px;color:#888;margin-left:8px">Not applicable for this selection</span>'
                                 f'</div>', unsafe_allow_html=True)
 
+                    def _render_exposure_tab(tab_key, tab_title, df_bm_source, client_table, client_pie, brief):
+                        """Grouped bar: client vs (optional) benchmark. Falls back to the
+                        original pie when no data is present for the tab."""
+                        if client_table is None or client_table.empty:
+                            return
+                        client_series = client_table['Weight'] if 'Weight' in client_table.columns else client_table.iloc[:, 0]
+                        bm_series = benchmark_exposure_series(_bm_effective, df_bm_source) if _bm_effective else pd.Series(dtype=float)
+                        fig_cmp = plot_exposure_comparison(
+                            client_series,
+                            benchmark_series=bm_series,
+                            title=f"{tab_title} — Client vs {_bm_effective}" if _bm_effective else tab_title,
+                            benchmark_label=_bm_effective or 'Benchmark',
+                        )
+                        st.plotly_chart(fig_cmp, use_container_width=True, key=f"{key_prefix}_tab_{tab_key}_cmp")
+                        with st.expander("View Data"):
+                            disp = client_table.rename(columns={'Weight': 'Client'}).copy()
+                            if not bm_series.empty:
+                                disp['Benchmark'] = bm_series.reindex(disp.index, fill_value=0.0)
+                                disp['Δ (Client − Bm)'] = disp['Client'] - disp['Benchmark']
+                            fmt = {c: '{:.2%}' for c in disp.columns if c in ('Client', 'Benchmark', 'Δ (Client − Bm)')}
+                            st.dataframe(disp.style.format(fmt), use_container_width=True)
+                        if brief:
+                            st.caption(brief)
+
                     with tab_aa:
                         _render_tab_score(sub_scores[0], slice_colors[0])
-                        if 'asset_pie' in charts:
-                            st.plotly_chart(charts['asset_pie'], use_container_width=True, key=f"{key_prefix}_tab_asset_pie")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['asset_table'].style.format("{:.2%}"), use_container_width=True)
-                        st.caption(_get_asset_brief(div_result['asset_class']))
+                        _render_exposure_tab(
+                            'aa', 'Asset Class', df_asset_class,
+                            charts.get('asset_table'), charts.get('asset_pie'),
+                            _get_asset_brief(div_result['asset_class']),
+                        )
 
                     with tab_geo:
                         _render_tab_score(sub_scores[1], slice_colors[1])
-                        if 'country_pie' in charts:
-                            st.plotly_chart(charts['country_pie'], use_container_width=True, key=f"{key_prefix}_tab_country_pie")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['country_table'].style.format("{:.2%}"), use_container_width=True)
-                        st.caption(_get_geo_brief(div_result['geography']))
+                        _render_exposure_tab(
+                            'geo', 'Country', df_country,
+                            charts.get('country_table'), charts.get('country_pie'),
+                            _get_geo_brief(div_result['geography']),
+                        )
 
                     with tab_sec:
                         _render_tab_score(sub_scores[2], slice_colors[2])
-                        if 'sector_pie' in charts:
-                            st.plotly_chart(charts['sector_pie'], use_container_width=True, key=f"{key_prefix}_tab_sector_pie")
-                            with st.expander("View Data"):
-                                st.dataframe(charts['sector_table'].style.format("{:.2%}"), use_container_width=True)
-                        st.caption(_get_sector_brief(div_result['sector']))
+                        _render_exposure_tab(
+                            'sec', 'Sector', df_sector,
+                            charts.get('sector_table'), charts.get('sector_pie'),
+                            _get_sector_brief(div_result['sector']),
+                        )
 
                     with tab_conc:
                         _render_tab_score(sub_scores[3], slice_colors[3])

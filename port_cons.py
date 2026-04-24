@@ -1358,6 +1358,7 @@ def plot_pie_chart(series, title=None, width=1000, height=600, colors=None):
         'labels': series.index,
         'values': series,
         'textinfo': 'label+percent',
+        'hovertemplate': '%{label}: %{percent}<extra></extra>',
         'hole': 0.3
     }
 
@@ -1387,6 +1388,7 @@ def plot_pie_chart_topX(series, title, topX=10, width=1000, height=600, colors=N
             'labels': labels, 
             'values': values, 
             'textinfo': 'label+percent', 
+            'hovertemplate': '%{label}: %{percent}<extra></extra>',
             'hole': 0.3, 
             'textposition': 'outside',  
         }
