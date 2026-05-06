@@ -1010,7 +1010,7 @@ if st.session_state.builder_portfolio['results']:
         st.dataframe(w_rebal_display.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
 
     with tabs[1]:
-        yearly_ret = all_port_ret.resample('Y').apply(lambda x: (1+x).prod()-1)
+        yearly_ret = all_port_ret.resample('YE').apply(lambda x: (1+x).prod()-1)
         yearly_ret.index = yearly_ret.index.year
         st.dataframe(yearly_ret.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
 

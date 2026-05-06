@@ -89,7 +89,7 @@ def resample_returns_weekly(df_ret, day='wed'):
 
 def resample_returns_monthly(df_ret):
    
-    df_ret_resampled = df_ret.resample('M').apply(lambda x: (x + 1).prod() - 1)
+    df_ret_resampled = df_ret.resample('ME').apply(lambda x: (x + 1).prod() - 1)
     return df_ret_resampled
 
 def covar_ewma(returns, alpha):
@@ -1645,7 +1645,7 @@ def plot_return_risk_scatter_maxrange(returns_df, freq='daily', show_data=True, 
 
 def monthly_performance_table(portfolio_returns):
     """monthly returns as pivot table (year x month)"""
-    monthly_rets = portfolio_returns.resample('M').apply(lambda x: (x + 1).prod() - 1)
+    monthly_rets = portfolio_returns.resample('ME').apply(lambda x: (x + 1).prod() - 1)
     monthly_rets_table = monthly_rets.pivot_table(index=monthly_rets.index.year, columns=monthly_rets.index.month, values=monthly_rets.columns[0]) 
     monthly_rets_table.columns = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     return monthly_rets_table
@@ -1754,11 +1754,11 @@ def exposure_over_time(df_weight, df_exposure, start_date=None, end_date=None, f
     exposure_analysis = exposure_analysis.loc[:, (exposure_analysis != 0).any(axis=0)]
     
     if frequency == 'monthly':
-        exposure_analysis = exposure_analysis.resample('M').mean()
+        exposure_analysis = exposure_analysis.resample('ME').mean()
     elif frequency == 'quarterly':
-        exposure_analysis = exposure_analysis.resample('Q').mean()
+        exposure_analysis = exposure_analysis.resample('QE').mean()
     elif frequency == 'yearly':
-        exposure_analysis = exposure_analysis.resample('Y').mean()
+        exposure_analysis = exposure_analysis.resample('YE').mean()
 
     exposure_analysis = exposure_analysis[exposure_analysis.columns[exposure_analysis.iloc[0].argsort()[::-1]]]
     return exposure_analysis

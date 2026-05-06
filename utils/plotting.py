@@ -325,7 +325,7 @@ def plot_rolling_volatility(df_ret, window=126, annualized=261):
 
 def plot_monthly_heatmap(df_ret):
     """monthly returns heatmap"""
-    monthly_ret = df_ret.resample('M').apply(lambda x: (1 + x).prod() - 1)
+    monthly_ret = df_ret.resample('ME').apply(lambda x: (1 + x).prod() - 1)
     monthly_ret['Year'] = monthly_ret.index.year
     monthly_ret['Month'] = monthly_ret.index.month_name()
     col_name = df_ret.columns[0]

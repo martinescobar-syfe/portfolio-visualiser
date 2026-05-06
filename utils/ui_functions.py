@@ -2712,7 +2712,7 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         
         with tabs[1]: # calendar returns
             # simple resampling for now
-            yearly_ret = all_port_ret.resample('Y').apply(lambda x: (1+x).prod()-1)
+            yearly_ret = all_port_ret.resample('YE').apply(lambda x: (1+x).prod()-1)
             yearly_ret.index = yearly_ret.index.year
             st.dataframe(yearly_ret.style.background_gradient(cmap='Blues', axis=None).format("{:.2%}"), use_container_width=True)
         
