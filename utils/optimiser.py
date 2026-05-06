@@ -67,9 +67,9 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
     first_date = ret_data_all.iloc[0].name
     tickers= list(ret_data_all.columns)
 
-    weights = pd.DataFrame(0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
+    weights = pd.DataFrame(0.0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
-    reb_flag = pd.DataFrame(0, index=weights.index, columns=['reb_flag'])
+    reb_flag = pd.DataFrame(False, index=weights.index, columns=['reb_flag'])
     
     alpha = 1 - math.exp(math.log(0.5) / (halflife* annualized))
     span = (2 / alpha) - 1

@@ -214,9 +214,9 @@ def max_sharpe_rebal_wgt(returns_data, start_date, end_date, constraints_dict, s
     first_date = ret_data_all.iloc[0].name
     tickers = list(ret_data_all.columns)
 
-    weights = pd.DataFrame(0,index=ret_data_filtered.index, columns=ret_data_filtered.columns)
+    weights = pd.DataFrame(0.0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
-    reb_flag = pd.DataFrame(0,index=weights.index, columns=['reb_flag'])
+    reb_flag = pd.DataFrame(False, index=weights.index, columns=['reb_flag'])
     
     # exp covar params
     alpha = 1 - math.exp(math.log(0.5) / (halflife* annualized))
@@ -264,9 +264,9 @@ def min_vol_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shri
     first_date = ret_data_all.iloc[0].name
     tickers = list(ret_data_all.columns)
 
-    weights = pd.DataFrame(0,index=ret_data_filtered.index, columns=ret_data_filtered.columns)
+    weights = pd.DataFrame(0.0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
-    reb_flag = pd.DataFrame(0,index=weights.index, columns=['reb_flag'])
+    reb_flag = pd.DataFrame(False, index=weights.index, columns=['reb_flag'])
     
     alpha = 1 - math.exp(math.log(0.5) / (halflife* annualized))
     span = (2 / alpha) - 1
@@ -336,9 +336,9 @@ def min_vol(returns, cov_matrix, constraints):
 
 def equal_weight_rebal_wgt(returns_data, start_date, end_date, rebal_months=[4, 10]):
     ret_data_filtered = returns_data.loc[start_date:end_date]
-    weights = pd.DataFrame(0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
+    weights = pd.DataFrame(0.0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
-    reb_flag = pd.DataFrame(0, index=weights.index, columns=['reb_flag'])
+    reb_flag = pd.DataFrame(False, index=weights.index, columns=['reb_flag'])
     
     num_assets = len(weights.columns)
     equal_weight = 1.0 / num_assets
@@ -366,9 +366,9 @@ def fixed_weight_rebal_wgt(returns_data, start_date, end_date, fixed_weights, re
         raise ValueError("Fixed weights must sum to 1.")
     
     ret_data_filtered = returns_data.loc[start_date:end_date]
-    weights = pd.DataFrame(0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
+    weights = pd.DataFrame(0.0, index=ret_data_filtered.index, columns=ret_data_filtered.columns)
     weights.index = pd.to_datetime(weights.index, format='%Y%m%d')
-    reb_flag = pd.DataFrame(0, index=weights.index, columns=['reb_flag'])
+    reb_flag = pd.DataFrame(False, index=weights.index, columns=['reb_flag'])
 
     for i in range(0, len(ret_data_filtered)):
         # first datapoint or rebal date
@@ -424,7 +424,7 @@ def calc_port_perf(ret_data, weight, name_prefix=None, start_date=None, end_date
     
     returns_columns = df_bt.filter(like='_return')
     weights_columns = df_bt.filter(like='_wgt')
-    weighted_returns = pd.DataFrame(0, index=df_bt.index, columns=ret_data.columns)
+    weighted_returns = pd.DataFrame(0.0, index=df_bt.index, columns=ret_data.columns)
 
     for i in range(1, len(weighted_returns)):
         weighted_returns.iloc[i] = weights_columns.iloc[i-1].values * returns_columns.iloc[i].values
@@ -1075,7 +1075,7 @@ def forecast_portfolio(df_ret):
     port_name = df_ret.columns
     
     # init NAV
-    df_nav = pd.DataFrame(0, columns=df_ret.columns, index=df_ret.index)
+    df_nav = pd.DataFrame(0.0, columns=df_ret.columns, index=df_ret.index)
     df_nav.iloc[0] = 100
 
     for i in range(1, len(df_ret)):
