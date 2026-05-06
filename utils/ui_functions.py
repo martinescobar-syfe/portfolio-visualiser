@@ -2620,8 +2620,9 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 else:
                     return f"{val:.2%}"
             
-            # create formatted DataFrame
-            summary_formatted = summary.copy()
+            # Cast to object first so the loop can store formatted strings
+            # without tripping pandas 2.0's strict dtype guard on float columns.
+            summary_formatted = summary.astype(object).copy()
             for idx in summary.index:
                 for col in summary.columns:
                     summary_formatted.loc[idx, col] = format_summary_value(summary.loc[idx, col], idx)

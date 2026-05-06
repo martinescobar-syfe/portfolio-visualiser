@@ -981,7 +981,10 @@ if st.session_state.builder_portfolio['results']:
             if metric_name in ['Sharpe Ratio', 'Sortino Ratio', 'Information Ratio']: return f"{val:.2f}"
             else: return f"{val:.2%}"
         
-        summary_formatted = summary.copy()
+        # Build the formatted view on object dtype so string values can be
+        # written into what was previously a float64 column without tripping
+        # pandas 2.0's strict dtype guard.
+        summary_formatted = summary.astype(object).copy()
         for idx in summary.index:
             for col in summary.columns:
                 summary_formatted.loc[idx, col] = format_summary_value(summary.loc[idx, col], idx)
