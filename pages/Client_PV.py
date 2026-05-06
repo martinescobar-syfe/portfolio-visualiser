@@ -542,9 +542,11 @@ if should_render_dashboard:
                 port_rets = port_rets.drop(columns=_all_nan_cols)
                 available_ports = [p for p in available_ports if p not in _all_nan_cols]
 
-            # df_daily_ret columns can be a mix of percent-formatted and decimal-
-            # formatted series (e.g. "Equity Alpha" is already in decimal). Scale
-            # each column independently so everything is on the same decimal scale.
+            # df_daily_ret is now normalised to decimal units in
+            # load_static_data, so this is a defensive no-op for normal use.
+            # We keep it as a guard against any future caller passing raw
+            # percent-units data: a true daily return cannot exceed 100% in
+            # decimal form, so abs_max > 1 unambiguously indicates percent units.
             if not port_rets.empty:
                 _col_max = port_rets.abs().max()
                 _pct_cols = _col_max[_col_max > 1].index
@@ -768,8 +770,10 @@ if should_render_dashboard:
                     _bm = _bm.iloc[:, 0]
                 if _bm.index.duplicated().any():
                     _bm = _bm.groupby(level=0).first()
-                # Per-series percent-vs-decimal detection — same fix as the
-                # goal's portfolio returns above.
+                # df_daily_ret is normalised to decimal units in load_static_data;
+                # this guard is a defensive no-op for normal use, kept in case raw
+                # percent-units data is ever passed in (abs_max > 1 cannot happen
+                # for true decimal daily returns).
                 _bm_decimal = (_bm / 100) if _bm.abs().max() > 1 else _bm
                 bench_daily = _bm_decimal.reindex(goal_daily.index).fillna(0)
 

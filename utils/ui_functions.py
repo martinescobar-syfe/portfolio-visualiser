@@ -2346,15 +2346,19 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
         start_opt_date = earliest_start_date + timedelta(days=backtest_offset_days)
         
         try:
-            # determine which yield metric to use: YTM first, fallback to T12M
             has_ytm = 'YTM / est. yield' in df_fi_metrics.index
             has_t12m = 'T12M dividend yield' in df_fi_metrics.index
-            
+            has_dur = 'Duration' in df_fi_metrics.index
+
             if has_ytm or has_t12m:
-                # build a combined yield row: YTM first, fallback to T12M
-                combined_yield = pd.Series(0.0, index=df_fi_metrics.columns, name='Yield (combined)')
-                yield_source_map = {}
-                
+                # Build TWO yield rows with symmetric per-ticker fallback:
+                #   - Weighted Yield to Maturity: YTM first, T12M fallback
+                #   - Weighted 12M Dividend Yield: T12M first, YTM fallback
+                # The "weighted" prefix is meaningful because exposure_analysis_mixed
+                # re-normalises weights within the FI subset before averaging.
+                ytm_yield = pd.Series(0.0, index=df_fi_metrics.columns)
+                t12m_yield = pd.Series(0.0, index=df_fi_metrics.columns)
+
                 for col in df_fi_metrics.columns:
                     ytm_val = 0.0
                     t12m_val = 0.0
@@ -2366,16 +2370,18 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                         v = df_fi_metrics.loc['T12M dividend yield', col]
                         if pd.notna(v) and v != 0:
                             t12m_val = float(v)
-                    
-                    if ytm_val != 0:
-                        combined_yield[col] = ytm_val
-                        yield_source_map[col] = 'YTM'
-                    elif t12m_val != 0:
-                        combined_yield[col] = t12m_val
-                        yield_source_map[col] = 'T12M'
-                
-                fi_tickers = combined_yield[combined_yield != 0].index.tolist()
-                
+
+                    # YTM column: prefer YTM, silently fall back to T12M
+                    ytm_yield[col] = ytm_val if ytm_val != 0 else t12m_val
+                    # T12M column: prefer T12M, silently fall back to YTM
+                    t12m_yield[col] = t12m_val if t12m_val != 0 else ytm_val
+
+                # FI universe = any ticker that has either yield reported.
+                fi_tickers = [
+                    c for c in df_fi_metrics.columns
+                    if ytm_yield[c] != 0 or t12m_yield[c] != 0
+                ]
+
                 # exclude tickers that don't generate cash flow (aligned with cash flow exclusions)
                 FI_EXCLUDED_PATTERNS = [
                     'CASH', 'MMF', 'FLEXI', 'GUARANTEED',  # cash/MMF
@@ -2384,68 +2390,61 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                     'CUSTOM', 'STRATEGIC',  # custom portfolios
                 ]
                 fi_tickers = [t for t in fi_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
-            
+
                 if fi_tickers:
-                    # build a metrics df with Duration + combined yield for exposure_analysis_mixed
-                    fi_metrics_for_calc = pd.DataFrame(index=['Duration', 'YTM / est. yield'], columns=df_fi_metrics.columns, dtype=float)
-                    if 'Duration' in df_fi_metrics.index:
-                        fi_metrics_for_calc.loc['Duration'] = df_fi_metrics.loc['Duration'].astype(float)
+                    # Build the metric matrix consumed by exposure_analysis_mixed.
+                    # Row labels here become the row labels of the displayed table.
+                    fi_metrics_for_calc = pd.DataFrame(
+                        index=['Weighted Duration',
+                               'Weighted Yield to Maturity',
+                               'Weighted 12M Dividend Yield'],
+                        columns=df_fi_metrics.columns,
+                        dtype=float,
+                    )
+                    if has_dur:
+                        fi_metrics_for_calc.loc['Weighted Duration'] = df_fi_metrics.loc['Duration'].astype(float)
                     else:
-                        fi_metrics_for_calc.loc['Duration'] = 0.0
-                    # use combined yield (YTM first, T12M fallback) in the YTM row
-                    fi_metrics_for_calc.loc['YTM / est. yield'] = combined_yield
-                    
+                        fi_metrics_for_calc.loc['Weighted Duration'] = 0.0
+                    fi_metrics_for_calc.loc['Weighted Yield to Maturity'] = ytm_yield
+                    fi_metrics_for_calc.loc['Weighted 12M Dividend Yield'] = t12m_yield
+
                     port_fi_metrics = pd.DataFrame()
                     has_fi = False
-                
+
                     for p_name in results.keys():
                         w_df = results[p_name]['weights']
                         p_tickers = [c.replace('_wgt', '') for c in w_df.columns if c.endswith('_wgt')]
-                        # also filter portfolio tickers
                         p_tickers = [t for t in p_tickers if not any(p in t.upper() for p in FI_EXCLUDED_PATTERNS)]
                         common_fi = list(set(p_tickers).intersection(fi_tickers))
-                    
+
                         if common_fi:
                             has_fi = True
-                            ytm_duration_df = pc.exposure_analysis_mixed(
-                                w_df, 
-                                fi_metrics_for_calc, 
-                                fi_tickers, 
-                                latest_data=True, 
-                                start_date=start_opt_date, 
-                                end_date=end_date
+                            metrics_df = pc.exposure_analysis_mixed(
+                                w_df,
+                                fi_metrics_for_calc,
+                                fi_tickers,
+                                latest_data=True,
+                                start_date=start_opt_date,
+                                end_date=end_date,
                             )
-                            ytm_duration_df.columns = [p_name]
-                            
-                            # rename the yield row to show it uses combined logic
-                            ytm_duration_df = ytm_duration_df.rename(index={'YTM / est. yield': 'Yield (Estimated)'})
-                            
-                            # add credit rating
+                            metrics_df.columns = [p_name]
+
                             try:
                                 if 'Credit rating' in df_fi_metrics.index:
                                     cr = pc.calc_avg_credit_rating(
-                                        w_df, 
-                                        df_fi_metrics.loc[['Credit rating']], 
+                                        w_df,
+                                        df_fi_metrics.loc[['Credit rating']],
                                         latest_data=True,
-                                        start_date=start_opt_date, 
-                                        end_date=end_date
+                                        start_date=start_opt_date,
+                                        end_date=end_date,
                                     )
-                                    ytm_duration_df.loc['Credit rating', p_name] = cr
+                                    metrics_df.loc['Credit rating', p_name] = cr
                             except Exception:
-                                ytm_duration_df.loc['Credit rating', p_name] = 'N/A'
-                            
-                            port_fi_metrics = pd.concat([port_fi_metrics, ytm_duration_df], axis=1)
-                
+                                metrics_df.loc['Credit rating', p_name] = 'N/A'
+
+                            port_fi_metrics = pd.concat([port_fi_metrics, metrics_df], axis=1)
+
                     if has_fi:
-                        # format numeric rows, leave credit rating as-is
-                        def format_fi_value(val, row_name):
-                            if row_name == 'Credit rating':
-                                return val if pd.notna(val) else 'N/A'
-                            try:
-                                return f"{float(val):.2f}"
-                            except:
-                                return val
-                        
                         formatted_df = port_fi_metrics.T.copy()
                         st.dataframe(formatted_df, use_container_width=True)
                     else:
@@ -3248,14 +3247,12 @@ def render_analysis(df_sec_list, df_fi_metrics, df_fx, df_sector, df_country, df
                 help="Group cash flows by investment goal"
             )
             
-            # yield source preference
-            yield_preference = st.selectbox(
-                "Yield Source",
-                options=["YTM / Est. Yield", "T12M Dividend Yield"],
-                index=0,
-                key=f"{key_prefix}_yield_pref",
-                help="Select which yield metric to use for cash flow projections. Primary source is used first, falls back to the other if unavailable."
-            )
+            # Yield source is fixed to the trailing 12-month dividend yield
+            # (the realised income stream actually paid out by the underlying
+            # securities). YTM is retained only as a silent per-ticker
+            # fallback for instruments that don't report a T12M figure.
+            yield_preference = "T12M Dividend Yield"
+            st.caption("Cash flows are projected using the trailing 12-month dividend yield (with YTM as a per-ticker fallback when unavailable).")
         
             if not selected_portfolios:
                 st.warning("Please select at least one portfolio to display cash flows.")

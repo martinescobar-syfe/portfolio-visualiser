@@ -66,6 +66,14 @@ def load_static_data(data_path):
             # time-series alignment doesn't silently double-count.
             if df_daily_ret.index.duplicated().any():
                 df_daily_ret = df_daily_ret.groupby(level=0).first()
+            # The "Daily Return" sheet stores every column in PERCENT units
+            # (e.g. 1.5 means 1.5% daily return). Convert to decimals once at
+            # the source so every downstream consumer can treat values
+            # uniformly. Previously each consumer ran its own per-column
+            # `abs_max > 1` heuristic, which silently misclassified low-volatility
+            # tickers (e.g. BILL, AAA) as already-decimal and inflated their
+            # returns by 100x.
+            df_daily_ret = df_daily_ret.apply(pd.to_numeric, errors='coerce') / 100.0
         
         df_country = get_sheet('Country', index_col=0)
         df_sector = get_sheet('Sector', index_col=0)
@@ -114,10 +122,12 @@ def load_static_data(data_path):
              else:
                  df_sec_list = df_sec_list.reset_index().rename(columns={'index': 'Ticker'})
 
-        # fx data (we extract USDSGD and USDHKD from daily returns if available)
+        # fx data (we extract USDSGD and USDHKD from daily returns if available).
+        # df_daily_ret is already in DECIMAL units after the conversion above —
+        # no further scaling needed here.
         fx_cols = ['USDSGD', 'USDHKD']
         if all(col in df_daily_ret.columns for col in fx_cols):
-            df_fx = df_daily_ret[fx_cols] / 100
+            df_fx = df_daily_ret[fx_cols].copy()
         else:
              # fallback to static rates if fx data not in the excel
              df_fx = pd.DataFrame(index=df_daily_ret.index)
@@ -191,11 +201,12 @@ def download_data(data_source, start_date, end_date, all_tickers, bm_tickers, cu
             st.warning(f"Tickers missing from data: {missing_tickers}")
             
         ret_all = ret_all[available_tickers]
-        
-        # convert % to decimal — PER COLUMN, because some tickers (e.g. new
-        # Syfe products like "Equity Alpha") are stored as decimals in the
-        # sheet while the rest are stored as percentages. Applying a global
-        # "/ 100" would make the already-decimal columns 100× too small.
+
+        # df_daily_ret is now normalised to DECIMAL units inside
+        # load_static_data, so no per-column scaling is needed here. We keep a
+        # defensive guard in case a future caller passes a raw (percent-units)
+        # frame in directly: any column whose abs_max is > 1 cannot possibly
+        # be in decimal form (would imply >100% daily moves) and is rescaled.
         if not ret_all.empty:
             col_max = ret_all.abs().max()
             pct_cols = col_max[col_max > 1].index
