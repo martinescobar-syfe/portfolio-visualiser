@@ -24,6 +24,31 @@ pytest tests/ -m pinned             # only pinned regression tests
 
 The full suite takes ~10 s.
 
+## Automation
+
+Two layers of automation run the suite for you:
+
+1. **Local pre-push hook** — `scripts/pre-push` runs `pytest tests/` every time
+   you `git push`. The push aborts if anything fails. To install in a fresh
+   clone:
+
+   ```bash
+   ln -sf ../../scripts/pre-push .git/hooks/pre-push
+   chmod +x scripts/pre-push
+   ```
+
+   Bypass only if you really know what you're doing:
+   `git push --no-verify`.
+
+2. **GitHub Actions CI** — `.github/workflows/tests.yml` runs the same
+   `pytest tests/` on every push to `main` and on every pull request. This
+   one cannot be skipped — if it fails, the red ✗ shows up on the PR/commit
+   in GitHub.
+
+The local hook gives you fast feedback (~12 s) before you push so you don't
+spam CI with red builds; the CI guarantees no broken code lands on `main`
+even if someone forgets the hook.
+
 ## Files
 
 | File | What it covers |

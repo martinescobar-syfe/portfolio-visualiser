@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# Git pre-push hook: runs the full pytest suite locally before every `git push`.
+# If any test fails, the push is aborted.
+#
+# Install once per clone:
+#     ln -sf ../../scripts/pre-push .git/hooks/pre-push
+#     chmod +x scripts/pre-push
+#
+# Bypass in an emergency (use sparingly!):
+#     git push --no-verify
+#
+set -e
+
+# Always run from the repo root, regardless of how the hook was invoked
+# (direct script vs symlink from .git/hooks/pre-push).
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "🧪 pre-push: running pytest tests/ ..."
+
+# Run pytest. -q for less noise; pytest exit code propagates via `set -e`.
+if ! python -m pytest tests/ -q; then
+    echo ""
+    echo "❌ Tests failed — push aborted."
+    echo "   Fix the failures and try again, or use 'git push --no-verify' to skip"
+    echo "   (only use --no-verify if you really know what you're doing)."
+    exit 1
+fi
+
+echo "✅ All tests passed — proceeding with push."
