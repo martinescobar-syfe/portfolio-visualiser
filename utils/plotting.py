@@ -96,23 +96,40 @@ def plot_correlation_heatmap(df_ret):
     fig = apply_syfe_layout(fig, title="Correlation Matrix")
     return fig
 
-def plot_scatter_risk_return(df_ret, annualized=261, benchmark_ret=None):
+def plot_scatter_risk_return(df_ret, annualized=252, benchmark_ret=None):
+    """Plot annualised return vs annualised volatility.
+
+    "Annualised Return" is the **CAGR** computed from the cumulative
+    return over the available sample, matching the Key Summary table.
+    Earlier versions used arithmetic mean × ``annualized`` which made
+    the scatter inconsistent with the headline metrics.
+    """
+    def _cagr(x: pd.Series) -> float:
+        s = x.dropna()
+        if s.empty:
+            return float('nan')
+        cum = float((1 + s).prod() - 1)
+        n_years = len(s) / annualized if annualized else 1.0
+        if n_years <= 0:
+            return float('nan')
+        return (1 + cum) ** (1 / n_years) - 1
+
     summary = pd.DataFrame()
-    summary['Return'] = df_ret.mean() * annualized
-    summary['Risk'] = df_ret.std() * np.sqrt(annualized)
+    summary['Return'] = df_ret.apply(_cagr)
+    summary['Risk'] = df_ret.std(ddof=1) * np.sqrt(annualized)
     summary['Sharpe'] = summary['Return'] / summary['Risk']
     summary['Type'] = 'Portfolio'
-    
+
     if benchmark_ret is not None:
         if isinstance(benchmark_ret, pd.Series):
             benchmark_ret = benchmark_ret.to_frame()
-            
+
         bm_summary = pd.DataFrame()
-        bm_summary['Return'] = benchmark_ret.mean() * annualized
-        bm_summary['Risk'] = benchmark_ret.std() * np.sqrt(annualized)
+        bm_summary['Return'] = benchmark_ret.apply(_cagr)
+        bm_summary['Risk'] = benchmark_ret.std(ddof=1) * np.sqrt(annualized)
         bm_summary['Sharpe'] = bm_summary['Return'] / bm_summary['Risk']
         bm_summary['Type'] = 'Benchmark'
-        
+
         summary = pd.concat([summary, bm_summary])
     
     fig = px.scatter(
@@ -306,8 +323,8 @@ def plot_horizontal_bar_chart(weights_series, title="", show_color_scale=True):
 
     return fig
 
-def plot_rolling_volatility(df_ret, window=126, annualized=261):
-    rolling_vol = df_ret.rolling(window=window).std() * np.sqrt(annualized)
+def plot_rolling_volatility(df_ret, window=252, annualized=252):
+    rolling_vol = df_ret.rolling(window=window).std(ddof=1) * np.sqrt(annualized)
     
     fig = go.Figure()
     for i, col in enumerate(rolling_vol.columns):

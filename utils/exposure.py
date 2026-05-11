@@ -103,8 +103,8 @@ def expand_custom_in_weights_series(weights_series, custom_etf_breakdown, custom
     suffix_key = f"{custom_label}_wgt"
     if suffix_key not in weights_series.index:
         return weights_series
-    # unwrap suffix, expand, re-wrap
-    raw = {k.replace('_wgt', ''): float(v) for k, v in weights_series.items() if k.endswith('_wgt')}
+    # unwrap suffix (suffix-safe so unusual ticker names aren't corrupted), expand, re-wrap
+    raw = {k[:-4]: float(v) for k, v in weights_series.items() if isinstance(k, str) and k.endswith('_wgt')}
     expanded = expand_custom_in_weights_dict(raw, custom_etf_breakdown, custom_label=custom_label)
     return pd.Series({f"{k}_wgt": v for k, v in expanded.items()})
 
@@ -115,11 +115,11 @@ def calculate_exposure(weights, df_exposure):
     if isinstance(weights, pd.DataFrame):
         weights = weights.iloc[-1] # Take latest weights if DataFrame
     
-    # strip _wgt suffix, filter out non-ticker cols
+    # strip trailing _wgt suffix (suffix-safe), filter out non-ticker cols
     ticker_weights = {}
     for col in weights.index:
-        if col.endswith('_wgt'):
-            ticker = col.replace('_wgt', '')
+        if isinstance(col, str) and col.endswith('_wgt'):
+            ticker = col[:-4]
             # ensure weight is numeric
             try:
                 w = float(weights[col])
@@ -225,10 +225,10 @@ def get_concentration_exposure(weights, df_underlying, top_n=10):
     aggregated_holdings = {}
     
     for col_name in weights.index:
-        if not col_name.endswith('_wgt'):
+        if not (isinstance(col_name, str) and col_name.endswith('_wgt')):
             continue
-            
-        ticker = col_name.replace('_wgt', '')
+
+        ticker = col_name[:-4]
         
         try:
             weight_in_port = float(weights[col_name])

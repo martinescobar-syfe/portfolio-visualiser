@@ -43,22 +43,26 @@ def _risk_budget_objective_error(weights, args):
     portfolio_risk = _allocation_risk(weights, covariances)
     return portfolio_risk
 
-def min_vol(ret_data, covar_ann, constraints):
+def min_vol(ret_data, covar_ann, constraints, bounds=None):
     initial_weights = [1. / len(ret_data.columns)] * len(ret_data.columns)
-    
+    if bounds is None:
+        # default to long-only, no leverage; matches get_maxSharpe_wgt
+        bounds = [(0.0, 1.0)] * len(ret_data.columns)
+
     optimize_result = minimize(fun=_risk_budget_objective_error,
                                x0=initial_weights,
                                args=[covar_ann],
                                method='SLSQP',
                                constraints=constraints,
+                               bounds=bounds,
                                tol=1e-11,
                                options={'disp': False})
 
     weights = optimize_result.x
     return weights
 
-def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, method='max_sharpe', 
-                       shrink_covar=True, rebal_months=[1], annualized=261, halflife=3.5, 
+def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, method='max_sharpe',
+                       shrink_covar=True, rebal_months=[1], annualized=252, halflife=3.5,
                        fixed_weights=None, min_weight=0.0, max_weight=1.0):
     """optimization for max sharpe, min vol, block opt"""
     
@@ -112,7 +116,7 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
                     if method == 'max_sharpe':
                         w_opt = get_maxSharpe_wgt(mean_ret, covar_ann, rf=0, constraints=std_constraints, bounds=bounds)
                     elif method == 'min_vol':
-                        w_opt = min_vol(ret_free, covar_ann, constraints=std_constraints)
+                        w_opt = min_vol(ret_free, covar_ann, constraints=std_constraints, bounds=bounds)
                     elif method == 'equal_weight':
                         w_opt = np.array([1.0/len(free_tickers)] * len(free_tickers))
                     else:
@@ -144,17 +148,33 @@ def optimize_portfolio(returns_data, start_date, end_date, constraints_dict, met
     return weights
 
 def calc_port_perf(returns_data, weights_data, name_prefix='Port'):
-    """calc portfolio perf from returns and weights"""
+    """Calculate portfolio performance from returns and weights.
+
+    The standard convention `r_p,t = Σ_i w_{i,t-1} × r_{i,t}` is used —
+    today's portfolio return reflects yesterday's end-of-day weights, *not*
+    today's. Using same-day weights would introduce lookahead bias because
+    the weights themselves are derived from the day's returns (drift) or the
+    optimisation that runs on data through that day.
+    """
     weights_only = weights_data[[c for c in weights_data.columns if c.endswith('_wgt')]]
-    weights_only.columns = [c.replace('_wgt', '') for c in weights_only.columns]
-    
+    # suffix-safe strip so we don't corrupt unusual ticker names
+    weights_only.columns = [
+        c[:-4] if isinstance(c, str) and c.endswith('_wgt') else c
+        for c in weights_only.columns
+    ]
+
     common_idx = returns_data.index.intersection(weights_only.index)
     returns_data = returns_data.loc[common_idx]
     weights_only = weights_only.loc[common_idx]
-    
-    port_ret = (returns_data * weights_only).sum(axis=1)
+
+    # lag weights by one period to remove lookahead bias
+    weights_lagged = weights_only.shift(1)
+
+    port_ret = (returns_data * weights_lagged).sum(axis=1)
+    # first row will be NaN after the shift -> set to 0 so cumprod starts cleanly
+    port_ret.iloc[0] = 0.0
     port_ret.name = f'{name_prefix}_port_ret'
     port_cum_ret = (1 + port_ret).cumprod()
     port_cum_ret.name = f'{name_prefix}_cum_ret'
-    
+
     return pd.concat([port_ret, port_cum_ret], axis=1)

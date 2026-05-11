@@ -1,0 +1,275 @@
+---
+description: Architecture, calculations and conventions for the Portfolio Builder page (pages/Builder.py) and its analytics helpers
+alwaysApply: true
+---
+
+# Portfolio Builder — Module Reference
+
+Context dump for `pages/Builder.py` and the calculation helpers it depends
+on. Use this as the source of truth when reasoning about any number the
+Builder page displays. Update this file whenever a formula or convention
+changes.
+
+---
+
+## 1. Where things live
+
+| File | Purpose |
+|---|---|
+| `pages/Builder.py` | The Streamlit page itself — UI + orchestration. ~2.8 kloc. |
+| `port_cons.py` | Optimisation engines, FF5 regression, fixed-income analytics, exposure helpers. Legacy: also serves Advisory_Tool / Client_PV. |
+| `utils/optimiser.py` | `calc_port_perf` (lagged-weight portfolio return), `min_vol`, `create_constraints`. |
+| `utils/performance.py` | `calculate_metrics` (Key Summary), `calculate_relative_metrics` (TE / IR / rolling 12M excess). |
+| `utils/risk_analytics.py` | MCTR, MCTE, VaR/CVaR, drawdown episodes, capture ratios, Brinson-Fachler, efficient frontier. |
+| `utils/exposure.py` | `calculate_exposure` (sector/country aggregation), `get_concentration_exposure` (top-holdings look-through). |
+| `utils/plotting.py` | Plotly figures: cumulative returns, monthly heatmap, drawdowns, rolling vol, scatter, correlation. |
+| `utils/data_loader.py` | Excel ingest. **Returns are decimal, not percent**, after `/100` at line 76. |
+| `tests/` | pytest + hypothesis suite — see `tests/README.md`. Run `pytest tests/` to lock down all formulas. |
+
+---
+
+## 2. Top-level conventions
+
+- **Annualisation factor** is **252 trading days** everywhere in the Builder pipeline.
+  - `utils/performance.TRADING_DAYS_PER_YEAR = 252` is the constant; `port_cons.max_sharpe_rebal_wgt` / `min_vol_rebal_wgt` / `exp_covar` default `annualized=252`; `utils/plotting.plot_rolling_volatility` window=252, annualised=252.
+  - Legacy `261` references in `port_cons.py` (lines ~446, ~456, ~468, etc.) are out of the Builder's main path and serve other pages.
+- **Returns are decimals**: 0.05 = 5%. `utils/data_loader.py` divides the source Excel sheet by 100 once at ingest, so all downstream code can assume decimals.
+- **`_wgt` suffix stripping is suffix-safe everywhere in the Builder pipeline**: use `c[:-4] if isinstance(c, str) and c.endswith('_wgt') else c`, never `c.replace('_wgt', '')`.
+- **Standard daily portfolio return convention**: `r_p,t = Σ_i w_{i,t-1} × r_{i,t}` (lagged weights, no lookahead). The first day's return is set to 0.
+- **Sign conventions**: Max Drawdown ≤ 0; VaR / CVaR are **negative numbers** (losses); skew/kurtosis are pandas defaults (Fisher excess kurtosis).
+- **`ddof=1`** (sample std) for all volatility calculations.
+
+---
+
+## 3. Page layout (sections numbered as they appear)
+
+```
+1. Universe Selection         — tickers, dates, benchmark
+2. Portfolio Construction     — allocation method, rebal frequency, fixed weights
+   Constraints                — per-ETF, sector/country, tracking error
+   [Build & Optimise button]
+3. Analysis Results           — Key Summary tabs + historical weights + drift weights
+   3.1 Fixed Income Analytics — Weighted Duration / YTM / T12M Yield / Credit Rating
+4. Exposure Analysis          — top holdings, sector/country allocation
+5. Risk & Attribution Analytics (NEW)
+   5.0 Portfolio selector
+   5.1 Risk Contribution (MCTR)
+   5.2 Active Risk (MCTE)
+   5.3 VaR / CVaR
+   5.4 Drawdown Episodes
+   5.5 Up/Down Capture
+   5.6 Brinson Attribution (Sector / Country choice, time-averaged weights)
+   5.7 Efficient Frontier
+6. Factor Analysis (Fama-French 5)
+7. Individual Asset Factor Analysis
+8. Overlap Matrix
+9. Download Excel Report
+```
+
+---
+
+## 4. Optimisation pipeline (Section 2 → "Build & Optimise" button)
+
+1. **Download / load returns** via `utils.data_loader.download_data` for `selected_tickers ∪ bm_tickers`.
+2. **Blended benchmark**: `ret_bm = Σ_k bm_weights_k × bm_returns_k` (constant weights, daily rebalanced blend). For `num_bm == 1` it's a single column; otherwise weighted-sum.
+3. **Pick optimiser** from `allocation_method`:
+   - `Max Sharpe` → `pc.max_sharpe_rebal_wgt` minimises `−(μ′w − rf) / √(w′Σw)` with `rf=0`. Mean = simple historical mean × 252. Cov = Ledoit-Wolf shrinkage (×252) when `shrink_covar=True`, else EWMA cov × 252.
+   - `Min Volatility` → `pc.min_vol_rebal_wgt` minimises `√(w′Σw)`.
+   - `Equal Weight` → `pc.equal_weight_rebal_wgt`: `w_i = 1/N` at rebal, drift between.
+   - `Fixed Weight` → `pc.fixed_weight_rebal_wgt`: user-defined weights at rebal, drift between.
+4. **Rebalance trigger** (all four): `(weights.index[i].month in rebal_months) and (prev_month != month)) or i == 0`. Fires **once** per rebal month; year-end Dec→Jan handled correctly.
+5. **Drift between rebalances**: `w_t ∝ w_{t-1} × (1 + r_t)`, then `w_t /= w_t.sum()` so daily rows always sum to 1. `fillna(0)` on returns means missing data freezes the weight rather than crashing.
+6. **Constraints** built in `pages/Builder.py:~514–620`, plumbed via `utils/optimiser.create_constraints`:
+   - Per-ETF `Equal (=)` / `Max (<)` / `Min (>)` operators.
+   - Sector / Country `Σ_i w_i × exp_{bucket,i} ≤ / ≥ / = limit`.
+   - **Tracking Error**: `Var(r_p − r_b) = w′Σw − 2 w′Cov(r, r_b) + Var(r_b)`, then `TE = √(active_var × 252) ≤ TE_target`. Single blended benchmark is used for the cross term.
+7. **Realised perf** computed by `utils/optimiser.calc_port_perf(ret_all[valid_tickers], weights_df)` which uses **lagged weights** (`weights.shift(1)`) and zeros the first day to prevent lookahead.
+
+Stored in `st.session_state.builder_portfolio['results']` keyed by portfolio name with sub-dicts `{'weights', 'perf', ...}`.
+
+---
+
+## 5. Section 3 — Analysis Results
+
+### Key Summary (`utils.performance.calculate_metrics`)
+- `Cumulative Return = (1 + r).prod() − 1`
+- `Annualized Return = (1 + cum_ret)^(252/n) − 1` (CAGR)
+- `Annualized Volatility = std(r, ddof=1) × √252`
+- `Sharpe Ratio = (Annualized Return − rf) / Annualized Volatility`. Default `rf=0`; user can pass a non-zero `rf`.
+- `Sortino Ratio = (Annualized Return − rf) / DD`, where `DD = √mean(min(r − rf_daily, 0)²) × √252` (formal downside deviation, MAR == rf).
+- `Max Drawdown = min((NAV / cummax(NAV)) − 1)` ≤ 0.
+
+### Calendar / Monthly returns
+- `resample('YE'/'ME').apply((1+x).prod() − 1)` — geometric compounding inside each bucket.
+
+### Cumulative returns chart
+- `(1 + r).cumprod() − 1` for both portfolio and benchmark, plotted from the same start date.
+
+### Return / Risk scatter (`utils.plotting.plot_scatter_risk_return`)
+- y = **CAGR** (matches Key Summary, NOT arithmetic mean × 252). x = `std × √252`. Sharpe column = `Return / Risk` (rf=0).
+
+### Rolling volatility / drawdown
+- `r.rolling(252).std(ddof=1) × √252`; drawdown identical to Max DD construction.
+
+### Portfolio vs Benchmark (`utils.performance.calculate_relative_metrics`)
+- `Tracking Error = std(p − b, ddof=1) × √252`.
+- `Information Ratio = mean(p − b) × 252 / TE`.
+- `Rolling 12M Excess Return = exp(rolling_252(log1p(p))) / exp(rolling_252(log1p(b))) − 1` — **geometric**, not arithmetic sum.
+
+### Tracking Error tab
+- `(p − b).rolling(252).std(ddof=1) × √252`.
+
+### FX conversion (Display Currency selector at top of Section 3)
+- The selectbox currently exposes **USD / SGD** only. Code paths for HKD exist (Brinson + Excel exporter + Section 5 cov / frontier) but are unreachable from the UI today; safe to keep as forward-compat.
+- USD → SGD: `(1 + R_USD) × (1 + R_USDSGD) − 1` for each daily return.
+- HKD path uses USDHKD identically when ever surfaced via the selectbox.
+- **Two parallel return universes are kept in scope** through Section 3 / 5 / 6:
+  - `all_port_ret`, `ret_bm`, `cov_returns`, `ef_returns`, `rets_period` (Brinson), and `ret_all_for_risk_export` (Excel) — **all in display currency** so every "what's my realised portfolio doing" view reconciles.
+  - `all_port_ret_base_ccy`, `ret_bm_base_ccy` — **always USD**, used **only** for the Fama-French regression (Section 6 + Excel `Factor Exposures (FF5)` sheet) because FF factors are USD-denominated and the regression LHS must match the factor currency. Mixing currencies here gives spurious betas.
+- If you add a new analytics tab that uses asset-level returns and should match Section 3, copy the FX-overlay block (look for `_fx_col_risk` / `_fx_col_ef` / `fx_col_brin`).
+
+### Historical / Drift weights
+- "Historical Weights" shows `reb_flag == True` rows only.
+- "Show Drift Between Rebalance Dates" checkbox lets you pick a rebal period and view daily weights between two rebalance dates. They sum to 1 each day by construction.
+
+### 3.1 Fixed Income Analytics
+- Build YTM / T12M arrays with **symmetric per-ticker fallback** (use YTM else T12M; T12M else YTM).
+- Filter FI universe by exclusion list (`CASH`, `MMF`, `EQUITY`, `THEMATIC`, etc. — see `pages/Builder.py:~1528`).
+- Per portfolio: `pc.exposure_analysis_mixed(weights, fi_metrics_df, fi_tickers, latest_data=True, start_date, end_date)` — **renormalises** the FI subset of weights to sum to 1 then takes weighted-average of the metrics.
+- Credit Rating row: `pc.calc_avg_credit_rating` maps S&P labels to numeric ladder (AAA=1, …, D=22), weighted-averages over bonds-with-ratings, rounds, and reverse-maps. Lower numeric = higher quality.
+
+---
+
+## 6. Section 4 — Exposure Analysis
+
+- Top Holdings via look-through (`utils.exposure.get_concentration_exposure`): for each ETF with weight `w_i`, contribution = `w_i × pct_{i,h}/100` summed across ETFs that hold underlying `h`. Sum is ≤ portfolio weight (some ETFs lack underlying data).
+- Sector / Country (`utils.exposure.calculate_exposure`): `bucket_weight = Σ_i w_i × exp_{bucket,i}`, implemented as `df_exposure.dot(weights_aligned)`. Auto-detects 0-100 columns (sum > 1.5) and divides by 100. Missing tickers route to "Others"/asset-class fallback.
+- Benchmark comparison plots use the same helper for the benchmark weight Series.
+
+---
+
+## 7. Section 5 — Risk & Attribution Analytics (`utils.risk_analytics`)
+
+All helpers operate on **decimal** returns. Annualisation uses `TRADING_DAYS = 252`.
+
+### MCTR — `compute_risk_contributions(weights, cov)`
+Euler decomposition of portfolio volatility:
+- `σ_p = √(w' Σ w)`
+- `MCTR_i = (Σ w)_i / σ_p`
+- `CCTR_i = w_i × MCTR_i` (component contributions sum to `σ_p`)
+- `% of Total = CCTR_i / σ_p` (sums to 1)
+
+### MCTE — `compute_active_risk_contributions(w_p, w_b, cov)`
+Same idea on `w_active = w_p − w_b` over the **union** of tickers (zeros fill the rest):
+- `TE = √(w_active' Σ w_active)`
+- `CCTE_i = w_active_i × MCTE_i` (sums to TE)
+
+### VaR / CVaR — `compute_var_cvar(returns, confidence_levels, horizon_days, annualise)`
+- `α = 1 − CL`. Historical VaR = `quantile(α)`; Historical CVaR = mean of returns ≤ VaR.
+- Parametric Gaussian h-day: `VaR = μh + σ√h × z`, `CVaR = μh − σ√h × φ(z) / α`.
+- `annualise=True` ↔ `horizon_days = 252` (mutually exclusive overrides). The UI checkbox label and help text reflect this exactly.
+
+### Drawdown Episodes — `compute_drawdown_episodes(returns, top_n)`
+- NAV `(1+r).cumprod()`; drawdown `NAV/cummax − 1`.
+- Peak Date = the day before drawdown started. Trough Date = `idxmin` of the episode segment. Recovery Date = first day NAV regains the prior peak; `pd.NaT` + `Ongoing=True` if no recovery.
+- Top-N sorted by depth (most negative first).
+
+### Up/Down Capture — `compute_capture_ratios(p, b, frequency)`
+- Aggregate to monthly/quarterly/annual via geometric compound `(1+x).prod() − 1`. Empty-bucket rows are dropped (no fake 0% periods).
+- Up periods = `b > 0`, down = `b < 0`.
+- Up Capture = `geo_mean(p_up) / geo_mean(b_up)`.
+- Hit Ratio = `(p > b).mean()` (strict beat). Batting Average = `(p ≥ b).mean()` (≥ tie).
+
+### Brinson — `compute_brinson_attribution(w_p, w_b, period_returns, exposure_table)`
+**Brinson-Fachler** (allocation deducts benchmark total):
+- Bucket weight: `w_p_b = Σ_i w_p_i × exp_{i,b}` (decimal exposures).
+- Bucket return: `R_p_b = Σ_i (w_p_i × exp_{i,b} × r_i) / Σ_i (w_p_i × exp_{i,b})` — look-through approximation when only ETF-level returns are available.
+- `Allocation_b = (w_p_b − w_b_b) × (R_b_b − R_b_total)`
+- `Selection_b  =  w_b_b × (R_p_b − R_b_b)`
+- `Interaction_b = (w_p_b − w_b_b) × (R_p_b − R_b_b)`
+- `Σ_b (Alloc + Sel + Inter) = active_return` exactly (model active).
+- **The UI tab uses time-averaged daily weights** for the portfolio (mean of daily weights in the chosen period), shows realised port/bench/active cards alongside the Brinson decomposition with a **Residual** = realised_active − Brinson_active. The residual captures rebalancing/drift effects a single-period model can't represent.
+- Excel export uses the same time-averaged weights for consistency.
+- When the user picks a non-USD display currency, `rets_period` gets the same `(1+R_USD)(1+R_FX) − 1` overlay so realised cards and Brinson reconcile in the displayed currency.
+
+### Efficient Frontier — `compute_efficient_frontier(returns_df, n_points)`
+- Long-only, no leverage: `w ∈ [0, 1]`, `Σw = 1`.
+- Mean & cov annualised by ×252.
+- Sweep target return between `min_ret` (global min variance) and `max(μ)` (max single-asset return). For each target solve `min w'Σw` s.t. `μ'w = target`.
+- `evaluate_portfolio_on_frontier(weights, returns_df)` overlays the actual portfolio. UI tab uses the same `ef_returns` panel for the curve, asset dots, and the portfolio/benchmark dots so all three are mutually comparable.
+
+---
+
+## 8. Sections 6 / 7 — Factor Analysis
+
+### Fama-French data — `pages/Builder.py:load_ff_data`
+- File: `Data/F-F_Research_Data_5_Factors_2x3_daily.csv`. `skiprows=3`, `/100` (factors are in percent at source), `index = %Y%m%d`.
+
+### FF5 regression — `port_cons.factor_regression` / `factor_exposure_coefficient`
+- **Fixed** specification, never stepwise: `R_p − RF = α + β_Mkt(Mkt-RF) + β_SMB×SMB + β_HML×HML + β_RMW×RMW + β_CMA×CMA + ε`.
+- **Always** renames `Mkt-RF → Mkt` BEFORE building the Patsy formula (avoids hyphen-as-subtraction parsing).
+- Raises `ValueError` if any of the five factors is missing from the merged dataset (no silent factor drop).
+- Returns numeric DataFrame with columns `Alpha, Mkt, SMB, HML, RMW, CMA, R-Squared`. Estimation failure on a ticker → all-NaN row (visibly distinct from a real zero).
+- Section 6 displays the full numeric table plus a bar chart of the five betas only.
+
+### Section 7 individual asset
+- Static and rolling-12M (`RollingOLS`, window=252) fit on `(asset − RF)/scale` against `[SMB, HML, RMW, CMA]` plus either `Mkt-RF` or the user-selected benchmark's excess return.
+- The `scale_factor=100` heuristic that fires when `asset.std() > 1` is dead code given decimals are enforced upstream; harmless but can be removed.
+
+---
+
+## 9. Section 8 — Overlap Matrix
+
+- For each pair of tickers, get their underlying breakdowns (normalised so each sums to 1), then `overlap(i, j) = Σ_h min(b_i_h, b_j_h)` over the intersection of holdings.
+- Symmetric. Diagonal = 1. Off-diagonal in [0, 1].
+
+---
+
+## 10. Section 9 — Excel Exporter (`create_builder_excel`)
+
+Writes ~25 sheets grouped: **Inputs** (Configuration, Universe, Constraints, Benchmark Composition), **Weights** (Daily / Rebal / Turnover per portfolio), **Returns** (NAV, Daily, Cumulative, Monthly, Calendar), **Risk** (Key Summary, Rolling Vol, Drawdowns, Drawdown Top5, Correlation, Distribution Stats), **Vs Bench** (Benchmark NAV, Relative Metrics, Rolling Excess 12M *geometric*, Rolling TE 12M, Capture & Hit Ratios *geometric*), **Exposure** (Top Holdings, Sector/Country/Asset Class, Concentration HHI, Overlap, Fixed Income, Factor Exposures FF5), **Risk Analytics** (MCTR, MCTE, VaR CVaR, Brinson Sector/Country *time-averaged*, Efficient Frontier).
+
+Sheet names are de-duplicated through a closure-based `_sheet(name)` helper that appends `_1`, `_2`, … on collisions.
+
+---
+
+## 11. Common pitfalls
+
+- **Lookahead bias**: only `utils/optimiser.calc_port_perf` is currently used by Builder. Both `port_cons.calc_port_perf` (legacy, also lagged) and `utils/optimiser.calc_port_perf` use `weights.shift(1)`. **Never use same-day weights × same-day returns for backtest performance.**
+- **`_wgt` substring corruption**: always strip with `c[:-4] if c.endswith('_wgt')`. `replace('_wgt', '')` is unsafe for unusual ticker names.
+- **Annualisation drift**: stick to 252. Legacy 261 references in `port_cons.py` are stranded — don't reuse them in Builder code.
+- **FX overlay scope**: FX conversion is applied in Section 3 to `all_port_ret` and `ret_bm`, then re-applied to `rets_period` (Brinson UI tab) and `ret_all_for_risk_export` (Excel exporter) so all asset-level analytics reconcile in the displayed currency. **If you add another analytics tab that uses asset-level returns, apply the FX overlay too.**
+- **Distribution Stats vs Key Summary** (Excel): both now use **CAGR** as "Annualized Return" so the workbook is internally consistent. Don't switch to `mean × 252` — the `mean × 252` form drifts from CAGR for any non-trivial sample.
+- **Brinson "Port Return" ≠ realised**: the bucket-aggregated active return is a single-period model on time-averaged weights. The realised cards (from `all_port_ret`) are the ground truth. Always show the Residual.
+- **Frontier dot ≠ realised**: it's `latest weights × annualised mean / cov` — a snapshot expectation, not the backtest cumulative.
+- **Single-ETF benchmark Brinson degenerates**: when `num_bm == 1`, every bucket's benchmark return equals the ETF's total return, so Allocation collapses to ~0 and Selection dominates. This is an inherent limitation of look-through Brinson, not a bug.
+- **Drift formulas guard divide-by-zero**: all four optimisers in `port_cons.py` now check `if weights_sum > 0` before normalising — prevents NaN propagation when an entire row's drifted weights collapse (e.g. catastrophic data quality issue).
+
+---
+
+## 12. Test suite
+
+- `pytest tests/` (~20 s) runs **98 tests** + 2 regen helpers (skipped by default).
+- Coverage:
+  - **Helper-level**: `test_performance.py`, `test_risk_analytics.py`, `test_optimiser.py`, `test_factor.py`, `test_exposure.py`, `test_fi_analytics.py`, `test_fx_overlay.py`.
+  - **Pinned regression**: `test_pinned_reference.py` (helper-level numerics) + `test_full_pipeline.py` (every UI-section number).
+  - **Cross-section reconciliation**: in `test_full_pipeline.py` — Section 3 Max DD must equal Section 5 Drawdown Top-1; Cumulative Return must equal NAV-1; Excel `Distribution Stats Annualized Return` must equal Key Summary CAGR (NOT arithmetic mean × 252).
+  - **Excel end-to-end**: `test_excel_exporter.py` builds the workbook in-process and checks every key sheet's math vs the source-of-truth formulas.
+- Property tests use `hypothesis` for invariants (MCTR sums, VaR ordering, Sortino undefined when no negatives, etc.).
+- After any intentional formula change run **both** regen helpers:
+  - `PINNED_REGEN=1 pytest tests/test_pinned_reference.py::test_print_for_regen -s`
+  - `PINNED_REGEN=1 pytest tests/test_full_pipeline.py::test_print_for_regen -s`
+  - paste the printed JSON into the `PINNED` / `EXPECTED` dicts.
+- See `tests/README.md` for the full workflow.
+
+**UI verifiability**: Section 3 (Key Summary), Section 5 (MCTR, VaR, Brinson), Section 6 (FF5), and Section 8 (Overlap) all have a `📐 Show calculation` expander that prints the exact formula, the inputs in scope, and the test name that locks the value in. Use these when reconciling a number with an external source (Excel, Bloomberg).
+
+---
+
+## 13. When you change a formula
+
+1. Update the implementation.
+2. Run `python -c "import ast; ast.parse(open('pages/Builder.py').read())"` — catches indentation drift `ReadLints` misses.
+3. Run `pytest tests/` — fix any regressions intentionally; otherwise revert.
+4. If a pinned test fails on purpose, regen the pinned numbers and **commit the formula change and the new pinned values together**.
+5. Update the relevant section of this `.mdc` file so the next chat sees the new convention.

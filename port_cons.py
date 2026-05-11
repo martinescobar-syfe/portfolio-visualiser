@@ -103,7 +103,7 @@ def covar_ewma(returns, alpha):
     out.columns = returns.columns.tolist()
     return out
 
-def exp_covar(returns, halflife, annualized=261):
+def exp_covar(returns, halflife, annualized=252):
     alpha = 1 - math.exp(math.log(0.5) / (halflife* annualized))
     span = (2 / alpha) - 1
     exp_cov_matrix = returns.ewm(span=span).cov(pairwise=True).iloc[-len(returns.columns):]
@@ -207,7 +207,7 @@ def get_maxSharpe_wgt(ret, covar, rf, constraints):
     return optimized_weights
 
 
-def max_sharpe_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shrink_covar=True, rebal_months=[4,10], annualized=261, halflife=3.5):
+def max_sharpe_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shrink_covar=True, rebal_months=[4,10], annualized=252, halflife=3.5):
     
     ret_data_all = returns_data.loc[:end_date]
     ret_data_filtered = returns_data.loc[start_date:end_date]
@@ -250,14 +250,15 @@ def max_sharpe_rebal_wgt(returns_data, start_date, end_date, constraints_dict, s
         else:
             weights.iloc[i] = weights.iloc[i-1] * (1+ ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
-            weights.iloc[i] /= weights_sum
+            if weights_sum > 0:
+                weights.iloc[i] /= weights_sum
             reb_flag.iloc[i] = False
 
     weights = weights.rename(columns={c: c+'_wgt' for c in weights.columns})
     weights = pd.concat([reb_flag, weights], axis=1)
     return weights
 
-def min_vol_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shrink_covar=True, rebal_months=[4,10], annualized=261, halflife=3.5):
+def min_vol_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shrink_covar=True, rebal_months=[4,10], annualized=252, halflife=3.5):
     
     ret_data_all = returns_data.loc[:end_date]
     ret_data_filtered = returns_data.loc[start_date:end_date]
@@ -296,7 +297,8 @@ def min_vol_rebal_wgt(returns_data, start_date, end_date, constraints_dict, shri
         else:
             weights.iloc[i] = weights.iloc[i-1] * (1+ ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
-            weights.iloc[i] /= weights_sum
+            if weights_sum > 0:
+                weights.iloc[i] /= weights_sum
             reb_flag.iloc[i] = False
 
     weights = weights.rename(columns={c: c+'_wgt' for c in weights.columns})
@@ -352,7 +354,8 @@ def equal_weight_rebal_wgt(returns_data, start_date, end_date, rebal_months=[4, 
             # off rebal - let weights drift
             weights.iloc[i] = weights.iloc[i-1] * (1 + ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
-            weights.iloc[i] /= weights_sum
+            if weights_sum > 0:
+                weights.iloc[i] /= weights_sum
             reb_flag.iloc[i] = False
 
     weights = weights.rename(columns={c: c + '_wgt' for c in weights.columns})
@@ -380,7 +383,8 @@ def fixed_weight_rebal_wgt(returns_data, start_date, end_date, fixed_weights, re
             # off rebal - drift with returns
             weights.iloc[i] = weights.iloc[i-1] * (1 + ret_data_filtered.iloc[i].fillna(0))
             weights_sum = weights.iloc[i].sum()
-            weights.iloc[i] /= weights_sum
+            if weights_sum > 0:
+                weights.iloc[i] /= weights_sum
             reb_flag.iloc[i] = False
 
     # add _wgt suffix
@@ -825,43 +829,85 @@ def forward_regression(X, y, initial_list=[], threshold_in=0.05, threshold_out=0
     return included
 
 def factor_regression(portfolio_returns, factors_data, threshold_in=0.05, start_date=None, end_date=None):
-    
+    """Fit the **fixed** Fama-French 5-factor model:
+
+        R_p,t - RF_t = alpha + b_Mkt × (Mkt-RF)_t
+                              + b_SMB × SMB_t
+                              + b_HML × HML_t
+                              + b_RMW × RMW_t
+                              + b_CMA × CMA_t + e_t
+
+    All five factors are always included (no stepwise pruning) so that
+    reported betas are economically interpretable as standard FF5 loadings.
+    Returns the fitted ``statsmodels`` OLS results object so callers can
+    pull params, t-stats, R², etc.
+
+    The legacy ``threshold_in`` argument is accepted for backward
+    compatibility but ignored.
+    """
     if portfolio_returns.index.dtype == 'int64':
         portfolio_returns.index = pd.to_datetime(portfolio_returns.index, format='%Y-%m-%d')
+
     data = pd.concat([portfolio_returns, factors_data], axis=1).dropna()
-    
-    try:
-        data['excess_ret'] = portfolio_returns - data['RF']
-    except KeyError:
-        data['excess_ret'] = portfolio_returns
-    
-    start_index = data.index[0]
-    end_index = data.index[-1]
-    
-    col_factors = [col for col in factors_data.columns if col not in ['excess_ret', 'RF']]
-    factors = forward_regression(factors_data.loc[start_index:end_index][col_factors], data.loc[start_index:end_index]['excess_ret'], threshold_in=threshold_in)
-    
-    data.rename(columns={'Mkt-RF': 'Mkt'}, inplace=True)
-    
-    # fallback to market if no factor passes threshold
-    if not factors:
-        factors = ['Mkt']
-        
-    formula = 'excess_ret ~ ' + ' + '.join(factors)
-    # print(formula)
-    five_factor_model = smf.ols(formula=formula, data=data).fit()
-    return five_factor_model
+    # rename Mkt-RF -> Mkt to avoid Patsy parsing the hyphen as subtraction
+    data = data.rename(columns={'Mkt-RF': 'Mkt'})
+
+    if 'RF' in data.columns:
+        excess = portfolio_returns - data['RF']
+    else:
+        excess = portfolio_returns
+    data['excess_ret'] = excess
+
+    # always include the standard five factors. Fail loudly if any are missing
+    # so callers see a real estimation problem rather than a silently-truncated
+    # model (a 4-factor fit reported as "FF5" would be misleading).
+    required_factors = ['Mkt', 'SMB', 'HML', 'RMW', 'CMA']
+    missing = [c for c in required_factors if c not in data.columns]
+    if missing:
+        raise ValueError(
+            f"Fama-French data is missing required factor column(s): {missing}. "
+            "All five factors (Mkt, SMB, HML, RMW, CMA) are required for the "
+            "fixed FF5 specification."
+        )
+
+    formula = 'excess_ret ~ ' + ' + '.join(required_factors)
+    return smf.ols(formula=formula, data=data).fit()
+
 
 def factor_exposure_coefficient(ret_data, factor_data, tickers, start_date=None, end_date=None):
-    df_params = pd.DataFrame()
+    """Compute fixed-FF5 betas (and intercept) per ticker.
+
+    Returns a numeric DataFrame indexed by ticker. Columns: ``Alpha``
+    (intercept, daily), ``Mkt``, ``SMB``, ``HML``, ``RMW``, ``CMA`` plus
+    ``R-Squared``. Missing factors (if input file lacks any) come back as 0.
+    """
+    rows = []
+    expected_cols = ['Alpha', 'Mkt', 'SMB', 'HML', 'RMW', 'CMA', 'R-Squared']
     for ticker in tickers:
-        portfolio_regression = factor_regression(ret_data[ticker], factor_data)
-        temp = pd.DataFrame([portfolio_regression.params], index=[ticker])
-        df_params = pd.concat([df_params, temp])
-    df_params = df_params.drop(columns=['Intercept'])
-    df_params.fillna(0, inplace=True)
-    df_params = df_params.map('{:.2f}'.format)
-    return df_params
+        try:
+            fit = factor_regression(ret_data[ticker], factor_data)
+        except Exception:
+            # surface estimation failure as NaN so callers can spot the
+            # difference between "fit succeeded but β happened to be zero"
+            # and "fit failed entirely". Filling with zeros masked the latter.
+            rows.append(pd.Series({c: float('nan') for c in expected_cols}, name=ticker))
+            continue
+
+        params = fit.params.copy()
+        # statsmodels OLS via formula uses 'Intercept' for the constant
+        if 'Intercept' in params.index:
+            params = params.rename({'Intercept': 'Alpha'})
+
+        params['R-Squared'] = float(fit.rsquared)
+        params.name = ticker
+        rows.append(params)
+
+    df_params = pd.concat(rows, axis=1).T if rows else pd.DataFrame()
+    # Force a stable column order if the standard factors are present
+    ordered = [c for c in expected_cols if c in df_params.columns]
+    extras = [c for c in df_params.columns if c not in ordered]
+    df_params = df_params[ordered + extras]
+    return df_params.astype(float)
 
 
 def performance_summary_constituents(returns, start_date=None, end_date=None, frequency='daily'):
