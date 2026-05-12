@@ -78,3 +78,33 @@ def test_calc_avg_credit_rating_skip_zero_weights() -> None:
     )
     # (1 + 3) / 2 = 2.0 → "AA+"
     assert result == "AA+"
+
+
+def test_fi_metrics_table_can_hold_numeric_and_string_rows() -> None:
+    """Regression test: when the Builder appends a string credit rating row
+    onto the float64 metrics_df produced by exposure_analysis_mixed, pandas
+    2.0+ rejects the assignment with `Invalid value 'A+' for dtype 'float64'`
+    unless we cast to object first. Lock that in.
+    """
+    weights = pd.DataFrame(
+        {"BOND_AAA_wgt": [0.5], "BOND_BBB_wgt": [0.5]},
+        index=pd.to_datetime(["2024-01-01"]),
+    )
+    weights["reb_flag"] = True
+
+    metrics = pd.DataFrame(
+        {"BOND_AAA": [5.0], "BOND_BBB": [3.0]},
+        index=["Duration"],
+    )
+    out = exposure_analysis_mixed(
+        weights, metrics, ["BOND_AAA", "BOND_BBB"],
+        latest_data=True, start_date=weights.index[0], end_date=weights.index[0],
+    )
+    out.columns = ["TestPort"]
+
+    # Without the cast this raises; with the cast it succeeds.
+    out = out.astype(object)
+    out.loc["Credit rating", "TestPort"] = "A+"
+
+    assert out.loc["Duration", "TestPort"] == 4.0
+    assert out.loc["Credit rating", "TestPort"] == "A+"

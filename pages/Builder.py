@@ -1582,6 +1582,11 @@ if st.session_state.builder_portfolio['results']:
                         )
                         metrics_df.columns = [p_name_fi]
 
+                        # cast to object dtype so the string credit rating can
+                        # share a column with float duration / yields without
+                        # tripping pandas 2.0's strict dtype guard
+                        metrics_df = metrics_df.astype(object)
+
                         try:
                             if 'Credit rating' in df_fi_metrics.index:
                                 cr = pc.calc_avg_credit_rating(
@@ -2972,6 +2977,10 @@ single-bucket ETFs.
                             m_df = pc.exposure_analysis_mixed(w_p, fi_calc, fi_t, latest_data=True,
                                                               start_date=fi_offset, end_date=end_date)
                             m_df.columns = [p_n]
+                            # see Section 3.1 in the UI: cast to object so the
+                            # string credit rating can sit in the same column
+                            # as float duration / yield numbers
+                            m_df = m_df.astype(object)
                             try:
                                 if 'Credit rating' in df_fi_metrics.index:
                                     m_df.loc['Credit rating', p_n] = pc.calc_avg_credit_rating(
