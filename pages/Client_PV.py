@@ -1,3 +1,37 @@
+"""
+Client Portfolio Visualizer (Client_PV) — Streamlit page.
+
+End-to-end client dashboard used by advisors. The page is responsible
+for three interrelated workflows:
+
+1. **Ingest current holdings.** Either by CSV upload or by Metabase
+   lookup. Raw rows get normalised into a ``{portfolio: nav}`` mapping
+   in :func:`process_client_data`, and any CUSTOM portfolios are
+   expanded into their underlying ETFs so downstream exposure /
+   diversification calls reflect real holdings.
+
+2. **Slice & dice client exposures.** Once holdings are loaded, the
+   "Client Exposures" section drives the asset-class / geography /
+   sector / concentration breakdowns via :mod:`utils.exposure` and the
+   diversification scorer in :mod:`utils.diversification_score`.
+   These power the donut + per-tab charts at portfolio level so an
+   advisor can quickly see how the book is distributed.
+
+3. **Plan goals.** Advisors can layer goals (Growth or Income) on top
+   of the holdings. Each goal mixes "existing" portfolios (re-using
+   client NAV) with "new" portfolios funded by lump-sum contributions
+   plus optional monthly top-ups. The goal detail view then renders:
+   - Monte-Carlo growth forecast or yield-based income forecast.
+   - Backtested performance (cumulative returns, calendar heatmap,
+     drawdowns) optionally vs. a user-chosen benchmark.
+   - Diversification scoring + exposure tabs scoped to the goal's mix.
+   - For income goals: FI metrics table and monthly cash-flow chart.
+
+All the heavy aggregation lives in ``utils/`` (exposure, cash_flow,
+diversification_score, performance); this file orchestrates layout
+and session state.
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,13 +42,24 @@ import math
 import re
 import threading
 from scipy.stats import norm as scipy_norm
+# ``add_script_run_ctx`` is needed so background threads (e.g. LLM
+# insight fetching) can write to ``st.session_state`` without raising.
+# Its module path has moved across Streamlit versions, so we try both
+# the new and old locations and fall back to a no-op if neither
+# resolves — the worker thread will still run, it just won't be able
+# to write into session state on older builds.
 try:
     from streamlit.runtime.scriptrunner import add_script_run_ctx
 except Exception:
     try:
         from streamlit.runtime.scriptrunner_utils.script_run_context import add_script_run_ctx
     except Exception:
-        def add_script_run_ctx(_t):  # fallback no-op
+        def add_script_run_ctx(_t):
+            # No-op fallback when Streamlit doesn't expose the
+            # script-run-context API. Background threads still spawn
+            # and run, they just can't write into ``st.session_state``
+            # without raising; the insights fragment handles that by
+            # falling back to "Generating insights…" indefinitely.
             return
 
 from utils.data_loader import load_static_data, get_data_path
@@ -73,8 +118,16 @@ h1,h2,h3 {color:#172B4D;font-weight:700;}
 """, unsafe_allow_html=True)
 
 # ── constants ────────────────────────────────────────────────
+# Gemini API key consumed by the diversification-insights LLM call.
 API_KEY = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
 
+# Raw client-data feeds use snake_case enum-style codes for portfolio
+# type (e.g. ``GLOBAL_EQUITY_100``, ``CORE_GROWTH``, ``CASH_PLUS_SGD``)
+# that don't match the human-readable names used everywhere else in the
+# app. This mapping translates from the feed's code to the canonical
+# display name that the rest of the dashboard (and the diversification
+# / exposure modules) keys off. Multiple aliases per portfolio cover
+# the common variants seen across CSV exports and the Metabase view.
 CLIENT_PORTFOLIO_MAPPING = {
     'GLOBAL_EQUITY_100': 'Core Equity100', 'GLOBAL_EQUITY': 'Core Equity100',
     'CORE_EQUITY100': 'Core Equity100', 'CORE_EQUITY_100': 'Core Equity100',
@@ -108,6 +161,9 @@ CLIENT_PORTFOLIO_MAPPING = {
     'SRS_EQUITY_100': 'SRS Equity100',
 }
 
+# Canonical, ordered list of every Syfe managed portfolio offered
+# today. Drives the "new portfolios" picker in the goal form and the
+# benchmark dropdown (Syfe portfolios show first, then ETFs).
 ALL_MANAGED_PORTFOLIOS = [
     'Core Equity100', 'Core Growth', 'Core Balanced', 'Core Defensive',
     'Disruptive Technology', 'ESG & Clean Energy', 'Healthcare Innovation', 'China Growth',
@@ -119,6 +175,12 @@ ALL_MANAGED_PORTFOLIOS = [
     'SRS Equity100', 'SRS Income Enhance', 'SRS Income Preserve', 'SRS Cash SGD flexi',
 ]
 
+# Forward-looking assumptions per managed portfolio used by the goal
+# forecasts. ``ret`` = expected total annual return, ``vol`` = expected
+# annual volatility, ``yield`` = expected distributable income yield.
+# These are *capital-market assumptions*, not backtested numbers —
+# they're the inputs to the Monte-Carlo growth projection and the
+# income forecast's NAV accretion + payout calculation.
 PORTFOLIO_ESTIMATES = {
     'Core Equity100':              {'ret': 0.10, 'vol': 0.15, 'yield': 0.015},
     'SRS Equity100':               {'ret': 0.10, 'vol': 0.15, 'yield': 0.015},
@@ -144,11 +206,22 @@ PORTFOLIO_ESTIMATES = {
     'Cash SGD guaranteed':         {'ret': 0.030,'vol': 0.001,'yield': 0.030},
     'SRS Cash SGD flexi':          {'ret': 0.035,'vol': 0.005,'yield': 0.035},
 }
+# Fallback assumptions for any portfolio not present in
+# ``PORTFOLIO_ESTIMATES`` — roughly a balanced 60/40 profile.
 _DEFAULT_EST = {'ret': 0.06, 'vol': 0.12, 'yield': 0.03}
 
 
 # ── helpers ──────────────────────────────────────────────────
 def _norm_type(p_type):
+    """Strip lifecycle suffixes off a raw portfolio-type code.
+
+    The feed appends status markers like ``_ACTIVE``, ``_ACTIVE_NEW``,
+    ``_INACTIVE`` etc. to the underlying portfolio code (e.g.
+    ``CORE_GROWTH_ACTIVE_NEW``). For mapping into
+    :data:`CLIENT_PORTFOLIO_MAPPING` we only care about the base code,
+    so this strips the suffix and uppercases the result. Non-string
+    inputs return ``None`` so the caller can skip the row.
+    """
     if not isinstance(p_type, str):
         return None
     n = p_type.upper().strip()
@@ -159,6 +232,13 @@ def _norm_type(p_type):
 
 
 def _safe_float(val, default=0.0):
+    """Best-effort float coercion that survives messy CSV data.
+
+    Handles NaN, comma-thousands separators ("1,234.50") and arbitrary
+    strings. Returns ``default`` on any failure so a single garbage cell
+    never blows up the whole NAV aggregation in
+    :func:`process_client_data`.
+    """
     if pd.isna(val):
         return default
     try:
@@ -168,6 +248,17 @@ def _safe_float(val, default=0.0):
 
 
 def _get_est(name):
+    """Return capital-market assumptions for a portfolio name.
+
+    Lookup order:
+        1. Exact match in :data:`PORTFOLIO_ESTIMATES`.
+        2. Silverdale variants (the family has many vintages, all share
+           the same CMA), matched by substring.
+        3. :data:`_DEFAULT_EST` as a balanced-profile fallback.
+
+    Used by :func:`_goal_weighted_params` to roll per-portfolio
+    expected return / vol / yield up to a goal-level number.
+    """
     if name in PORTFOLIO_ESTIMATES:
         return PORTFOLIO_ESTIMATES[name]
     if 'silverdale' in name.lower():
@@ -176,12 +267,36 @@ def _get_est(name):
 
 
 def process_client_data(df_client):
-    """Return (client_weights, client_holdings, total_nav, custom_etf_nav).
+    """Aggregate raw client portfolio rows into the dashboard's input shape.
 
-    ``custom_etf_nav`` aggregates the NAV attributed to each underlying ETF
-    across all CUSTOM portfolios whose ``actual_holding_weightage`` we could
-    parse. Downstream exposure and diversification calls can pass this dict
-    to expand the CUSTOM bucket into real ETF exposure.
+    This is the primary *ingestion + aggregation* step for the page:
+    each row of ``df_client`` is one client-held portfolio, and the
+    function rolls them up at the *portfolio-type level*. Per-row work:
+
+    1. Skip dust positions (NAV < $50 SGD).
+    2. Normalise the raw ``type`` code via :func:`_norm_type` and map
+       it to the canonical display name through
+       :data:`CLIENT_PORTFOLIO_MAPPING` (with bespoke handling for
+       Cash variants, BlackRock, Monroe, CUSTOM, Downside Protected,
+       and Silverdale vintages).
+    3. Accumulate NAV per canonical portfolio name and a running total
+       across all portfolios.
+    4. For CUSTOM portfolios, attempt to parse
+       ``actual_holding_weightage`` so we know the underlying ETF
+       split. The resulting per-ETF NAV is returned separately so
+       downstream exposure / diversification calls can expand the
+       opaque CUSTOM bucket into real holdings.
+
+    Returns
+    -------
+    (client_weights, client_holdings, total_nav, custom_etf_nav)
+        - ``client_weights``: ``{portfolio_name: weight}`` summing to 1.
+        - ``client_holdings``: ``{portfolio_name: nav_sgd}``.
+        - ``total_nav``: book NAV across everything kept.
+        - ``custom_etf_nav``: ``{etf_ticker: nav_sgd}`` parsed from
+          CUSTOM portfolios; empty dict if none could be parsed.
+
+        Returns ``(None, None, 0, {})`` when nothing was usable.
     """
     holdings, total = {}, 0.0
     custom_etf_nav = {}
@@ -189,11 +304,17 @@ def process_client_data(df_client):
         p_type = row.get('type', None)
         currency = str(row.get('currency', 'SGD'))
         nav = _safe_float(row.get('nav_in_sgd', 0))
+        # Drop sub-$50 dust positions — they bias percentage breakdowns
+        # without contributing meaningfully to the analysis.
         if nav < 50:
             continue
         nt = _norm_type(p_type)
         if nt is None:
             continue
+        # Map the normalised feed code to the canonical display name.
+        # The if/elif chain handles families that need extra context
+        # beyond a simple dict lookup (Cash needs currency awareness,
+        # Silverdale has dated vintages, CUSTOM uses a sentinel label).
         ticker = None
         if 'CASH' in nt and 'PLUS' in nt:
             if currency == 'USD' or 'USD' in nt:
@@ -213,11 +334,18 @@ def process_client_data(df_client):
         elif 'DOWNSIDE' in nt:
             ticker = 'Downside protected'
         elif 'SILVER' in nt or 'SILVERDALE' in nt:
+            # Silverdale funds are dated vintages — pull the
+            # month+year out of the type code so each vintage shows
+            # up as its own portfolio.
             m = re.search(r'(NOV|DEC|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT)\s*(\d{4})', nt)
             ticker = f'Silverdale Fund {m.group(1).title()}{m.group(2)}' if m else 'Silverdale Fund Feb2029'
         if ticker:
             holdings[ticker] = holdings.get(ticker, 0.0) + nav
             total += nav
+            # CUSTOM portfolios store their actual ETF split in the
+            # ``actual_holding_weightage`` column. Expand it so the
+            # exposure / diversification calls don't see one opaque
+            # CUSTOM slice with no asset-class / sector / country data.
             if ticker == CUSTOM_PORTFOLIO_LABEL:
                 parsed = parse_custom_holdings(row.get('actual_holding_weightage'))
                 if parsed:
@@ -230,10 +358,20 @@ def process_client_data(df_client):
 
 
 def _normalize_goal(goal):
-    """Normalize legacy goal formats (source=existing/custom) to the unified schema:
-    - portfolios: list of all portfolios in the goal
-    - new_portfolios: subset that represent *new* money (not in current holdings)
-    - lump_sums: per-portfolio one-time lump sum (required for new, optional for existing)
+    """Migrate legacy goal dicts to the current unified schema.
+
+    Old goals carried ``source='existing'|'custom'`` plus an
+    ``allocations`` map. The current schema instead uses:
+
+    - ``portfolios``: list of *all* portfolios in the goal.
+    - ``new_portfolios``: subset that represent *new* money (not in
+      current client holdings).
+    - ``lump_sums``: per-portfolio one-time lump sum. Required for
+      every portfolio in ``new_portfolios``; optional for existing
+      portfolios (acts as a top-up on top of current NAV).
+
+    Mutates ``goal`` in place and returns it. Idempotent — a goal
+    already in the new shape is left alone.
     """
     if 'new_portfolios' in goal and 'lump_sums' in goal:
         return goal
@@ -251,7 +389,20 @@ def _normalize_goal(goal):
 
 
 def _compute_goal_navs(goal, client_holdings):
-    """Return {portfolio: dollar_value} for a goal, combining existing NAV and lump sums."""
+    """Return ``{portfolio: dollar_value}`` for a goal.
+
+    Combines two sources of money:
+
+    - For *existing* portfolios (i.e. in ``goal['portfolios']`` but
+      not in ``goal['new_portfolios']``), the current client NAV from
+      ``client_holdings``.
+    - For *new* portfolios, only the lump sum (no existing NAV).
+    - In both cases, any explicit lump sum recorded against the
+      portfolio gets added on top.
+
+    This is the single source of truth used to derive the goal's
+    starting value, weight mix, and downstream forecast inputs.
+    """
     new_set = set(goal.get('new_portfolios', []))
     lumps = goal.get('lump_sums', {}) or {}
     navs = {}
@@ -262,8 +413,22 @@ def _compute_goal_navs(goal, client_holdings):
 
 
 def _goal_weighted_params(goal, client_holdings):
-    """Compute weighted return, vol, yield for a goal's portfolio mix.
-    Returns (total_return, vol, yield) where total_return includes yield."""
+    """Roll per-portfolio CMAs up to goal-level return / vol / yield.
+
+    Aggregates :func:`_get_est` outputs by NAV weight across the
+    goal's portfolio mix. Used by both the Growth Monte-Carlo
+    projection (needs ``ret`` and ``vol``) and the Income forecast
+    (needs ``ret`` and ``yield`` to split capital growth from payout).
+
+    The volatility aggregation here treats vol contributions as
+    independent (``sqrt(Σ (wᵢ·σᵢ)²)``) — i.e. zero pairwise
+    correlation. That's a deliberate simplification for the goal
+    forecast since we don't carry a covariance matrix at this layer;
+    correlated downside is captured by the percentile bands.
+
+    Returns ``(weighted_return, weighted_vol, weighted_yield)``,
+    falling back to :data:`_DEFAULT_EST` when the goal has no value.
+    """
     navs = _compute_goal_navs(goal, client_holdings)
     total = sum(navs.values())
     if total <= 0:
@@ -279,6 +444,19 @@ def _goal_weighted_params(goal, client_holdings):
 
 
 def _build_projection(index_path, initial, monthly_c):
+    """Apply an index growth path + monthly contributions to a starting NAV.
+
+    Given a normalised index series (e.g. one of the 5th / 50th / 95th
+    percentile log-normal paths produced for the growth forecast),
+    walks period-by-period:
+
+        valueₜ = valueₜ₋₁ * (indexₜ / indexₜ₋₁) + monthly_c
+
+    so that the geometric growth between consecutive index values is
+    applied to the running NAV, then a constant monthly contribution
+    is layered on top. Used for the conservative / median / optimistic
+    NAV bands in the Growth goal forecast.
+    """
     vals = [initial]
     for i in range(1, len(index_path)):
         growth = index_path[i] / index_path[i - 1]
@@ -286,6 +464,9 @@ def _build_projection(index_path, initial, monthly_c):
     return np.array(vals)
 
 
+# FX-pair columns sometimes ride along inside ``df_daily_ret`` (used
+# for currency conversion elsewhere) but they're not investable
+# benchmarks, so we strip them from the benchmark dropdown options.
 _BENCHMARK_EXCLUDE = {'USDSGD', 'USDHKD'}
 
 
@@ -328,6 +509,14 @@ def _start_insights_thread(ins_key, api_key, div_result, weights):
         return
 
     def _worker():
+        """Off-main-thread LLM call + write-back into session_state.
+
+        Any exception (network, quota, malformed response) collapses
+        the result to an empty list so the UI still resolves to a
+        rendered (empty) state instead of hanging on the spinner.
+        The second try/except guards against session_state writes
+        from threads that haven't been bound to a script run context.
+        """
         try:
             from utils.llm_helper import generate_diversification_insights
             result = generate_diversification_insights(api_key, div_result, weights)
@@ -348,6 +537,13 @@ def _start_insights_thread(ins_key, api_key, div_result, weights):
 
 
 def _score_rating(s):
+    """Bucket a 0–10 diversification sub-score into a qualitative label.
+
+    Used purely for display next to the numeric score on each
+    diversification tab (Asset Class / Geography / Sector /
+    Concentration). Returns ``'N/A'`` when the score is missing so
+    the UI can render a graceful placeholder.
+    """
     if s is None:
         return 'N/A'
     if s >= 8:
@@ -398,6 +594,15 @@ st.divider()
 
 # ═══════════════════════════════════════════════════════════════
 # DATA SOURCE (only for existing clients)
+# Existing clients can hydrate ``df_client`` two ways:
+#   - CSV upload (tab 1): a manually exported portfolio CSV.
+#   - Metabase lookup (tab 2): pulls the same data straight from
+#     prod via ``utils.metabase_helper``.
+# Either path stashes the resulting frame in
+# ``st.session_state['cpv_df_client']`` so it survives reruns. The
+# "new client" branch skips this entirely and proceeds with an
+# empty holdings state so the goal workflow still works (only new
+# portfolios with lump sums are allowed).
 # ═══════════════════════════════════════════════════════════════
 df_client = None
 
@@ -413,6 +618,12 @@ else:
         uploaded = st.file_uploader("Upload Client Portfolio CSV", type=['csv'], key="cpv_csv_upload")
         if uploaded:
             try:
+                # Normalise the CSV before storing: lowercase headers
+                # (we key everything off snake_case downstream), fix
+                # known capitalisation drift in the ``type`` column
+                # (BlackRock → Blackrock, Monroe → Monroe), and drop
+                # anything that isn't currently ACTIVE so closed /
+                # pending positions don't pollute the dashboard.
                 df_client = pd.read_csv(uploaded)
                 df_client.columns = df_client.columns.str.lower().str.strip()
                 if 'type' in df_client.columns:
@@ -464,6 +675,14 @@ else:
 
 # ═══════════════════════════════════════════════════════════════
 # PROCESS DATA
+# Convert the raw holdings frame (whatever source it came from) into
+# the canonical four-tuple every downstream section consumes:
+#   - client_weights:  {portfolio: weight}  (sums to 1)
+#   - client_holdings: {portfolio: nav_sgd}
+#   - total_nav:       book-level NAV in SGD
+#   - custom_etf_nav:  {etf: nav_sgd}  parsed from CUSTOM portfolios
+# Empty defaults mean the dashboard renders the "no data" path
+# instead of crashing when no upload has happened yet.
 # ═══════════════════════════════════════════════════════════════
 if df_client is not None and not df_client.empty:
     client_weights, client_holdings, total_nav, custom_etf_nav = process_client_data(df_client)
@@ -505,7 +724,18 @@ if should_render_dashboard:
         if goal.get('description'):
             st.caption(goal['description'])
 
-        # ── compute goal NAV, weights, and return series upfront ──
+        # ── Compute goal NAV, weights, and return series upfront ──
+        # Everything downstream (forecast, performance, exposure,
+        # cash flow) depends on these four values, so we derive them
+        # once at the top of the goal detail view:
+        #   - ``goal_navs``:    {portfolio: dollar_value}
+        #   - ``goal_nav``:     scalar total NAV
+        #   - ``goal_weights``: normalised weights for the slicing
+        #     and diversification calls (falls back to equal-weight
+        #     if every portfolio has zero NAV, so the page still
+        #     renders something meaningful for a brand-new goal).
+        #   - ``kp``: unique key prefix for plotly chart keys so
+        #     multiple goal views can coexist in session state.
         _normalize_goal(goal)
         new_set = set(goal.get('new_portfolios', []))
         has_existing = any(p not in new_set for p in goal.get('portfolios', []))
@@ -519,7 +749,15 @@ if should_render_dashboard:
         goal_obj = "Wealth Growth" if goal['type'] == 'Growth' else "Income Generation"
         kp = f"cpv_goal_{goal['id']}"
 
-        # build return series (used by both forecast and performance)
+        # Build the goal's daily return series used by the
+        # Performance section (cumulative chart, calendar heatmap,
+        # drawdown chart, annualised metrics). It's the weighted
+        # combination of each constituent portfolio's daily returns,
+        # so a goal with 60% Core Growth + 40% Income Enhance ends
+        # up with a daily series of 0.6·r_growth + 0.4·r_income.
+        # The next ~30 lines guard against the messy realities of
+        # the underlying frame: non-numeric cells, percent vs decimal
+        # units, duplicate dates, missing history for some sleeves.
         from utils.performance import calculate_metrics
         goal_daily = None
         returns_label = "Backtested Returns"
@@ -558,20 +796,40 @@ if should_render_dashboard:
             if port_rets.empty or not available_ports:
                 goal_daily = None
             else:
+                # Anchor to the earliest date where *every* sleeve
+                # has data so the weighted sum is on a fair footing
+                # (otherwise newer sleeves would silently contribute
+                # zero to the early period and distort cumulative
+                # returns). The weighted-sum then walks every column
+                # and adds w_i · r_i,t to the running series.
                 common_start = port_rets.dropna().index.min()
                 port_rets = port_rets.loc[common_start:]
                 goal_daily = pd.Series(0.0, index=port_rets.index)
                 for p in available_ports:
                     goal_daily += port_rets[p].fillna(0) * goal_weights.get(p, 0)
                 goal_daily = goal_daily.dropna()
-            # ensure unique index for downstream reindex / benchmark alignment
+            # Ensure unique dates so downstream reindex calls (e.g.
+            # benchmark alignment) don't blow up with "cannot reindex
+            # from a duplicate axis".
             if goal_daily is not None and goal_daily.index.duplicated().any():
                 goal_daily = goal_daily.groupby(level=0).first()
+            # If the goal is composed *entirely* of existing client
+            # holdings (no new portfolios), the series is a real
+            # backtest of the actual client experience and the chart
+            # title is upgraded accordingly. Mixed / new-only goals
+            # remain "Backtested Returns" since they describe a
+            # hypothetical mix.
             if has_existing and not new_set:
                 returns_label = "Actual Returns"
 
         # ══════════════════════════════════════════════════════════
         # SECTION 1: FORECAST + FACTUAL DATA
+        # Top-line metrics strip (NAV / Objective / Horizon / Target)
+        # followed by the goal-type-specific forecast block. Growth
+        # goals get the Monte-Carlo NAV projection; Income goals get
+        # the yield-driven payout projection. Both reuse the
+        # achievability gauge pattern so the advisor sees a single
+        # 0–10 score for "will this hit the target".
         # ══════════════════════════════════════════════════════════
         mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric("Current Value", f"${goal_nav:,.2f}")
@@ -585,6 +843,13 @@ if should_render_dashboard:
         st.divider()
 
         if goal['type'] == 'Growth':
+            # ── Growth forecast ─────────────────────────────────
+            # Build three NAV trajectories (5th, 50th, 95th
+            # percentile) under a geometric-Brownian-motion model
+            # parameterised by the goal-weighted expected return and
+            # volatility. The percentile bands give the advisor a
+            # "downside / base / upside" view of where the goal might
+            # land given the asset mix and monthly contributions.
             st.subheader("Growth Forecast")
             ann_ret, ann_vol, _ = _goal_weighted_params(goal, client_holdings)
             log_ret = np.log(1 + ann_ret)
@@ -595,6 +860,11 @@ if should_render_dashboard:
             months_total = t_horizon * 12
             months_arr = np.arange(0, months_total + 1)
 
+            # Closed-form log-normal index paths: drift = μ·t, scale
+            # = σ·√t, expressed in monthly steps. The bands start at
+            # 100 (base index) and are translated to NAV by
+            # ``_build_projection`` which layers monthly top-ups on
+            # top of the geometric growth.
             conservative = np.ones(len(months_arr)) * 100.0
             likely = np.ones(len(months_arr)) * 100.0
             optimistic = np.ones(len(months_arr)) * 100.0
@@ -609,6 +879,10 @@ if should_render_dashboard:
             years_arr = months_arr / 12.0
             fin_med = projected[50][-1]
 
+            # 0–10 goal "achievability" score for the gauge: 7 = on
+            # target (median ≈ target), > 7 when comfortably above,
+            # asymmetric penalty below so even a 60% achievement
+            # ratio bottoms out at ~3.
             if target > 0:
                 ratio = fin_med / target
             else:
@@ -662,6 +936,12 @@ if should_render_dashboard:
                 st.plotly_chart(fig, use_container_width=True, key=f"{kp}_growth_fvc")
 
         else:
+            # ── Income forecast ─────────────────────────────────
+            # For an income goal we split the goal-weighted total
+            # return into capital growth (compounding NAV) and yield
+            # (paid out as monthly income). The NAV accretes at the
+            # capital-growth rate plus monthly top-ups, and forecast
+            # income = NAV × monthly yield at each step.
             st.subheader("Income Forecast")
             ann_ret, ann_vol, ann_yld = _goal_weighted_params(goal, client_holdings)
             initial = goal.get('initial_value', goal_nav) or goal_nav
@@ -669,16 +949,25 @@ if should_render_dashboard:
             t_horizon = goal.get('time_horizon', 20)
             target_payout = goal.get('target_payout', 2500) or 2500
             months_total = t_horizon * 12
+            # Capital growth = total return minus the portion paid out
+            # as yield (clamped at zero — yield can briefly exceed
+            # total return in low-growth, high-payout funds).
             ann_cap_growth = max(0, ann_ret - ann_yld)
             monthly_cap = (1 + ann_cap_growth) ** (1 / 12) - 1
             monthly_yld = ann_yld / 12
 
+            # Trajectory 1: current monthly top-up — used to display
+            # the "where you'll end up if nothing changes" line.
             nav_current = np.zeros(months_total + 1)
             nav_current[0] = initial
             for m in range(1, months_total + 1):
                 nav_current[m] = nav_current[m - 1] * (1 + monthly_cap) + mc_val
             income_current = nav_current * monthly_yld
 
+            # Binary-search the monthly top-up that would land final
+            # monthly income at the target payout. 50 iterations is
+            # comfortably enough for sub-cent precision on the
+            # bracket [mc_val, max(mc_val·5, target·20)].
             lo, hi = mc_val, max(mc_val * 5, target_payout * 20)
             for _ in range(50):
                 mid = (lo + hi) / 2
@@ -691,6 +980,9 @@ if should_render_dashboard:
                     lo = mid
             suggested_topup = hi
 
+            # Trajectory 2: same projection but with the suggested
+            # top-up so the advisor can show the client what the
+            # required commitment looks like.
             nav_suggested = np.zeros(months_total + 1)
             nav_suggested[0] = initial
             for m in range(1, months_total + 1):
@@ -699,6 +991,8 @@ if should_render_dashboard:
             years_arr = np.arange(0, months_total + 1) / 12.0
             forecasted_payout = income_current[-1] if len(income_current) > 0 else 0
 
+            # Same achievability scoring shape as the growth gauge,
+            # rescaled around the income ratio instead of NAV ratio.
             if target_payout > 0:
                 inc_ratio = forecasted_payout / target_payout
             else:
@@ -748,6 +1042,14 @@ if should_render_dashboard:
 
         # ══════════════════════════════════════════════════════════
         # SECTION 2: PERFORMANCE (returns charts)
+        # Renders backtested performance for the goal's weighted
+        # portfolio mix. We need ≥ 20 daily observations to compute
+        # meaningful annualised statistics (Sharpe, vol, max DD); if
+        # the goal contains only portfolios with thin / no return
+        # history we surface an "insufficient data" warning instead.
+        # All three sub-tabs (cumulative, calendar heatmap, drawdown)
+        # share the same ``goal_daily`` series and optionally overlay
+        # a benchmark return series reindexed to the same window.
         # ══════════════════════════════════════════════════════════
         st.subheader(f"Performance — {returns_label}")
         if goal_daily is not None and len(goal_daily) > 20:
@@ -822,7 +1124,11 @@ if should_render_dashboard:
         st.divider()
 
         # ══════════════════════════════════════════════════════════
-        # SECTION 3: PORTFOLIO CARDS AND COMPOSITION
+        # SECTION 3: PORTFOLIO COMPOSITION (goal-level pills)
+        # Renders one pill per portfolio in the goal showing
+        # ``name: weight (dollar value)``, sorted by weight desc.
+        # Lightweight summary view — the goal-creation form lives in
+        # the main dashboard, not here.
         # ══════════════════════════════════════════════════════════
         st.subheader("Portfolio Composition")
         if goal_weights:
@@ -840,6 +1146,16 @@ if should_render_dashboard:
 
         # ══════════════════════════════════════════════════════════
         # SECTION 4: EXPOSURE / DIVERSIFICATION SCORE
+        # Scopes the slicing-and-dicing to a *single goal*. We strip
+        # out portfolios that shouldn't count toward diversification
+        # (e.g. cash, see ``IGNORED_PORTFOLIOS``), renormalise the
+        # surviving weights to sum to 1, then feed them into
+        # ``calculate_diversification_score`` which returns the
+        # composite 0–10 score plus the four sub-scores (asset class,
+        # geography, sector, concentration) and the underlying
+        # breakdowns. The donut on the left visualises how each sub
+        # contributes to the composite; the tabs on the right show
+        # the exposure pie + data table for each dimension.
         # ══════════════════════════════════════════════════════════
         st.subheader("Diversification Score")
         if goal_weights:
@@ -889,6 +1205,14 @@ if should_render_dashboard:
                     }
 
                     def _render_goal_insight_cards(items):
+                        """Render the LLM-generated insight cards for a goal.
+
+                        Each item is a ``{'category', 'title', 'body'}``
+                        dict from ``generate_diversification_insights``;
+                        the category drives the colour scheme (strength
+                        green / improvement amber / observation blue)
+                        so the cards visually map to action priority.
+                        """
                         for ins in (items or []):
                             cat = ins.get('category', 'observation')
                             bg, accent = _GOAL_INS_CATS.get(cat, _GOAL_INS_CATS['observation'])
@@ -903,6 +1227,16 @@ if should_render_dashboard:
 
                     @st.fragment(run_every=("600ms" if _goal_ins_key not in st.session_state else None))
                     def _goal_insights_fragment():
+                        """Polling fragment for the goal's LLM insights.
+
+                        Re-runs every 600ms (only as a fragment, not
+                        a full page rerun) until the background
+                        worker writes the result into session_state.
+                        Once present, the fragment stops auto-rerunning
+                        and just renders the cards on every page
+                        re-render. Keeps the main script
+                        non-blocking while the LLM call is in flight.
+                        """
                         if _goal_ins_key in st.session_state:
                             _render_goal_insight_cards(st.session_state.get(_goal_ins_key) or [])
                             return
@@ -913,6 +1247,13 @@ if should_render_dashboard:
                 with col_r:
                     tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
                     def _tab_score(score, color):
+                        """Render the big numeric sub-score header inside a tab.
+
+                        Shared between all four diversification tabs
+                        so the layout stays consistent. ``score`` is
+                        the 0–10 sub-score, ``color`` matches the
+                        tab's slice in the parent donut.
+                        """
                         if score is not None:
                             st.markdown(f'<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:{color}">{score:.1f}</span>'
                                         f'<span style="font-size:14px;color:#999"> / 10</span>'
@@ -960,6 +1301,16 @@ if should_render_dashboard:
 
         # ══════════════════════════════════════════════════════════
         # SECTION 5: INCOME ANALYTICS (income goals only)
+        # For income goals we layer two extras on top of the forecast:
+        #   1. A fixed-income metrics table (duration + yield per FI
+        #      sleeve), driven by ``build_fi_metrics_table``.
+        #   2. A 12-month projected cash-flow chart computed by
+        #      ``compute_portfolio_cash_flows``, in the user's chosen
+        #      display currency with FX overrides. This is what the
+        #      advisor uses to show "if we invest like this, here's
+        #      the monthly distribution you should expect".
+        # The whole section is gated on the goal being income-typed
+        # and having non-zero NAV so we don't render empty widgets.
         # ══════════════════════════════════════════════════════════
         if goal['type'] == 'Income' and goal_weights and goal_nav > 0:
             st.divider()
@@ -998,10 +1349,13 @@ if should_render_dashboard:
 
             ccy_symbol = {'SGD': 'S$', 'USD': 'US$', 'HKD': 'HK$'}.get(display_currency, '$')
 
-            # build per-portfolio NAVs for this goal
+            # Strip zero-NAV entries — they don't contribute to the
+            # cash-flow projection and would clutter the FI table.
             goal_port_navs = {p: v for p, v in goal_navs.items() if v > 0}
 
-            # FI metrics table
+            # FI metrics table — duration + yield per fixed-income
+            # sleeve, surfacing the inputs that drive the cash-flow
+            # projection so the advisor can sanity-check assumptions.
             st.markdown("**Fixed Income Metrics**")
             fi_table = build_fi_metrics_table(list(goal_port_navs.keys()), df_fi_metrics, yield_preference=yield_pref)
             if fi_table.empty:
@@ -1016,7 +1370,12 @@ if should_render_dashboard:
                     use_container_width=True,
                 )
 
-            # Monthly cash flow projection
+            # Monthly cash-flow projection — applies the chosen yield
+            # source to each portfolio's NAV (converted into the
+            # display currency via ``fx_usdsgd`` / ``fx_usdhkd``) and
+            # returns a tidy month × portfolio dataframe ready for
+            # the stacked bar chart below, plus a per-portfolio
+            # breakdown for the expander.
             st.markdown("**Projected Monthly Cash Flow**")
             monthly_df, breakdown_df = compute_portfolio_cash_flows(
                 goal_port_navs,
@@ -1031,7 +1390,9 @@ if should_render_dashboard:
             else:
                 annual_total = monthly_df.sum().sum()
                 monthly_avg = annual_total / 12.0
-                # summary metrics
+                # Top-of-section KPIs: annual + monthly income plus
+                # an effective-yield ratio so the advisor can see
+                # the blended yield delivered by this goal's mix.
                 m_a, m_b, m_c = st.columns(3)
                 m_a.metric("Projected Annual Income", f"{ccy_symbol}{annual_total:,.0f}")
                 m_b.metric("Avg Monthly Income", f"{ccy_symbol}{monthly_avg:,.0f}")
@@ -1044,7 +1405,10 @@ if should_render_dashboard:
                 eff_yld = annual_total / goal_nav_disp if goal_nav_disp > 0 else 0.0
                 m_c.metric("Effective Yield", f"{eff_yld:.2%}")
 
-                # stacked bar chart
+                # Stacked bar chart — one bar per month, segments
+                # coloured per source portfolio, so the advisor can
+                # see both the total monthly payout and where it
+                # comes from.
                 fig_cf = plot_monthly_cash_flow(monthly_df, currency_symbol=ccy_symbol)
                 if fig_cf is not None:
                     st.plotly_chart(fig_cf, use_container_width=True, key=f"{kp}_inc_cf_bar")
@@ -1058,9 +1422,14 @@ if should_render_dashboard:
 
     # ───────────────────────────────────────────────────────────
     # MAIN DASHBOARD (no goal selected)
+    # Default landing view: a top-down portrait of the *whole book*
+    # split by portfolio type / objective / exposure dimensions, plus
+    # the goal cards and the create/edit goal form.
     # ───────────────────────────────────────────────────────────
     else:
-        # objective allocation
+        # Roll the per-portfolio weights up to objective level
+        # (Wealth Growth, Income Generation, Capital Preservation,
+        # etc.) for the "By Objective" donut later in the page.
         objective_alloc = {}
         for ticker, w in (client_weights or {}).items():
             obj = get_portfolio_objective(ticker)
@@ -1102,6 +1471,13 @@ if should_render_dashboard:
 
             # ═══════════════════════════════════════════════════════
             # FILTER EXPOSURES
+            # The advisor can slice the book three ways:
+            #   - Show All:           every portfolio in the client's holdings
+            #   - By Objective:       keep only portfolios matching the
+            #                         selected investment objective(s)
+            #   - By Portfolio Type:  hand-pick specific portfolios
+            # The chosen slice drives every chart below (NAV pie,
+            # Objective pie, exposure tabs, diversification score).
             # ═══════════════════════════════════════════════════════
             st.markdown("### 1. Summary")
             st.markdown("#### Filter Exposures")
@@ -1138,8 +1514,16 @@ if should_render_dashboard:
                     if t in sel_pt:
                         filtered[f"{t}_wgt"] = w
 
-            # expose exposures using the expanded view — drop any CUSTOM bucket
-            # we couldn't parse so it doesn't bleed into sector/country calcs
+            # Build the *exposure-grade* weight series used for the
+            # sector / country / asset-class / concentration breakdowns.
+            # Three transformations happen here, in order:
+            #   1. Expand any CUSTOM portfolio into its constituent
+            #      ETFs (so opaque CUSTOM positions don't bleed into
+            #      sector/country aggregates as "unknown").
+            #   2. Drop ignored portfolios (cash etc.) which carry no
+            #      meaningful exposure for diversification scoring.
+            #   3. Renormalise the remaining weights to sum to 1 so
+            #      the pies / scores stay comparable.
             exposure_filtered = {k.replace('_wgt', ''): v for k, v in filtered.items()}
             if custom_etf_nav:
                 exposure_filtered = expand_custom_in_weights_dict(exposure_filtered, custom_etf_nav)
@@ -1150,6 +1534,12 @@ if should_render_dashboard:
                 ws = ws / ws_total
 
             if not ws.empty:
+                # ``get_exposure_charts`` is the workhorse: given the
+                # weight series + reference dataframes it returns a
+                # dict of plotly figures and the underlying tables
+                # for asset-class, country and sector breakdowns.
+                # This is the *portfolio-level exposure aggregation*
+                # that powers the slicing-and-dicing tabs below.
                 charts = get_exposure_charts(ws, df_sector, df_country, df_asset_class, df_underlying, concentration_top_n=20)
                 if break_custom_display and custom_etf_nav:
                     filt_pw = dict(exposure_filtered)
@@ -1209,7 +1599,14 @@ if should_render_dashboard:
                         st.dataframe(odf.style.format({'Weight': '{:.2%}', 'Est. Value ($)': '${:,.2f}'}), use_container_width=True)
 
                 # ═══════════════════════════════════════════════════
-                # 2. DIVERSIFICATION SCORE
+                # 2. CLIENT EXPOSURES + DIVERSIFICATION SCORE
+                # Computes a single composite 0–10 diversification
+                # score plus four sub-scores (asset class, geography,
+                # sector, concentration) for the currently-filtered
+                # slice. Each sub-score is rendered in its own tab
+                # with the matching exposure pie + data table, and
+                # optionally overlaid against a benchmark ticker so
+                # the advisor can spot tilts vs. e.g. ACWI / URTH.
                 # ═══════════════════════════════════════════════════
                 st.markdown("### 2. Client Exposures")
 
@@ -1281,6 +1678,14 @@ if should_render_dashboard:
                     }
 
                     def _render_insight_cards(items):
+                        """Render LLM diversification insights at portfolio level.
+
+                        Sibling of ``_render_goal_insight_cards`` but
+                        scoped to the *whole-book* diversification
+                        score rather than a single goal. Colour
+                        mapping follows the same strength / improvement
+                        / observation convention.
+                        """
                         for ins in (items or []):
                             cat = ins.get('category', 'observation')
                             bg, accent, tc = _CPV_INS_CATS.get(cat, _CPV_INS_CATS['observation'])
@@ -1302,6 +1707,16 @@ if should_render_dashboard:
 
                     @st.fragment(run_every=("600ms" if _CPV_INS_KEY not in st.session_state else None))
                     def _cpv_insights_fragment():
+                        """Polling fragment for the dashboard-level LLM insights.
+
+                        Sibling of ``_goal_insights_fragment`` but
+                        keyed off the *filter signature* so the
+                        cards regenerate when the advisor switches
+                        between Show All / By Objective / By
+                        Portfolio Type. Polls session_state every
+                        600ms until the worker delivers, then
+                        becomes static.
+                        """
                         if _CPV_INS_KEY in st.session_state:
                             _render_insight_cards(st.session_state.get(_CPV_INS_KEY) or [])
                             return
@@ -1321,6 +1736,13 @@ if should_render_dashboard:
                 with col_right:
                     tab_aa, tab_geo, tab_sec, tab_conc = st.tabs(["Asset Class", "Geography", "Sector", "Concentration"])
                     def _render_tab(score, color):
+                        """Render the numeric sub-score header inside an exposure tab.
+
+                        Mirror of ``_tab_score`` used in the goal
+                        view — kept separate because the dashboard
+                        scope sits inside a different closure with
+                        access to its own ``_cpv_*`` keys.
+                        """
                         if score is not None:
                             st.markdown(f'<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:{color}">{score:.1f}</span>'
                                         f'<span style="font-size:14px;color:#999"> / 10</span>'
@@ -1329,6 +1751,42 @@ if should_render_dashboard:
                             st.markdown('<div style="text-align:center;padding:8px 0"><span style="font-size:28px;font-weight:800;color:#B0B0B0">N/A</span></div>', unsafe_allow_html=True)
 
                     def _cpv_render_exp_tab(tab_key, tab_title, df_bm_src, table_key, brief):
+                        """Render one exposure tab: comparison bar + data table + brief.
+
+                        Generic renderer reused by the Asset Class /
+                        Geography / Sector tabs so they all behave
+                        the same way:
+
+                        - Pull the client-side breakdown out of
+                          ``charts`` (produced earlier by
+                          ``get_exposure_charts``).
+                        - If the user enabled benchmark overlay,
+                          compute the matching benchmark exposure
+                          via ``benchmark_exposure_series`` against
+                          the right reference dataframe.
+                        - Plot Client-vs-Benchmark bars side by side
+                          and expose the raw weights (plus a delta
+                          column) in an expander.
+                        - Append the qualitative brief generated by
+                          the diversification scorer.
+
+                        Parameters
+                        ----------
+                        tab_key
+                            Short identifier used to namespace the
+                            plotly chart key (so multiple tabs don't
+                            collide).
+                        tab_title
+                            Human-readable section title.
+                        df_bm_src
+                            Reference dataframe (asset-class / country
+                            / sector) that the benchmark's exposures
+                            are sourced from.
+                        table_key
+                            Key into the precomputed ``charts`` dict.
+                        brief
+                            Optional qualitative caption to append.
+                        """
                         client_table = charts.get(table_key)
                         if client_table is None or client_table.empty:
                             return
@@ -1364,6 +1822,16 @@ if should_render_dashboard:
                         _cpv_render_exp_tab('sec', 'Sector', df_sector, 'sector_table', _get_sector_brief(div_result['sector']))
 
                     with tab_conc:
+                        # Concentration tab is special: it shows the
+                        # *equity-only* top-N underlying holdings. We
+                        # restrict the weight series to equity / REIT
+                        # sleeves (fixed-income / cash don't have
+                        # meaningful single-name concentration) and
+                        # renormalise so the percentages add to 100%
+                        # of the equity book. ``get_concentration_
+                        # exposure`` then rolls each sleeve into its
+                        # underlying holdings via ``df_underlying``
+                        # and aggregates by ticker.
                         _render_tab(sub_scores[3], s_colors[3])
                         topn = st.selectbox("Show Top", [10, 15, 20], key="cpv_topn")
                         if df_underlying is not None:
@@ -1393,16 +1861,29 @@ if should_render_dashboard:
 
         # ═══════════════════════════════════════════════════════
         # 3. GOALS
+        # Goal cards (paginated, 3 per page) + the unified
+        # create/edit goal form. Each card surfaces the goal's
+        # current NAV, target, portfolio mix, and benchmark, with
+        # View / Edit / Delete actions wired into session state.
         # ═══════════════════════════════════════════════════════
         st.markdown("### 3. Goals")
 
         managed_ports = [p for p in (client_weights or {}).keys() if p not in IGNORED_PORTFOLIOS]
 
-        # portfolios already claimed by other goals (as "existing" contributions).
-        # A portfolio is "claimed" if it's in a goal's portfolios list and not flagged
-        # as new money for that goal. When editing a goal, exclude that goal itself.
         editing_id = st.session_state.cpv_editing_goal_id
         def _assigned_existing_ports(exclude_goal_id=None):
+            """Return the set of portfolios already pledged to other goals.
+
+            We don't let two goals both lay claim to the same chunk
+            of an existing portfolio's NAV, so the goal form filters
+            its "existing" picker against this set. A portfolio is
+            "assigned" when it appears in a goal's ``portfolios`` list
+            and is *not* flagged in that goal's ``new_portfolios`` —
+            i.e. it represents current-holdings money, not lump-sum
+            new money. When editing a goal, the caller passes that
+            goal's id to ``exclude_goal_id`` so the user can keep
+            their own existing portfolios available in the picker.
+            """
             assigned = set()
             for g in st.session_state.cpv_goals:
                 if exclude_goal_id and g.get('id') == exclude_goal_id:
@@ -1518,12 +1999,26 @@ if should_render_dashboard:
 
         # ══════════════════════════════════════════════════════════
         # GOAL FORM (unified — create or edit)
+        # One form drives both flows. When ``cpv_editing_goal_id`` is
+        # set we seed the widget state from the goal being edited
+        # and the submit button updates it in place; otherwise we
+        # append a fresh goal with a new uuid. The form is split into
+        # a reactive portfolio-selection block (outside ``st.form``
+        # so NAV pills update live as the user picks portfolios) and
+        # the non-reactive metadata block (inside the form so a
+        # single submit click commits everything atomically).
         # ══════════════════════════════════════════════════════════
         editing_id = st.session_state.cpv_editing_goal_id
         editing_goal = next((g for g in st.session_state.cpv_goals if g['id'] == editing_id), None) if editing_id else None
 
         def _reset_goal_form_state():
-            """Clear all reactive widget state used by the goal form."""
+            """Clear all reactive widget state used by the goal form.
+
+            Called after a successful save / cancel so the next time
+            the form opens (whether to create a fresh goal or edit a
+            different one) it starts from a clean slate rather than
+            inheriting the previously-edited goal's inputs.
+            """
             keys_to_clear = {
                 'cpv_f_name', 'cpv_f_desc', 'cpv_f_type', 'cpv_f_horizon',
                 'cpv_f_target_growth', 'cpv_f_target_income', 'cpv_f_monthly',
@@ -1577,6 +2072,12 @@ if should_render_dashboard:
             )
 
         # ── per-portfolio lump sums ──
+        # Two parallel grids of number inputs: existing portfolios
+        # take an *optional* top-up on top of their current NAV,
+        # while new portfolios must supply a non-zero lump sum (the
+        # validation lives at the form's submit handler). The keys
+        # are stable per portfolio so values survive reruns as the
+        # user adjusts other selections.
         ex_lumps = {}
         new_lumps = {}
         if ex_ports:
@@ -1600,7 +2101,11 @@ if should_render_dashboard:
                         key=f"cpv_f_new_lump_{p}",
                     )
 
-        # live allocation preview
+        # Live allocation preview — recompute totals + per-portfolio
+        # weights every rerun so the pill list under the inputs
+        # updates as the advisor types. Existing portfolios show
+        # NAV+lump, new portfolios show lump only; both annotate
+        # with the resulting % of total goal value.
         total_ex_base = sum(float(client_holdings.get(p, 0) or 0) for p in ex_ports)
         total_ex_lump = sum(ex_lumps.values())
         total_new_lump = sum(new_lumps.values())
