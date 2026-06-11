@@ -455,14 +455,24 @@ All four accept an optional `custom_etf_nav` map for CUSTOM-portfolio expansion.
 
 1. `mcp__syfe-advisor-playground__get_portfolios` for the client → read each
    managed holding's product id and its NAV.
-2. Build `{product_id: nav}` verbatim (raw NAVs are fine). Product ids like
-   `equity_alpha`, `income_plus_enhance`, `cash_plus_guaranteed_sgd` are mapped to
-   their sheet columns by `_PRODUCT_ALIASES` inside the server — **pass them
-   through unchanged.**
+2. Build `{product_id: nav}`. Product ids like `equity_alpha`,
+   `income_plus_enhance`, `cash_plus_guaranteed_sgd` are mapped to their sheet
+   columns by `_PRODUCT_ALIASES` inside the server — **pass them through
+   unchanged.** **FX first (multi-currency books):** the tools do NOT convert
+   currencies, and `get_portfolios` returns each NAV in its own `base_currency`.
+   Single-currency book → raw NAVs are fine. Mixed-currency book (e.g. Vincent:
+   USD `equity_alpha` + SGD income/cash) → convert every NAV to one currency
+   BEFORE calling, or the weights skew toward the larger-nominal-currency sleeves
+   (Vincent reads 44% equity on raw NAVs vs ~51% once SGD→USD normalised).
 3. Call `country_exposure` / `sector_exposure` / `asset_class_exposure` /
    `top_holdings` with that dict.
 4. Read back the breakdown; flag any meaningful `"Others"` as missing data, not a
    real allocation.
+
+Sleeves that are NOT managed-column products — `select_custom` and `brokerage`
+rows — won't resolve via the alias map. Expand them through the holdings path
+instead: `get_brokerage_holdings` / a CUSTOM row's `composition`, fed via
+`custom_etf_nav` (see `mcp/holdings.aggregate_client_holdings`).
 
 Worked example — Vincent's managed book
 `{equity_alpha: 1.85M, income_plus_enhance: 1.30M, cash_plus_guaranteed_sgd: 1.05M}`
