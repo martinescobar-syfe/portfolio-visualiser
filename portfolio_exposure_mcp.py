@@ -121,9 +121,31 @@ _LOCAL_MCP = os.path.join(_REPO_ROOT, "mcp")
 # root OFF sys.path, then append the local `mcp/` dir to the SDK package's
 # __path__. The submodule sets are disjoint, so afterwards `mcp.types` (SDK) and
 # `mcp.exposure` (local) both resolve under one hybrid namespace.
+def _provides_sdk_types(module) -> bool:
+    """True if an already-imported ``mcp`` can supply the SDK's ``mcp.types``
+    (one of its package paths physically contains a ``types`` module)."""
+    for _p in getattr(module, "__path__", []) or []:
+        if os.path.isfile(os.path.join(_p, "types.py")) or os.path.isdir(
+            os.path.join(_p, "types")
+        ):
+            return True
+    return False
+
+
 _saved_path = list(sys.path)
 sys.path[:] = [p for p in sys.path if p not in ("", ".", _REPO_ROOT)]
 try:
+    # A host process may have imported the LOCAL `mcp/` package first — e.g.
+    # pytest's conftest puts the repo root on sys.path, and a plain `import
+    # fastmcp` then resolves bare `mcp` to THIS repo's package and caches it.
+    # That cached local module has no `types` submodule, so fastmcp's later
+    # `import mcp.types` dies with ModuleNotFoundError. If the cached `mcp`
+    # can't provide `mcp.types`, evict it (and any local `mcp.*` submodules) so
+    # the import below binds the installed SDK instead of the stale local one.
+    _pre = sys.modules.get("mcp")
+    if _pre is not None and not _provides_sdk_types(_pre):
+        for _name in [k for k in list(sys.modules) if k == "mcp" or k.startswith("mcp.")]:
+            del sys.modules[_name]
     import mcp as _sdk_mcp  # official MCP SDK — fastmcp needs mcp.types/.server
 finally:
     sys.path[:] = _saved_path
@@ -163,41 +185,96 @@ server = FastMCP("syfe-exposure")
 # verbatim — where ``product`` is a product_id like "equity_alpha" and each row
 # carries a ``nav`` — and feed ``{product_id: nav}`` straight into these tools.
 # Keys are matched case-insensitively (and stripped). Anything not in the map
-# (already-correct sheet names, raw ETF tickers, "CUSTOM") passes through
-# unchanged, so this is purely additive — it never breaks a correct name.
+# (raw ETF tickers, "CUSTOM") passes through unchanged, so this is purely
+# additive — it never breaks a correct name.
+#
+# COVERAGE: the canonical values below are the EXACT managed-portfolio columns
+# of the slice sheets, in sheet order from "Core Equity100" through the last
+# alternative fund (all 26). tests/test_exposure_aliases.py asserts every value
+# here is a real column in all three sheets AND that all 26 are covered, so this
+# map can never silently drift from the data sheets.
+#
+# Three key forms resolve to each column (all case-insensitive, stripped):
+#   * playground product_id              e.g. "select_themes_tech"
+#   * catalog display_name (lowercased)  e.g. "select themes — disruptive tech"
+#   * the sheet column name itself       e.g. "disruptive technology"
+# product_ids marked ANTICIPATED have a column in the sheets but no *live* row in
+# the playground catalog yet (the two extra themes, the four SRS sleeves,
+# Downside Protected, and the alternative funds). The slug follows Syfe's
+# existing naming convention so it resolves the day the product goes live; the
+# exact sheet name always resolves regardless.
 #
 # Composition-only sleeves ("select_custom", "brokerage") have NO managed column
 # of their own; resolve them by passing their underlying ETF/stock composition
 # via ``custom_etf_nav`` (keyed "CUSTOM") instead of relying on this map.
 _PRODUCT_ALIASES = {
-    # Core managed (product_id -> sheet column; display_name already identical)
-    "core_defensive": "Core Defensive",
-    "core_balanced": "Core Balanced",
-    "core_growth": "Core Growth",
+    # --- Core managed (product_id == display_name == sheet column) ----------
     "core_equity100": "Core Equity100",
-    "equity_alpha": "Equity Alpha",
-    # REIT+
-    "reit_plus_100": "REIT 100",
-    "reit+ (100% reits)": "REIT 100",
-    "reit_plus_managed": "REIT Risk Managed",
-    "reit+ with risk management": "REIT Risk Managed",
-    # Income+
-    "income_plus_preserve": "Income Preserve",
-    "income+ preserve": "Income Preserve",
-    "income_plus_enhance": "Income Enhance",
-    "income+ enhance": "Income Enhance",
-    # Select Themes
+    "core_growth": "Core Growth",
+    "core_balanced": "Core Balanced",
+    "core_defensive": "Core Defensive",
+    # --- Select Themes (sheet uses the theme name, not "Select Themes — X") --
     "select_themes_tech": "Disruptive Technology",
     "select themes — disruptive tech": "Disruptive Technology",
+    "disruptive technology": "Disruptive Technology",
+    "select_themes_healthcare": "Healthcare Innovation",   # ANTICIPATED
+    "select themes — healthcare innovation": "Healthcare Innovation",
+    "healthcare innovation": "Healthcare Innovation",
+    "select_themes_esg": "ESG & Clean Energy",             # ANTICIPATED
+    "select themes — esg & clean energy": "ESG & Clean Energy",
+    "esg & clean energy": "ESG & Clean Energy",
     "select_themes_china": "China Growth",
     "select themes — china growth": "China Growth",
-    # Cash+ (money-market / guaranteed)
+    "china growth": "China Growth",
+    # --- REIT+ --------------------------------------------------------------
+    "reit_plus_100": "REIT 100",
+    "reit+ (100% reits)": "REIT 100",
+    "reit 100": "REIT 100",
+    "reit_plus_managed": "REIT Risk Managed",
+    "reit+ with risk management": "REIT Risk Managed",
+    "reit risk managed": "REIT Risk Managed",
+    # --- Income+ ------------------------------------------------------------
+    "income_plus_preserve": "Income Preserve",
+    "income+ preserve": "Income Preserve",
+    "income preserve": "Income Preserve",
+    "income_plus_enhance": "Income Enhance",
+    "income+ enhance": "Income Enhance",
+    "income enhance": "Income Enhance",
+    # --- Cash+ (money-market / guaranteed) ----------------------------------
     "cash_plus_flexi_sgd": "Cash SGD flexi",
     "cash+ flexi sgd": "Cash SGD flexi",
+    "cash sgd flexi": "Cash SGD flexi",
     "cash_plus_flexi_usd": "Cash USD flexi",
     "cash+ flexi usd": "Cash USD flexi",
+    "cash usd flexi": "Cash USD flexi",
     "cash_plus_guaranteed_sgd": "Cash SGD guaranteed",
     "cash+ guaranteed sgd": "Cash SGD guaranteed",
+    "cash sgd guaranteed": "Cash SGD guaranteed",
+    # --- SRS sleeves (ANTICIPATED product_ids; columns exist in sheets) ------
+    "srs_income_preserve": "SRS Income Preserve",
+    "srs income preserve": "SRS Income Preserve",
+    "srs_income_enhance": "SRS Income Enhance",
+    "srs income enhance": "SRS Income Enhance",
+    "srs_cash_flexi_sgd": "SRS Cash SGD flexi",
+    "srs cash sgd flexi": "SRS Cash SGD flexi",
+    "srs_equity100": "SRS Equity100",
+    "srs equity100": "SRS Equity100",
+    # --- Downside Protected (Select) ----------------------------------------
+    "select_downside_protected": "Downside protected",     # ANTICIPATED
+    "downside_protected": "Downside protected",
+    "downside protected": "Downside protected",
+    # --- Equity Alpha (J.P. Morgan active ETFs) -----------------------------
+    "equity_alpha": "Equity Alpha",
+    "equity alpha": "Equity Alpha",
+    # --- Alternatives / Private Wealth funds (exact sheet names; no catalog
+    #     product_id — addressable by name in any case) ----------------------
+    "silverdale fund (nov 2027)": "Silverdale Fund (Nov 2027)",
+    "silverdale fund (oct 2028)": "Silverdale Fund (Oct 2028)",
+    "silverdale fund (feb 2029)": "Silverdale Fund (Feb 2029)",
+    "blackrock private credit fund": "Blackrock Private Credit Fund",
+    "blackrock private credit": "Blackrock Private Credit Fund",
+    "monroe income plus fund": "Monroe Income Plus Fund",
+    "monroe income plus": "Monroe Income Plus Fund",
 }
 
 
