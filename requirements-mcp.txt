@@ -1,0 +1,20 @@
+# Dependencies for the advisor-facing MCP server (portfolio_exposure_mcp.py).
+#
+#     pip install -r requirements-mcp.txt
+#
+# The exposure tools import the SAME calculation chain the Streamlit app uses
+# (mcp/exposure.py -> mcp/_data_loader.py -> utils/exposure.py), which pulls in
+# pandas / openpyxl and even streamlit's cache decorator. So we install the full
+# app stack via requirements.txt, then add only the MCP transport layer on top.
+# Keeping this separate from requirements.txt means the Streamlit Cloud
+# deployment is not forced to install fastmcp/mcp.
+-r requirements.txt
+
+# --- MCP server layer ---
+# fastmcp DEPENDS ON the official `mcp` SDK and does `import mcp.types`
+# internally, so installing fastmcp brings the SDK along automatically. We pin
+# `mcp` explicitly for reproducibility (and to document the path-merge that
+# portfolio_exposure_mcp.py performs to keep the SDK `mcp` and this repo's local
+# `mcp/` package from colliding).
+fastmcp>=3.4         # advisor-facing FastMCP server (verified on 3.4.2)
+mcp>=1.27            # official MCP SDK; transitive via fastmcp (verified on 1.27.2)

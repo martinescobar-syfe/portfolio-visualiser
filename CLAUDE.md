@@ -52,11 +52,17 @@ portfolio-visualiser/
 │   ├── pdf_gen.py               # Streamlit PDF export UI (Advisory Tool)
 │   ├── pdf_helper.py            # Brokerage-PDF parsing via Gemini + yfinance enrichment
 │   └── portfolio_report_generator.py  # ReportLab Portfolio Summary PDF
+├── mcp/                         # Headless calculator package behind the advisor MCP layer
+│   ├── exposure.py              # NAV-friendly, normalised country/sector/asset-class slices
+│   ├── _data_loader.py          # Loads Inv_Data_Hardcoded.xlsx into cached reference frames
+│   ├── holdings.py              # CUSTOM expansion + client-holding aggregation
+│   └── ...                      # cash_flow / diversification / forecast / performance / recommender
+├── portfolio_exposure_mcp.py    # FastMCP server (stdio) — exposes exposure tools to the advisor bot (§13)
 ├── port_cons.py                 # Legacy optimisation + FI + FF5 helpers (used by Builder + ui_functions)
 ├── styles/
 │   └── syfe_colors.py           # Brand palette + helper functions
-├── Data/                        # Reference data (gitignored — supplied separately)
-│   ├── Inv_Data_Hardcoded.xlsx              # Canonical static dataset (6 sheets)
+├── Data/                        # Reference data (TRACKED in git, not ignored)
+│   ├── Inv_Data_Hardcoded.xlsx              # Canonical static dataset (committed; powers the MCP exposure tools)
 │   ├── F-F_Research_Data_5_Factors_2x3_daily.csv  # Kenneth French FF5 factors
 │   ├── saved_portfolios.json                # Local fallback for Builder templates
 │   ├── Portfolio_Visualiser_*.pdf           # PDF templates (cover, landscape, fonts)
@@ -72,8 +78,10 @@ portfolio-visualiser/
 ├── allocation_aggregation_reference.py  # Spec for exposure math. NOT imported.
 ├── Syfe_Context.md              # Long-form product catalogue (human ref; not imported)
 ├── insight_generation_instructions.md   # Prompt spec for diversification insights (human ref)
+├── .mcp.json                    # Project-scoped MCP registration (the syfe-exposure server)
 ├── pytest.ini
-└── requirements.txt
+├── requirements.txt
+└── requirements-mcp.txt         # Extra deps to run the MCP server (fastmcp + base stack)
 ```
 
 ---
@@ -390,6 +398,7 @@ These are real but tolerated for now. Heads up before you commit changes that to
 | Change a performance metric formula | `utils/performance.py` — then run `pytest tests/test_performance.py` and (if intentional) regen pinned values. |
 | Change a Builder optimiser | `port_cons.py` for the engine; `pages/Builder.py` line ~465 for the wiring. |
 | Add a new exposure dimension | Add a sheet to the Excel + a loader line in `utils/data_loader.py` + a renderer to `utils/exposure.get_exposure_charts` + a tab in the page. |
+| Change what the advisor MCP exposure tools return | `mcp/exposure.py` (normalise / NAV-friendly logic) + `portfolio_exposure_mcp.py` (tool wrappers + product-name alias map). To map a new playground `product_id` to its sheet column, add an entry to `_PRODUCT_ALIASES`. See §13. |
 | Reword a diversification insight | `utils/llm_helper.generate_diversification_insights` (prompt) **and** `insight_generation_instructions.md` (human-readable spec). |
 | Add a new section to the PDF report | `utils/pdf_gen.generate_report_content` (Advisory Tool flow) or `utils/portfolio_report_generator.PortfolioReportGenerator.generate_report` (Portfolio Summary). |
 | Tweak Syfe brand colours | `styles/syfe_colors.py`. Pages that hardcode hex (e.g. `Advisory_Tool.py` CSS) will need manual updates too. |
@@ -413,7 +422,82 @@ These are intentionally **not imported** by the app but live in the repo for ref
 
 ---
 
-## 13. How to use this file as an agent
+## 13. Advisor MCP — deterministic exposure tools (`portfolio_exposure_mcp.py`)
+
+**What it is.** A FastMCP (stdio) server exposing the look-through exposure math
+(`mcp/exposure.py` → `utils/exposure.py`, backed by `Data/Inv_Data_Hardcoded.xlsx`)
+as tools the advisor bot can call. The numbers are pure deterministic matrix
+maths — no LLM in the loop.
+
+**Tools (server name `syfe-exposure`):**
+
+| Tool | Returns |
+|---|---|
+| `country_exposure(weights)` | `{country: weight}` — sums to 1, non-negative |
+| `sector_exposure(weights)` | `{sector: weight}` — sums to 1, non-negative |
+| `asset_class_exposure(weights)` | `{asset_class: weight}` — sums to 1, non-negative |
+| `top_holdings(weights, top_n=10)` | top-N underlying single names (look-through); sums to what the slice captures, NOT forced to 1 |
+
+All four accept an optional `custom_etf_nav` map for CUSTOM-portfolio expansion.
+
+**Two properties that make it advisor-friendly:**
+
+- **NAV-friendly.** `weights` may be normalised weights, percentages, OR raw
+  dollar NAVs — the output is rescaled by the input sum, so
+  `{"Core Equity100": 60000, "Equity Alpha": 40000}` ≡
+  `{"Core Equity100": 0.6, "Equity Alpha": 0.4}`.
+- **Normalised + "Others".** Negatives are clipped to 0; the three slice tools
+  always sum to 1.0; any input with no column in the relevant sheet is collected
+  into `"Others"`. **A large `"Others"` is a data-coverage gap, not a real bucket.**
+
+**Auto-call recipe — how an exposure question gets answered.** When a client asks
+"what's my country / sector / asset-class exposure?" or "what am I actually holding?":
+
+1. `mcp__syfe-advisor-playground__get_portfolios` for the client → read each
+   managed holding's product id and its NAV.
+2. Build `{product_id: nav}` verbatim (raw NAVs are fine). Product ids like
+   `equity_alpha`, `income_plus_enhance`, `cash_plus_guaranteed_sgd` are mapped to
+   their sheet columns by `_PRODUCT_ALIASES` inside the server — **pass them
+   through unchanged.**
+3. Call `country_exposure` / `sector_exposure` / `asset_class_exposure` /
+   `top_holdings` with that dict.
+4. Read back the breakdown; flag any meaningful `"Others"` as missing data, not a
+   real allocation.
+
+Worked example — Vincent's managed book
+`{equity_alpha: 1.85M, income_plus_enhance: 1.30M, cash_plus_guaranteed_sgd: 1.05M}`
+resolves to ≈ 44% Equity / 31% Fixed income / 25% Cash with `Others ≈ 0`.
+
+**Product-name bridge.** The playground returns product *ids* (`equity_alpha`);
+the Excel sheets use column *names* (`Equity Alpha`). `_PRODUCT_ALIASES` +
+`_resolve_product_keys` in `portfolio_exposure_mcp.py` bridge the two and sum
+duplicates. To support a new product, add one `product_id → "Sheet Column"`
+entry to `_PRODUCT_ALIASES`.
+
+**The `mcp` name collision (do not "simplify" the bootstrap).** This repo's local
+`mcp/` package and the MCP SDK's top-level `mcp` collide. fastmcp depends on the
+SDK (`import mcp.types`), so the server imports the SDK `mcp` first (repo root off
+`sys.path`), then appends the local `mcp/` dir to `mcp.__path__` (the submodule
+sets are disjoint → safe union). Flatten that and the server stops importing
+(`ModuleNotFoundError: No module named 'mcp.types'`). Full rationale in the module
+docstring.
+
+**Run / register.**
+
+```
+pip install -r requirements-mcp.txt          # fastmcp + base stack
+python portfolio_exposure_mcp.py             # stdio (manual smoke test)
+```
+
+Project-scoped registration lives in `.mcp.json` (server `syfe-exposure`, launched
+as `python3 ${CLAUDE_PROJECT_DIR}/portfolio_exposure_mcp.py`); each user approves
+the project MCP server once. The server locates its data via `__file__` (CWD
+doesn't matter) and redirects stdout → stderr during import so the JSON-RPC
+channel stays clean.
+
+---
+
+## 14. How to use this file as an agent
 
 - **Skim section 1–3** to know which page handles what.
 - **Section 4** is your data map. Always check this before assuming where a value comes from.
