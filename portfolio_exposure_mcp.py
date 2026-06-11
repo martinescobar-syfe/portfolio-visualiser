@@ -107,6 +107,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 from typing import Dict, Optional
 
@@ -278,20 +279,58 @@ _PRODUCT_ALIASES = {
 }
 
 
+# --- normalisation fallback -------------------------------------------------
+# Exact (lower/strip) matching against _PRODUCT_ALIASES above is the primary
+# path. But a product_id can arrive in a slug form the map doesn't list verbatim
+# — most importantly the Private Wealth alternative funds, whose real product_ids
+# aren't in the playground catalog yet and could be slugged
+# "blackrock_private_credit" or "silverdale_nov_2027". So we build a SECONDARY
+# index keyed by a NORMALISED form (lowercase; "_ - & , ( )" -> space; the word
+# "fund" dropped; whitespace collapsed) of every alias key AND every canonical
+# column name. That lets "silverdale_nov_2027" collapse onto the same key as the
+# canonical "Silverdale Fund (Nov 2027)" without hard-coding (guessing) each
+# slug. Exact matches always win; this only runs on a miss, so it never changes
+# an already-correct resolution. tests/test_exposure_aliases.py asserts the
+# normalisation stays injective over the canonical names (no two products
+# collapse to the same normalised key).
+_SLUG_PUNCT = re.compile(r"[()_\-&,]+")
+_FUND_WORD = re.compile(r"\bfund\b")
+_WS = re.compile(r"\s+")
+
+
+def _norm_key(s: object) -> str:
+    out = _SLUG_PUNCT.sub(" ", str(s).strip().lower())
+    out = _FUND_WORD.sub(" ", out)
+    return _WS.sub(" ", out).strip()
+
+
+# norm(form) -> canonical column. Alias keys first, then canonical names; first
+# writer wins (setdefault) so an explicit alias key is never overridden.
+_NORM_INDEX: Dict[str, str] = {}
+for _k, _v in _PRODUCT_ALIASES.items():
+    _NORM_INDEX.setdefault(_norm_key(_k), _v)
+for _v in set(_PRODUCT_ALIASES.values()):
+    _NORM_INDEX.setdefault(_norm_key(_v), _v)
+
+
 def _resolve_product_keys(
     weights: Optional[Dict[str, float]],
 ) -> Optional[Dict[str, float]]:
     """Remap playground product_ids / display_names to sheet column headers.
 
-    Case-insensitive, whitespace-tolerant. Unknown keys pass through unchanged
-    so already-correct sheet names, ETF tickers and "CUSTOM" are untouched. If
-    two input keys collapse to the same canonical name their weights are summed.
+    Case-insensitive and whitespace-tolerant, with a normalised-slug fallback
+    (see ``_NORM_INDEX``) so underscore / paren / "fund" variants still resolve.
+    Unknown keys pass through unchanged so already-correct sheet names, ETF
+    tickers and "CUSTOM" are untouched. If two input keys collapse to the same
+    canonical name their weights are summed.
     """
     if not weights:
         return weights
     out: Dict[str, float] = {}
     for k, v in weights.items():
-        canonical = _PRODUCT_ALIASES.get(str(k).strip().lower(), k)
+        canonical = _PRODUCT_ALIASES.get(str(k).strip().lower())
+        if canonical is None:
+            canonical = _NORM_INDEX.get(_norm_key(k), k)
         out[canonical] = out.get(canonical, 0.0) + float(v)
     return out
 

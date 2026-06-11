@@ -133,3 +133,56 @@ def test_resolve_handles_empty_and_none() -> None:
     """Empty / None inputs pass straight through (no crash)."""
     assert pem._resolve_product_keys(None) is None
     assert pem._resolve_product_keys({}) == {}
+
+
+# --- normalisation-fallback (slug) resolution -------------------------------
+# Multi-client testing showed alt-fund product_id slugs (not in the playground
+# catalog yet) leaked 100% into "Others". The resolver now has a normalised-slug
+# fallback; these tests pin that behaviour and its safety invariants.
+
+def test_normalisation_is_injective_over_canonical_names() -> None:
+    """The fallback must not collapse two DISTINCT managed columns onto the same
+    normalised key — otherwise a slug could silently resolve to the wrong
+    product. (This is what makes deriving matches from canonical names safe.)"""
+    seen: dict[str, str] = {}
+    for c in sorted(set(pem._PRODUCT_ALIASES.values())):
+        n = pem._norm_key(c)
+        assert n not in seen, (
+            f"normalisation collision: {c!r} and {seen[n]!r} both normalise to {n!r}")
+        seen[n] = c
+
+
+def test_alt_fund_underscore_slugs_resolve() -> None:
+    """Private Wealth alt-fund slugs must resolve to their sheet columns via the
+    normalisation fallback — the leak found in multi-client testing."""
+    cases = {
+        "blackrock_private_credit": "Blackrock Private Credit Fund",
+        "blackrock_private_credit_fund": "Blackrock Private Credit Fund",
+        "monroe_income_plus": "Monroe Income Plus Fund",
+        "monroe_income_plus_fund": "Monroe Income Plus Fund",
+        "silverdale_nov_2027": "Silverdale Fund (Nov 2027)",
+        "silverdale_oct_2028": "Silverdale Fund (Oct 2028)",
+        "silverdale_feb_2029": "Silverdale Fund (Feb 2029)",
+    }
+    for slug, canonical in cases.items():
+        assert pem._resolve_product_keys({slug: 1.0}) == {canonical: 1.0}, slug
+
+
+def test_slug_resolved_targets_are_real_columns(slice_sheets) -> None:
+    """The columns the alt-fund slugs resolve to must exist in every slice sheet
+    (else they'd still land in Others despite resolving)."""
+    targets = {"Blackrock Private Credit Fund", "Monroe Income Plus Fund",
+               "Silverdale Fund (Nov 2027)", "Silverdale Fund (Oct 2028)",
+               "Silverdale Fund (Feb 2029)"}
+    for sheet_name, df in slice_sheets.items():
+        missing = sorted(t for t in targets if t not in set(df.columns))
+        assert not missing, f"{sheet_name} sheet missing: {missing}"
+
+
+def test_normalisation_only_runs_on_miss() -> None:
+    """Exact matches and unknown tickers are unaffected by the fallback."""
+    assert pem._resolve_product_keys({"equity_alpha": 1.0}) == {"Equity Alpha": 1.0}
+    # bare tickers normalise to themselves and aren't in the index -> passthrough
+    assert pem._resolve_product_keys({"QQQ": 1.0}) == {"QQQ": 1.0}
+    assert pem._resolve_product_keys({"AGGG": 1.0}) == {"AGGG": 1.0}
+    assert pem._resolve_product_keys({"CUSTOM": 1.0}) == {"CUSTOM": 1.0}
