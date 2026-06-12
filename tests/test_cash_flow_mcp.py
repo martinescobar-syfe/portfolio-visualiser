@@ -181,3 +181,15 @@ def test_unsupported_currency_codes_are_normalised() -> None:
                             display_currency="HKD")
     assert r2["currency"] == "HKD"
     assert r2["breakdown"][0]["base_currency"] == "SGD"
+
+
+def test_cashflow_effective_yield_fx_consistent_with_base_currencies() -> None:
+    """With base_currencies the effective_yield denominator is FX-correct, so it
+    no longer exceeds the whole-book weighted yield (stress-sweep finding): a
+    filtered USD equity sleeve was mis-inferred as SGD, under-counting the
+    denominator and inflating effective_yield."""
+    w = {"core_equity100": 100_000, "monroe_income_plus": 100_000}
+    bc = {"core_equity100": "USD", "monroe_income_plus": "USD"}
+    cf = project_monthly_cash_flow(w, base_currencies=bc, display_currency="SGD")
+    wy = get_weighted_yield(w, base_currencies=bc, display_currency="SGD")
+    assert cf["effective_yield"] <= wy["weighted_yield"] + 1e-9

@@ -30,6 +30,7 @@ from mcp._data_loader import get_reference_data
 
 def project_monthly_cash_flow(
     portfolio_navs: dict[str, float],
+    base_currencies: Optional[dict[str, str]] = None,
     yield_preference: str = "YTM",
     display_currency: str = "SGD",
     usdsgd: Optional[float] = None,
@@ -120,13 +121,12 @@ def project_monthly_cash_flow(
     # Effective yield = annual income (display ccy) / total NAV in display ccy.
     total_nav_disp = 0.0
     for ticker, nav in (portfolio_navs or {}).items():
+        base = (base_currencies or {}).get(ticker)
+        if base not in ("SGD", "USD", "HKD"):
+            base = get_ticker_base_currency(ticker)  # unknown / missing -> infer
         try:
             total_nav_disp += convert_currency(
-                float(nav),
-                get_ticker_base_currency(ticker),
-                display_currency,
-                fx_usdsgd,
-                fx_usdhkd,
+                float(nav), base, display_currency, fx_usdsgd, fx_usdhkd,
             )
         except (ValueError, TypeError):
             continue

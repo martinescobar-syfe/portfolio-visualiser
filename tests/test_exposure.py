@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from utils.exposure import calculate_exposure
+from utils.exposure import calculate_exposure, clean_holding_name
 
 
 def test_calculate_exposure_decimal_input() -> None:
@@ -87,3 +87,13 @@ def test_overlap_min_kernel_symmetric_diagonal_one() -> None:
     assert np.isclose(overlap(b2, b2), 1.0, atol=1e-12)
     # Off-diagonal overlap is in [0, 1]
     assert 0.0 <= overlap(b1, b2) <= 1.0
+
+
+def test_clean_holding_name_unifies_share_classes_not_companies() -> None:
+    """Share-class unification must not over-merge: stripping only CLASS
+    designators keeps GOOG/GOOGL-style merges while keeping unrelated firms that
+    merely share a base name (Titan Co Ltd vs Titan SA) distinct."""
+    # share classes of the SAME company unify
+    assert clean_holding_name("Alphabet Inc Class A") == clean_holding_name("Alphabet Inc Class C")
+    # unrelated companies that merely share a base name must NOT merge
+    assert clean_holding_name("Titan Co Ltd") != clean_holding_name("Titan SA")

@@ -534,6 +534,7 @@ def weighted_dividend_yield(
 @server.tool()
 def cash_flow(
     weights: Dict[str, float],
+    base_currencies: Optional[Dict[str, str]] = None,
     yield_preference: str = "T12M",
     display_currency: str = "SGD",
     usdsgd: Optional[float] = None,
@@ -549,6 +550,9 @@ def cash_flow(
 
     Args:
         weights: ``{product_id_or_name: nav}`` (each NAV in its sleeve's base ccy).
+        base_currencies: ``{product_id_or_name: "USD"|"SGD"|"HKD"}`` from
+            get_portfolios — gives an FX-correct ``effective_yield`` denominator on
+            a multi-currency book (else the base ccy is inferred from the name).
         yield_preference: ``"T12M"`` (default) or ``"YTM"``.
         display_currency: "SGD"/"USD"/"HKD".
         usdsgd / usdhkd: override FX (default latest reference rates).
@@ -563,6 +567,7 @@ def cash_flow(
     """
     return project_monthly_cash_flow(
         _resolve_product_keys(weights),
+        base_currencies=_resolve_ccy_map(base_currencies),
         yield_preference=yield_preference,
         display_currency=display_currency,
         usdsgd=usdsgd,

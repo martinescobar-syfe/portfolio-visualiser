@@ -210,9 +210,10 @@ def clean_holding_name(name):
         return str(name).strip()
         
     name_upper = name.strip().upper()
-    suffixes = [' CLASS A', ' CLASS B', ' CLASS C', ' CL A', ' CL B', ' CL C', 
-                ' INC', ' CORP', ' LTD', ' PLC', ' NV', ' AG', ' SA', ' SE', 
-                ' CO', ' HLDG', ' HOLDINGS', ' GROUP', ' GRP']
+    # Strip ONLY share-class designators. Stripping corporate-form suffixes
+    # (INC/LTD/SA/CO/...) merges unrelated firms that share a base name — e.g.
+    # "Titan Co Ltd" (India) + "Titan SA" (Greece) would both collapse to "TITAN".
+    suffixes = [' CLASS A', ' CLASS B', ' CLASS C', ' CL A', ' CL B', ' CL C']
     
     for suffix in suffixes:
         if name_upper.endswith(suffix):
