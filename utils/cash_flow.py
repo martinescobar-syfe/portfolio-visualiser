@@ -73,7 +73,7 @@ def get_payment_frequency(ticker):
 
 def get_ticker_base_currency(ticker):
     t = str(ticker).upper()
-    if 'BLACKROCK' in t or 'MONROE' in t:
+    if 'BLACKROCK' in t or 'MONROE' in t or 'SILVERDALE' in t:
         return 'USD'
     if 'USD' in t:
         return 'USD'

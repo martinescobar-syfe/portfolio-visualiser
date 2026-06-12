@@ -167,6 +167,7 @@ with contextlib.redirect_stdout(sys.stderr):
     from fastmcp import FastMCP
 
     from mcp._data_loader import get_reference_data
+    from mcp.cash_flow import get_weighted_yield, project_monthly_cash_flow
     from mcp.exposure import (
         get_asset_class_exposure,
         get_country_exposure,
@@ -328,11 +329,29 @@ def _resolve_product_keys(
         return weights
     out: Dict[str, float] = {}
     for k, v in weights.items():
-        canonical = _PRODUCT_ALIASES.get(str(k).strip().lower())
-        if canonical is None:
-            canonical = _NORM_INDEX.get(_norm_key(k), k)
+        canonical = _canonical_key(k)
         out[canonical] = out.get(canonical, 0.0) + float(v)
     return out
+
+
+def _canonical_key(k: object) -> str:
+    """Resolve ONE product_id / display name to its sheet column header
+    (exact-match first, then normalised-slug fallback, else passthrough)."""
+    canonical = _PRODUCT_ALIASES.get(str(k).strip().lower())
+    if canonical is None:
+        canonical = _NORM_INDEX.get(_norm_key(k), k)
+    return canonical
+
+
+def _resolve_ccy_map(
+    base_currencies: Optional[Dict[str, str]],
+) -> Optional[Dict[str, str]]:
+    """Re-key a ``{product_id: currency}`` map onto canonical sheet column names
+    so it lines up with the resolved weights (e.g. ``{"equity_alpha": "USD"}`` ->
+    ``{"Equity Alpha": "USD"}``)."""
+    if not base_currencies:
+        return base_currencies
+    return {_canonical_key(k): v for k, v in base_currencies.items()}
 
 
 @server.tool()
@@ -448,6 +467,96 @@ def top_holdings(
     """
     return get_top_holdings(
         _resolve_product_keys(weights), top_n=top_n, custom_etf_nav=custom_etf_nav
+    )
+
+
+@server.tool()
+def weighted_dividend_yield(
+    weights: Dict[str, float],
+    base_currencies: Optional[Dict[str, str]] = None,
+    yield_preference: str = "T12M",
+    display_currency: str = "SGD",
+    usdsgd: Optional[float] = None,
+    usdhkd: Optional[float] = None,
+) -> dict:
+    """NAV-weighted trailing-12-month dividend yield of a client's portfolio.
+
+    Use when the client asks "what's my portfolio's dividend yield?", "how much
+    income does my book throw off?", or "what's my blended yield?". This is the
+    proper weighted yield over the WHOLE book — every sleeve's trailing-12-month
+    dividend yield weighted by its NAV — so a growth-heavy book correctly shows a
+    LOW blended yield (equity dividends are included, not excluded).
+
+    Feed the client's holdings straight from get_portfolios: ``weights`` =
+    ``{product_id: nav}`` and ``base_currencies`` = ``{product_id: base_currency}``.
+    Supplying base_currencies makes a multi-currency book exact — otherwise the
+    base currency is guessed from the name, which is unreliable for USD equity
+    sleeves like "Equity Alpha".
+
+    Args:
+        weights: ``{product_id_or_name: nav}`` (each NAV in its sleeve's base ccy).
+        base_currencies: ``{product_id_or_name: "USD"|"SGD"|"HKD"}`` from
+            get_portfolios. Authoritative when given; inferred otherwise.
+        yield_preference: ``"T12M"`` (trailing 12-month dividend yield, default)
+            or ``"YTM"``. Per holding it falls back to the other source only when
+            the preferred one is missing.
+        display_currency: currency for the income figures ("SGD"/"USD"/"HKD").
+        usdsgd / usdhkd: override FX (default latest reference rates). For
+            playground clients pass the playground's usd_sgd so the basis matches.
+
+    Returns:
+        ``{"weighted_yield": float, "weighted_yield_pct": float,
+           "annual_income": float, "total_nav": float, "coverage_pct": float,
+           "currency": str, "yield_preference": str, "breakdown": [...]}``.
+        ``coverage_pct`` is the share of NAV carrying a non-zero yield — a low
+        value means most of the book is non-yielding (growth/cash), NOT a data gap.
+    """
+    return get_weighted_yield(
+        _resolve_product_keys(weights),
+        base_currencies=_resolve_ccy_map(base_currencies),
+        yield_preference=yield_preference,
+        display_currency=display_currency,
+        usdsgd=usdsgd,
+        usdhkd=usdhkd,
+    )
+
+
+@server.tool()
+def cash_flow(
+    weights: Dict[str, float],
+    yield_preference: str = "T12M",
+    display_currency: str = "SGD",
+    usdsgd: Optional[float] = None,
+    usdhkd: Optional[float] = None,
+) -> dict:
+    """Projected next-12-months income (cash flow) from a client's portfolio.
+
+    Use when the client asks "how much income / monthly payout will I get?" or
+    wants a retirement-income view. Only income-bearing sleeves contribute
+    (cash / growth / thematic / CUSTOM are filtered out); REIT-style sleeves pay
+    quarterly, the rest amortise monthly. For the blended portfolio dividend
+    YIELD across the whole book, use ``weighted_dividend_yield`` instead.
+
+    Args:
+        weights: ``{product_id_or_name: nav}`` (each NAV in its sleeve's base ccy).
+        yield_preference: ``"T12M"`` (default) or ``"YTM"``.
+        display_currency: "SGD"/"USD"/"HKD".
+        usdsgd / usdhkd: override FX (default latest reference rates).
+
+    Returns:
+        ``{"annual_total": float, "monthly_average": float,
+           "effective_yield": float, "currency": str,
+           "monthly": {"Jan": float, ..., "Dec": float}, "breakdown": [...]}``.
+        Note ``effective_yield`` = income / TOTAL nav (only income sleeves in the
+        numerator), so it is NOT the whole-book dividend yield — use
+        ``weighted_dividend_yield`` for that.
+    """
+    return project_monthly_cash_flow(
+        _resolve_product_keys(weights),
+        yield_preference=yield_preference,
+        display_currency=display_currency,
+        usdsgd=usdsgd,
+        usdhkd=usdhkd,
     )
 
 

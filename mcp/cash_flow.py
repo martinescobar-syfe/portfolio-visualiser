@@ -19,6 +19,7 @@ from utils.cash_flow import (  # noqa: E402
     build_fi_metrics_table,
     compute_portfolio_cash_flows,
     convert_currency,
+    get_combined_yield,
     get_reference_fx,
     get_ticker_base_currency,
 )
@@ -140,6 +141,110 @@ def project_monthly_cash_flow(
         "currency": display_currency,
         "monthly": {k: float(v) for k, v in monthly_totals.items()},
         "breakdown": breakdown,
+    }
+
+
+def get_weighted_yield(
+    portfolio_navs: dict[str, float],
+    base_currencies: Optional[dict[str, str]] = None,
+    yield_preference: str = "T12M",
+    display_currency: str = "SGD",
+    usdsgd: Optional[float] = None,
+    usdhkd: Optional[float] = None,
+) -> dict:
+    """NAV-weighted trailing-12-month dividend yield across the WHOLE book.
+
+    Unlike :func:`project_monthly_cash_flow` (which models *income* sleeves and
+    their payout schedule, filtering out growth / cash / thematic), this is the
+    pure portfolio dividend yield: every holding's yield weighted by its NAV, so
+    a growth-heavy book correctly shows a low blended yield instead of excluding
+    those sleeves entirely::
+
+        weighted_yield = Σ(nav_i × yield_i) / Σ(nav_i)
+
+    Per-holding yield is the same PV ``get_combined_yield`` lookup the app uses,
+    with ``yield_preference`` ("T12M" = trailing 12-month dividend yield, the
+    default here; it falls back to YTM only when a holding has no T12M figure).
+    NAVs are FX-converted to ``display_currency`` first (base currency inferred
+    from the portfolio name), so a multi-currency book is weighted correctly.
+
+    Args:
+        portfolio_navs: ``{portfolio_name: nav_in_base_ccy}``.
+        base_currencies: optional ``{portfolio_name: "USD"|"SGD"|"HKD"}`` — the
+            actual base currency per sleeve (pass it straight from
+            ``get_portfolios``). When given it is authoritative; otherwise the
+            currency is inferred from the portfolio name, which is unreliable for
+            USD equity sleeves (e.g. "Equity Alpha"). Supplying it makes the
+            multi-currency weighting exact.
+        yield_preference: ``"T12M"`` (default) or ``"YTM"``.
+        display_currency: ``"SGD"``, ``"USD"`` or ``"HKD"``.
+        usdsgd: override FX rate. Defaults to latest from reference data.
+        usdhkd: override FX rate. Defaults to latest from reference data.
+
+    Returns:
+        ``{
+            "weighted_yield":     float,  # decimal, e.g. 0.0412 = 4.12%
+            "weighted_yield_pct": float,  # convenience = weighted_yield * 100
+            "annual_income":      float,  # display ccy
+            "total_nav":          float,  # display ccy (sum of positive NAVs)
+            "coverage_pct":       float,  # share of NAV carrying a non-zero yield
+            "no_yield_data":      [str],  # holdings with no yield figure — they
+                                          # drag the average down; a yield-bearing
+                                          # product here is a reference-data gap
+            "currency":           str,
+            "yield_preference":   str,
+            "breakdown": [
+                {"portfolio", "nav", "base_currency", "yield", "yield_pct",
+                 "yield_source", "annual_income"}, ...   # sorted by income desc
+            ],
+        }``
+    """
+    ref = get_reference_data()
+    ref_usdsgd, ref_usdhkd = get_reference_fx(ref.fx)
+    fx_usdsgd = ref_usdsgd if usdsgd is None else float(usdsgd)
+    fx_usdhkd = ref_usdhkd if usdhkd is None else float(usdhkd)
+
+    rows = []
+    total_nav = 0.0
+    weighted_income = 0.0
+    covered_nav = 0.0
+    for name, nav in (portfolio_navs or {}).items():
+        try:
+            nav_f = float(nav)
+        except (ValueError, TypeError):
+            continue
+        if nav_f <= 0:
+            continue
+        base = (base_currencies or {}).get(name) or get_ticker_base_currency(name)
+        nav_disp = convert_currency(nav_f, base, display_currency, fx_usdsgd, fx_usdhkd)
+        y, src = get_combined_yield(name, ref.fi_metrics, yield_preference)
+        total_nav += nav_disp
+        weighted_income += nav_disp * y
+        if y > 0:
+            covered_nav += nav_disp
+        rows.append({
+            "portfolio": str(name),
+            "nav": nav_disp,
+            "base_currency": base,
+            "yield": y,
+            "yield_pct": y * 100.0,
+            "yield_source": src,
+            "annual_income": nav_disp * y,
+        })
+
+    weighted_yield = (weighted_income / total_nav) if total_nav > 0 else 0.0
+    rows.sort(key=lambda r: r["annual_income"], reverse=True)
+    no_yield_data = [r["portfolio"] for r in rows if r["yield"] <= 0]
+    return {
+        "weighted_yield": weighted_yield,
+        "weighted_yield_pct": weighted_yield * 100.0,
+        "annual_income": weighted_income,
+        "total_nav": total_nav,
+        "coverage_pct": (covered_nav / total_nav) if total_nav > 0 else 0.0,
+        "no_yield_data": no_yield_data,
+        "currency": display_currency,
+        "yield_preference": yield_preference,
+        "breakdown": rows,
     }
 
 

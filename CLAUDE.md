@@ -422,7 +422,7 @@ These are intentionally **not imported** by the app but live in the repo for ref
 
 ---
 
-## 13. Advisor MCP — deterministic exposure tools (`portfolio_exposure_mcp.py`)
+## 13. Advisor MCP — deterministic exposure + cashflow tools (`portfolio_exposure_mcp.py`)
 
 **What it is.** A FastMCP (stdio) server exposing the look-through exposure math
 (`mcp/exposure.py` → `utils/exposure.py`, backed by `Data/Inv_Data_Hardcoded.xlsx`)
@@ -437,8 +437,10 @@ maths — no LLM in the loop.
 | `sector_exposure(weights)` | `{sector: weight}` — sums to 1, non-negative |
 | `asset_class_exposure(weights)` | `{asset_class: weight}` — sums to 1, non-negative |
 | `top_holdings(weights, top_n=10)` | top-N underlying single names (look-through); sums to what the slice captures, NOT forced to 1 |
+| `weighted_dividend_yield(weights, base_currencies=None)` | NAV-weighted trailing-12M dividend yield over the WHOLE book → `{weighted_yield, weighted_yield_pct, annual_income, total_nav, coverage_pct, no_yield_data, breakdown}` (`no_yield_data` = sleeves with no yield figure) |
+| `cash_flow(weights)` | projected next-12-months income → `{annual_total, monthly_average, effective_yield, monthly:{Jan..Dec}, breakdown}` (income sleeves only) |
 
-All four accept an optional `custom_etf_nav` map for CUSTOM-portfolio expansion.
+The four exposure tools accept an optional `custom_etf_nav` map for CUSTOM-portfolio expansion.
 
 **Two properties that make it advisor-friendly:**
 
@@ -449,6 +451,19 @@ All four accept an optional `custom_etf_nav` map for CUSTOM-portfolio expansion.
 - **Normalised + "Others".** Negatives are clipped to 0; the three slice tools
   always sum to 1.0; any input with no column in the relevant sheet is collected
   into `"Others"`. **A large `"Others"` is a data-coverage gap, not a real bucket.**
+
+**Cashflow / yield tools.** `weighted_dividend_yield` is the blended portfolio
+dividend yield — every sleeve's trailing-12M yield (`yield_preference="T12M"`
+default; `"YTM"` available) weighted by NAV, **including** equity sleeves' small
+dividends, so a growth-heavy book correctly shows a low yield. `cash_flow`
+projects the 12-month income schedule but filters to income sleeves, so its
+`effective_yield` (income ÷ total NAV) is **not** the whole-book dividend yield —
+use `weighted_dividend_yield` for that. Both FX-convert internally: pass
+`base_currencies={product_id: ccy}` (straight from `get_portfolios`) plus
+`display_currency` and `usdsgd`/`usdhkd`, and a multi-currency book is exact — no
+manual FX pre-normalisation needed (unlike the exposure tools). `coverage_pct`
+reports the share of NAV carrying a non-zero yield (low = mostly growth/cash, not
+a data gap).
 
 **Auto-call recipe — how an exposure question gets answered.** When a client asks
 "what's my country / sector / asset-class exposure?" or "what am I actually holding?":
