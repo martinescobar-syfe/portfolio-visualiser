@@ -17,7 +17,7 @@ import os
 import pytest
 
 from mcp._data_loader import get_reference_data, set_reference_data
-from mcp.cash_flow import get_weighted_yield
+from mcp.cash_flow import get_weighted_yield, project_monthly_cash_flow
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "Data")
@@ -143,3 +143,22 @@ def test_nonfinite_nav_is_dropped() -> None:
     assert math.isfinite(r["total_nav"])
     assert math.isfinite(r["weighted_yield"])
     assert r["total_nav"] == pytest.approx(100_000, rel=1e-6)  # only the finite sleeve counts
+
+
+def test_absurd_fx_rate_does_not_overflow() -> None:
+    """A tiny-but-positive FX divisor + a large NAV must NOT overflow to Inf/null
+    — an out-of-range FX rate falls back to the reference rate (stress-test Bug C)."""
+    r = get_weighted_yield(
+        {"Income Enhance": 1e15, "Income Preserve": 1e15},
+        base_currencies={"Income Enhance": "SGD", "Income Preserve": "SGD"},
+        display_currency="USD", usdsgd=5e-309,
+    )
+    assert math.isfinite(r["total_nav"]) and r["total_nav"] > 0
+    assert 0 <= r["coverage_pct"] <= 1
+    assert math.isfinite(r["weighted_yield"])
+    c = project_monthly_cash_flow(
+        {"Income Enhance": 1e15, "Income Preserve": 1e15},
+        display_currency="USD", usdsgd=5e-309,
+    )
+    assert math.isfinite(c["annual_total"])
+    assert all(math.isfinite(v) for v in c["monthly"].values())

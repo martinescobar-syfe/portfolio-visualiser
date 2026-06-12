@@ -80,11 +80,12 @@ def project_monthly_cash_flow(
     ref_usdsgd, ref_usdhkd = get_reference_fx(ref.fx)
     fx_usdsgd = ref_usdsgd if usdsgd is None else float(usdsgd)
     fx_usdhkd = ref_usdhkd if usdhkd is None else float(usdhkd)
-    # Guard a non-positive / non-finite FX override (it would otherwise produce
-    # negative or NaN NAVs and income); fall back to the reference rate.
-    if not (math.isfinite(fx_usdsgd) and fx_usdsgd > 0):
+    # Guard a non-positive / non-finite / absurd FX override; out-of-range rates
+    # would produce negative, NaN, or (with a tiny rate + large NAV) Inf NAVs and
+    # income. Real USD/SGD/HKD rates sit well within (1e-6, 1e6); else fall back.
+    if not (math.isfinite(fx_usdsgd) and 1e-6 < fx_usdsgd < 1e6):
         fx_usdsgd = ref_usdsgd
-    if not (math.isfinite(fx_usdhkd) and fx_usdhkd > 0):
+    if not (math.isfinite(fx_usdhkd) and 1e-6 < fx_usdhkd < 1e6):
         fx_usdhkd = ref_usdhkd
 
     monthly_df, breakdown_df = compute_portfolio_cash_flows(
@@ -210,11 +211,12 @@ def get_weighted_yield(
     ref_usdsgd, ref_usdhkd = get_reference_fx(ref.fx)
     fx_usdsgd = ref_usdsgd if usdsgd is None else float(usdsgd)
     fx_usdhkd = ref_usdhkd if usdhkd is None else float(usdhkd)
-    # Guard a non-positive / non-finite FX override (it would otherwise produce
-    # negative or NaN NAVs and income); fall back to the reference rate.
-    if not (math.isfinite(fx_usdsgd) and fx_usdsgd > 0):
+    # Guard a non-positive / non-finite / absurd FX override; out-of-range rates
+    # would produce negative, NaN, or (with a tiny rate + large NAV) Inf NAVs and
+    # income. Real USD/SGD/HKD rates sit well within (1e-6, 1e6); else fall back.
+    if not (math.isfinite(fx_usdsgd) and 1e-6 < fx_usdsgd < 1e6):
         fx_usdsgd = ref_usdsgd
-    if not (math.isfinite(fx_usdhkd) and fx_usdhkd > 0):
+    if not (math.isfinite(fx_usdhkd) and 1e-6 < fx_usdhkd < 1e6):
         fx_usdhkd = ref_usdhkd
 
     rows = []
@@ -230,6 +232,8 @@ def get_weighted_yield(
             continue
         base = (base_currencies or {}).get(name) or get_ticker_base_currency(name)
         nav_disp = convert_currency(nav_f, base, display_currency, fx_usdsgd, fx_usdhkd)
+        if not math.isfinite(nav_disp):
+            continue  # FX overflow / non-finite conversion — drop this sleeve
         y, src = get_combined_yield(name, ref.fi_metrics, yield_preference)
         total_nav += nav_disp
         weighted_income += nav_disp * y
