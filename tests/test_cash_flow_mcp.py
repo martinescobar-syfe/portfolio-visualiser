@@ -11,6 +11,7 @@ at the time of writing; update them if the reference data changes.
 
 from __future__ import annotations
 
+import math
 import os
 
 import pytest
@@ -114,3 +115,31 @@ def test_high_yield_alt_funds_resolve() -> None:
     # Monroe 9.2% + Blackrock 9.8% equal-weighted = 9.5%
     assert r["weighted_yield_pct"] == pytest.approx(9.5, abs=0.05)
     assert all(b["base_currency"] == "USD" for b in r["breakdown"])
+
+
+def test_negative_or_zero_fx_falls_back_to_reference() -> None:
+    """A non-positive FX override must NOT yield negative NAV/income — it falls
+    back to the reference rate (stress-test Bug B)."""
+    r = get_weighted_yield(
+        {"Monroe Income Plus Fund": 10_000, "Income Preserve": 10_000},
+        base_currencies={"Monroe Income Plus Fund": "USD", "Income Preserve": "SGD"},
+        display_currency="SGD", usdsgd=-1.35,
+    )
+    assert r["total_nav"] > 0
+    assert r["annual_income"] >= 0
+    assert r["weighted_yield"] >= 0
+    assert all(b["nav"] >= 0 for b in r["breakdown"])
+    # zero is also handled (no div-by-zero, falls back)
+    r0 = get_weighted_yield({"Income Preserve": 10_000},
+                            base_currencies={"Income Preserve": "SGD"},
+                            display_currency="SGD", usdsgd=0)
+    assert r0["total_nav"] > 0
+
+
+def test_nonfinite_nav_is_dropped() -> None:
+    """inf / NaN NAVs must not crash or leak non-finite into the output
+    (stress-test Bug A defense)."""
+    r = get_weighted_yield({"Income Preserve": float("inf"), "Income Enhance": 100_000})
+    assert math.isfinite(r["total_nav"])
+    assert math.isfinite(r["weighted_yield"])
+    assert r["total_nav"] == pytest.approx(100_000, rel=1e-6)  # only the finite sleeve counts

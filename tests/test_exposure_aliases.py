@@ -186,3 +186,12 @@ def test_normalisation_only_runs_on_miss() -> None:
     assert pem._resolve_product_keys({"QQQ": 1.0}) == {"QQQ": 1.0}
     assert pem._resolve_product_keys({"AGGG": 1.0}) == {"AGGG": 1.0}
     assert pem._resolve_product_keys({"CUSTOM": 1.0}) == {"CUSTOM": 1.0}
+
+
+def test_resolve_drops_nonfinite_and_clamps_magnitude() -> None:
+    """NaN / inf NAVs are dropped and absurd magnitudes are clamped, so a garbage
+    value can't overflow a downstream sum to +inf and leak NaN (stress-test Bug A)."""
+    assert pem._resolve_product_keys({"core_equity100": float("nan"), "equity_alpha": 1.0}) == {"Equity Alpha": 1.0}
+    assert pem._resolve_product_keys({"core_equity100": float("inf"), "equity_alpha": 1.0}) == {"Equity Alpha": 1.0}
+    assert pem._resolve_product_keys({"core_equity100": 1e308}) == {"Core Equity100": 1e15}
+    assert pem._resolve_product_keys({"core_equity100": -1e308}) == {"Core Equity100": -1e15}

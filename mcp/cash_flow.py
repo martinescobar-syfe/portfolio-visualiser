@@ -7,6 +7,7 @@ outputs are dicts of 12-month projections + a per-portfolio breakdown.
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from typing import Optional
@@ -79,6 +80,12 @@ def project_monthly_cash_flow(
     ref_usdsgd, ref_usdhkd = get_reference_fx(ref.fx)
     fx_usdsgd = ref_usdsgd if usdsgd is None else float(usdsgd)
     fx_usdhkd = ref_usdhkd if usdhkd is None else float(usdhkd)
+    # Guard a non-positive / non-finite FX override (it would otherwise produce
+    # negative or NaN NAVs and income); fall back to the reference rate.
+    if not (math.isfinite(fx_usdsgd) and fx_usdsgd > 0):
+        fx_usdsgd = ref_usdsgd
+    if not (math.isfinite(fx_usdhkd) and fx_usdhkd > 0):
+        fx_usdhkd = ref_usdhkd
 
     monthly_df, breakdown_df = compute_portfolio_cash_flows(
         portfolio_navs,
@@ -203,6 +210,12 @@ def get_weighted_yield(
     ref_usdsgd, ref_usdhkd = get_reference_fx(ref.fx)
     fx_usdsgd = ref_usdsgd if usdsgd is None else float(usdsgd)
     fx_usdhkd = ref_usdhkd if usdhkd is None else float(usdhkd)
+    # Guard a non-positive / non-finite FX override (it would otherwise produce
+    # negative or NaN NAVs and income); fall back to the reference rate.
+    if not (math.isfinite(fx_usdsgd) and fx_usdsgd > 0):
+        fx_usdsgd = ref_usdsgd
+    if not (math.isfinite(fx_usdhkd) and fx_usdhkd > 0):
+        fx_usdhkd = ref_usdhkd
 
     rows = []
     total_nav = 0.0
@@ -213,7 +226,7 @@ def get_weighted_yield(
             nav_f = float(nav)
         except (ValueError, TypeError):
             continue
-        if nav_f <= 0:
+        if not math.isfinite(nav_f) or nav_f <= 0:
             continue
         base = (base_currencies or {}).get(name) or get_ticker_base_currency(name)
         nav_disp = convert_currency(nav_f, base, display_currency, fx_usdsgd, fx_usdhkd)

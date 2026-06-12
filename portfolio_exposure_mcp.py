@@ -106,6 +106,7 @@ is the signal that a column is missing.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import re
 import sys
@@ -329,8 +330,17 @@ def _resolve_product_keys(
         return weights
     out: Dict[str, float] = {}
     for k, v in weights.items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(fv):
+            continue  # drop NaN / inf so they can't poison downstream sums
+        # Clamp absurd magnitudes (no real NAV nears 1e15) so a garbage value
+        # can't overflow a downstream sum to +inf and leak NaN into the output.
+        fv = max(-1e15, min(1e15, fv))
         canonical = _canonical_key(k)
-        out[canonical] = out.get(canonical, 0.0) + float(v)
+        out[canonical] = out.get(canonical, 0.0) + fv
     return out
 
 
