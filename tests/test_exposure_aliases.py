@@ -195,3 +195,12 @@ def test_resolve_drops_nonfinite_and_clamps_magnitude() -> None:
     assert pem._resolve_product_keys({"core_equity100": float("inf"), "equity_alpha": 1.0}) == {"Equity Alpha": 1.0}
     assert pem._resolve_product_keys({"core_equity100": 1e308}) == {"Core Equity100": 1e15}
     assert pem._resolve_product_keys({"core_equity100": -1e308}) == {"Core Equity100": -1e15}
+
+
+def test_top_holdings_clamps_negative_top_n() -> None:
+    """Negative top_n must not mis-slice via pandas head(-n) — it clamps to 0."""
+    r = pem.top_holdings({"Core Equity100": 1.0}, top_n=-5)
+    assert r["top_n"] == 0
+    assert r["holdings"] == {}
+    assert 0 <= r["total_weight_in_top_n"] <= 1
+    assert pem.top_holdings({"Core Equity100": 1.0}, top_n=0)["holdings"] == {}

@@ -162,3 +162,22 @@ def test_absurd_fx_rate_does_not_overflow() -> None:
     )
     assert math.isfinite(c["annual_total"])
     assert all(math.isfinite(v) for v in c["monthly"].values())
+
+
+def test_unsupported_currency_codes_are_normalised() -> None:
+    """display_currency outside SGD/USD/HKD normalises to USD (an honest label,
+    not a silent mislabel); an unsupported base_currency falls back to inference."""
+    r = get_weighted_yield(
+        {"Income Enhance": 100_000}, base_currencies={"Income Enhance": "JPY"},
+        display_currency="EUR",
+    )
+    assert r["currency"] == "USD"  # unknown display -> USD bridge, label honest
+    assert math.isfinite(r["total_nav"]) and r["total_nav"] > 0
+    # 'JPY' base is unsupported -> inferred from the name ("Income" -> SGD), not 1:1
+    assert r["breakdown"][0]["base_currency"] == "SGD"
+    # supported codes are untouched
+    r2 = get_weighted_yield({"Income Enhance": 100_000},
+                            base_currencies={"Income Enhance": "SGD"},
+                            display_currency="HKD")
+    assert r2["currency"] == "HKD"
+    assert r2["breakdown"][0]["base_currency"] == "SGD"

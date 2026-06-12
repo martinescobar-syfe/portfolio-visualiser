@@ -236,6 +236,7 @@ def get_top_holdings(
         }``
     """
     ref = get_reference_data()
+    top_n = max(0, int(top_n))  # negative top_n would mis-slice via pandas head(-n)
     s = _weights_to_wgt_series(weights, custom_etf_nav)
     conc = get_concentration_exposure(s, ref.underlying, top_n=top_n)
     conc = _scale_and_clip(conc, _input_total(s)).sort_values(ascending=False)

@@ -87,6 +87,10 @@ def project_monthly_cash_flow(
         fx_usdsgd = ref_usdsgd
     if not (math.isfinite(fx_usdhkd) and 1e-6 < fx_usdhkd < 1e6):
         fx_usdhkd = ref_usdhkd
+    # Only SGD/USD/HKD are supported; an unknown display currency would otherwise
+    # be silently mislabelled with the USD-bridge value, so normalise it to USD.
+    if display_currency not in ("SGD", "USD", "HKD"):
+        display_currency = "USD"
 
     monthly_df, breakdown_df = compute_portfolio_cash_flows(
         portfolio_navs,
@@ -218,6 +222,10 @@ def get_weighted_yield(
         fx_usdsgd = ref_usdsgd
     if not (math.isfinite(fx_usdhkd) and 1e-6 < fx_usdhkd < 1e6):
         fx_usdhkd = ref_usdhkd
+    # Only SGD/USD/HKD are supported; an unknown display currency would otherwise
+    # be silently mislabelled with the USD-bridge value, so normalise it to USD.
+    if display_currency not in ("SGD", "USD", "HKD"):
+        display_currency = "USD"
 
     rows = []
     total_nav = 0.0
@@ -230,7 +238,9 @@ def get_weighted_yield(
             continue
         if not math.isfinite(nav_f) or nav_f <= 0:
             continue
-        base = (base_currencies or {}).get(name) or get_ticker_base_currency(name)
+        base = (base_currencies or {}).get(name)
+        if base not in ("SGD", "USD", "HKD"):
+            base = get_ticker_base_currency(name)  # unknown / missing -> infer
         nav_disp = convert_currency(nav_f, base, display_currency, fx_usdsgd, fx_usdhkd)
         if not math.isfinite(nav_disp):
             continue  # FX overflow / non-finite conversion — drop this sleeve
