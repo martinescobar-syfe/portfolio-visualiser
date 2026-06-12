@@ -34,18 +34,18 @@ def _prime_reference_data():
 
 def test_single_income_product_uses_t12m() -> None:
     r = get_weighted_yield({"Income Preserve": 100_000}, display_currency="SGD")
-    assert r["weighted_yield_pct"] == pytest.approx(5.6, abs=0.02)
+    assert r["weighted_yield_pct"] == pytest.approx(5.53, abs=0.02)
     assert r["coverage_pct"] == pytest.approx(1.0)
     assert r["breakdown"][0]["yield_source"] == "T12M"
 
 
 def test_weighted_average_across_two_sleeves() -> None:
-    # 210k @ 5.6% + 90k @ 1.56% over 300k = 4.388%
+    # 210k @ 5.53% + 90k @ 1.56% over 300k = 4.339%
     r = get_weighted_yield(
         {"Income Preserve": 210_000, "Cash SGD flexi": 90_000}, display_currency="SGD"
     )
-    assert r["weighted_yield_pct"] == pytest.approx(4.388, abs=0.02)
-    assert r["annual_income"] == pytest.approx(210_000 * 0.056 + 90_000 * 0.0156, rel=1e-4)
+    assert r["weighted_yield_pct"] == pytest.approx(4.339, abs=0.02)
+    assert r["annual_income"] == pytest.approx(210_000 * 0.0553 + 90_000 * 0.0156, rel=1e-4)
     assert r["total_nav"] == pytest.approx(300_000)
 
 
@@ -63,8 +63,8 @@ def test_base_currencies_make_multicurrency_exact() -> None:
     r = get_weighted_yield(nav, base_currencies=ccy, display_currency="USD", usdsgd=1.345)
     expected_total = 1_850_000 + 1_300_000 / 1.345 + 1_050_000 / 1.345
     assert r["total_nav"] == pytest.approx(expected_total, rel=1e-6)
-    # Only Income Enhance yields (5.8% T12M); Equity Alpha / Cash guaranteed are 0.
-    expected_yld = (1_300_000 / 1.345 * 0.058) / expected_total * 100
+    # Only Income Enhance yields (5.81% T12M); Equity Alpha / Cash guaranteed are 0.
+    expected_yld = (1_300_000 / 1.345 * 0.0581) / expected_total * 100
     assert r["weighted_yield_pct"] == pytest.approx(expected_yld, rel=1e-3)
 
 
@@ -82,7 +82,7 @@ def test_base_currency_overrides_unreliable_name_inference() -> None:
 def test_yield_preference_switches_source() -> None:
     t12 = get_weighted_yield({"Income Enhance": 100_000}, yield_preference="T12M")
     ytm = get_weighted_yield({"Income Enhance": 100_000}, yield_preference="YTM")
-    assert t12["weighted_yield_pct"] == pytest.approx(5.8, abs=0.02)
+    assert t12["weighted_yield_pct"] == pytest.approx(5.81, abs=0.02)
     assert ytm["weighted_yield_pct"] == pytest.approx(7.18, abs=0.02)
 
 
