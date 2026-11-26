@@ -36,6 +36,7 @@ portfolio-visualiser/
 │   ├── Builder.py               # Portfolio builder + backtester (~3,094 lines)
 │   └── Client_PV.py             # Client-level dashboard + goal planner
 ├── utils/                       # Flat module layer (no __init__.py)
+│   ├── app_secrets.py           # get_secret / require_secret (st.secrets → env)
 │   ├── data_loader.py           # Excel ingest + yfinance/Bloomberg returns
 │   ├── exposure.py              # Sector/country/asset-class aggregation, CUSTOM expansion
 │   ├── diversification_score.py # 0–10 sub-scores + composite (with LLM insight inputs)
@@ -120,7 +121,7 @@ load_static_data → base settings (dates, currency, benchmarks)
 
 ### 3.2 Portfolio Builder (`pages/Builder.py`)
 
-**Purpose.** Power-user workflow for assembling, backtesting, and analysing ETF portfolios. Sidebar-gated by password (`algo1`).
+**Purpose.** Power-user workflow for assembling, backtesting, and analysing ETF portfolios. Sidebar-gated by the `BUILDER_PASSWORD` secret (page stays locked if it is unset).
 
 **The page is split into numbered sections that map directly to the UI headers:**
 
@@ -149,7 +150,7 @@ load_static_data → base settings (dates, currency, benchmarks)
 | Add a new Analysis Results tab | 1319–1497 |
 | Add an Excel sheet | 828–1255 (`create_builder_excel`) + 2824–3082 (export prep) |
 | Default universe / constraints | 97–99, 205, 363–365 |
-| Password gate | line 41 (`algo1`) |
+| Password gate | top of file, reads `BUILDER_PASSWORD` via `utils.app_secrets.get_secret` |
 
 **Session-state primary key:** `st.session_state.builder_portfolio['results']` holds optimised weights, backtest perf, and ticker list.
 
@@ -213,7 +214,7 @@ Loaded by `pages/Builder.py::load_ff_data()` (cached) and by `utils/ui_functions
 
 ### 4.3 Live client data — Metabase
 
-`utils/metabase_helper.py` calls saved cards on `https://metabase.internal.syfe.com` (Syfe VPN required). API key is **hardcoded** in the file — rotate via secrets when refactoring.
+`utils/metabase_helper.py` calls saved cards on `https://metabase.internal.syfe.com` (Syfe VPN required). API key is read at call time from the `METABASE_API_KEY` secret (`utils/app_secrets.py`).
 
 | Card | Template var | Purpose |
 |---|---|---|
@@ -225,7 +226,7 @@ Consumers: `pages/Client_PV.py` (Metabase Lookup tab) and `utils/ui_functions.py
 
 ### 4.4 LLM — Gemini (`utils/llm_helper.py`)
 
-`google.generativeai` with API key passed in by the caller (typically a Streamlit secret or env var). Models are tried in fallback order (typical chain: `gemini-2.5-pro` → `2.5-flash` → `2.0-flash` → `1.5-flash`). Used for:
+`google.generativeai` with the `GEMINI_API_KEY` secret (read via `utils.app_secrets.get_secret`, passed in to the helper functions). Models are tried in fallback order (typical chain: `gemini-2.5-pro` → `2.5-flash` → `2.0-flash` → `1.5-flash`). Used for:
 
 - Portfolio recommendations (`get_gemini_recommendation`, returns markdown tables that `parse_recommendation_table` converts via `product_map`).
 - Plain-English narrative on a deterministic `risk_engine` allocation.
@@ -233,11 +234,11 @@ Consumers: `pages/Client_PV.py` (Metabase Lookup tab) and `utils/ui_functions.py
 - Portfolio appropriateness check vs client risk profile.
 - Brokerage-PDF parsing (`utils/pdf_helper.py`, multi-pass via `ThreadPoolExecutor`).
 
-**The `GEMINI_API_KEY` is hardcoded** at the top of `Advisory_Tool.py` and `pages/Client_PV.py`. Same with the Metabase key in `metabase_helper.py`. Treat as a known security debt; move to `st.secrets` when convenient.
+**All credentials come from `utils/app_secrets.py`** (`get_secret` / `require_secret`: `st.secrets` first, then environment variables). Nothing sensitive is hardcoded. See `.streamlit/secrets.toml.example` for the full list: `GEMINI_API_KEY`, `METABASE_API_KEY`, `BUILDER_PASSWORD`, optional `SUPABASE_URL` / `SUPABASE_KEY`. Keys that were hardcoded before this change remain in git history and must be treated as compromised — rotate them.
 
 ### 4.5 Saved Builder portfolios — Supabase + local JSON
 
-`utils/portfolio_storage.py`. Primary: Supabase `portfolios` table (`name`, `data` JSON). Fallback: `Data/saved_portfolios.json`. Defaults for Supabase URL / publishable key are hardcoded; `st.secrets` overrides them when present.
+`utils/portfolio_storage.py`. Primary: Supabase `portfolios` table (`name`, `data` JSON). Fallback: `Data/saved_portfolios.json`. Reads `SUPABASE_URL` / `SUPABASE_KEY` via `get_secret`; with neither set it uses the local JSON fallback.
 
 ### 4.6 yfinance
 
@@ -297,7 +298,7 @@ The sidebar will show all three pages once any of them is the entry point becaus
 **Dependencies you'll likely hit issues with:**
 
 - `Inv_Data_Hardcoded.xlsx` must exist under `Data/` (or wherever `get_data_path()` resolves).
-- `GEMINI_API_KEY` is needed for any LLM-powered feature (recommender, insights, PDF parsing). Currently hardcoded in `Advisory_Tool.py` and `Client_PV.py`.
+- `GEMINI_API_KEY` is needed for any LLM-powered feature (recommender, insights, PDF parsing). Provide it via `.streamlit/secrets.toml` (copy from `secrets.toml.example`), the hosting platform's secrets, or the environment.
 - Metabase lookup requires Syfe VPN.
 - Supabase URL / key for cloud-stored Builder portfolios (otherwise fallback to local JSON).
 
@@ -374,10 +375,7 @@ These are enforced by tests and load-bearing for cross-section consistency. Brea
 
 These are real but tolerated for now. Heads up before you commit changes that touch them.
 
-1. **Hardcoded secrets**:
-   - `GEMINI_API_KEY` in `Advisory_Tool.py` and `pages/Client_PV.py`.
-   - Metabase API key in `utils/metabase_helper.py`.
-   - Default Supabase URL + publishable key in `utils/portfolio_storage.py`.
+1. **Leaked historical secrets**: code now reads secrets from config (§4.4), but the old Gemini key, Metabase key, Supabase key and Builder password `algo1` are still in git history from before the move. Rotate them; do not rely on them. History was not rewritten.
 2. **Network requirements**:
    - Metabase: Syfe VPN.
    - Gemini, yfinance, Supabase, Ken French factor download: open internet.
@@ -402,7 +400,7 @@ These are real but tolerated for now. Heads up before you commit changes that to
 | Reword a diversification insight | `utils/llm_helper.generate_diversification_insights` (prompt) **and** `insight_generation_instructions.md` (human-readable spec). |
 | Add a new section to the PDF report | `utils/pdf_gen.generate_report_content` (Advisory Tool flow) or `utils/portfolio_report_generator.PortfolioReportGenerator.generate_report` (Portfolio Summary). |
 | Tweak Syfe brand colours | `styles/syfe_colors.py`. Pages that hardcode hex (e.g. `Advisory_Tool.py` CSS) will need manual updates too. |
-| Move a hardcoded secret to `st.secrets` | `Advisory_Tool.py`, `pages/Client_PV.py`, `utils/metabase_helper.py`, `utils/portfolio_storage.py`. |
+| Add or change a secret | Read it with `utils.app_secrets.get_secret` / `require_secret` (never hardcode), and add the name to `.streamlit/secrets.toml.example`. |
 
 ---
 

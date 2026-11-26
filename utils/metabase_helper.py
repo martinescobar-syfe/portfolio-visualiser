@@ -3,20 +3,24 @@ import requests
 import streamlit as st
 import pandas as pd
 
-METABASE_URL = "https://metabase.internal.syfe.com"
-API_KEY = "mb_5fsl6dNzjFaylX86lm9rsJnEHc+0dVDIrP+e+tYjetA="
+from utils.app_secrets import require_secret
 
-HEADERS = {
-    "x-api-key": API_KEY,
-    "Content-Type": "application/json"
-}
+METABASE_URL = "https://metabase.internal.syfe.com"
+
+
+def _headers():
+    """Request headers; the API key is read at call time from secrets/env."""
+    return {
+        "x-api-key": require_secret("METABASE_API_KEY"),
+        "Content-Type": "application/json",
+    }
 
 def run_card(card_id, params=None):
     """run a metabase card/query with optional params"""
     try:
         url = f"{METABASE_URL}/api/card/{card_id}/query"
         data = {"parameters": params} if params else {}
-        response = requests.post(url, headers=HEADERS, json=data, timeout=15)
+        response = requests.post(url, headers=_headers(), json=data, timeout=15)
         
         if response.status_code in [200, 202]:
             result = response.json()

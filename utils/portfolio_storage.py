@@ -3,15 +3,13 @@ import os
 import streamlit as st
 from supabase import create_client, Client
 
-# supabase config for shared portfolio storage
-DEFAULT_SUPABASE_URL = "https://wjuvipxkslzkanvisbuh.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_publishable_ABW9XYxT6MWkuLxMqwkxeA_Uy8R1E6a"
+from utils.app_secrets import get_secret
 
 def get_supabase_client() -> Client:
-    """connect to supabase, falling back to defaults if no secrets configured"""
+    """connect to supabase; returns None (local JSON fallback) if SUPABASE_URL/KEY are not configured"""
     try:
-        url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", DEFAULT_SUPABASE_URL))
-        key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", DEFAULT_SUPABASE_KEY))
+        url = get_secret("SUPABASE_URL")
+        key = get_secret("SUPABASE_KEY")
         
         if not url or not key:
             return None

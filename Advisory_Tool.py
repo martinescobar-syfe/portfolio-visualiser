@@ -33,6 +33,7 @@ import os
 # module that owns its own widgets, caching, and aggregation. This page
 # only stitches them together in the right order.
 from utils.data_loader import load_static_data, get_data_path, download_data
+from utils.app_secrets import get_secret
 from utils.ui_functions import (
     render_client_upload, 
     render_client_pdf_upload,
@@ -165,7 +166,7 @@ with st.sidebar:
 
 # ── Global config shared by all downstream modules ───────────────────
 # API key for Gemini-powered insights (recommender, PDF parser, etc.).
-GEMINI_API_KEY = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 
 # Master ticker universe pulled from the security list — used as the
 # selectable option set for every multiselect in the app.

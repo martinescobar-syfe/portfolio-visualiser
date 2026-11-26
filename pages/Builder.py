@@ -5,6 +5,7 @@ import numpy as np
 from datetime import date, timedelta
 import sys
 import os
+import hmac
 
 # local imports
 from utils.data_loader import load_static_data, get_data_path, download_data
@@ -27,6 +28,7 @@ from styles.syfe_colors import PALETTE
 import statsmodels.api as sm
 from statsmodels.regression.rolling import RollingOLS
 from utils.portfolio_storage import save_portfolio, load_portfolios, delete_portfolio
+from utils.app_secrets import get_secret
 
 # page config
 st.set_page_config(
@@ -37,8 +39,12 @@ st.set_page_config(
 )
 
 # password gate
+_builder_pwd = get_secret("BUILDER_PASSWORD")
+if not _builder_pwd:
+    st.error("Builder is locked: BUILDER_PASSWORD is not configured (see .streamlit/secrets.toml.example).")
+    st.stop()
 pwd = st.sidebar.text_input("Access Password", type="password")
-if pwd != "algo1":
+if not hmac.compare_digest(pwd.encode(), _builder_pwd.encode()):
     st.warning("Please enter the correct password to access the Builder.")
     st.stop()
 

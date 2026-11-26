@@ -63,6 +63,7 @@ except Exception:
             return
 
 from utils.data_loader import load_static_data, get_data_path
+from utils.app_secrets import get_secret
 from utils.ui_functions import (
     get_portfolio_objective,
     _get_asset_brief, _get_geo_brief, _get_sector_brief, _get_conc_brief,
@@ -119,7 +120,7 @@ h1,h2,h3 {color:#172B4D;font-weight:700;}
 
 # ── constants ────────────────────────────────────────────────
 # Gemini API key consumed by the diversification-insights LLM call.
-API_KEY = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
+API_KEY = get_secret("GEMINI_API_KEY")
 
 # Raw client-data feeds use snake_case enum-style codes for portfolio
 # type (e.g. ``GLOBAL_EQUITY_100``, ``CORE_GROWTH``, ``CASH_PLUS_SGD``)

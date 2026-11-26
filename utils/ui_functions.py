@@ -19,6 +19,7 @@ from styles.syfe_colors import PALETTE
 import os
 from utils.llm_helper import get_gemini_recommendation, parse_recommendation_table, analyze_portfolio_appropriateness
 from utils.metabase_helper import get_client_info_by_id, get_active_portfolios
+from utils.app_secrets import get_secret
 import requests
 import zipfile
 import io
@@ -138,7 +139,7 @@ def _render_diversification_score(client_weights, df_asset_class, df_sector, df_
     if insight_key not in st.session_state:
         with st.spinner("Generating AI insights..."):
             from utils.llm_helper import generate_diversification_insights
-            api_key = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
+            api_key = get_secret("GEMINI_API_KEY")
             st.session_state[insight_key] = generate_diversification_insights(api_key, result, client_weights)
 
     if st.session_state.get(insight_key):
@@ -460,7 +461,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                                     holdings_cols.append(col)
                             holdings_list = fetched_df[holdings_cols].to_dict('records') if holdings_cols else []
                             ai_analysis = analyze_portfolio_appropriateness(
-                                "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0", # hardcoded key
+                                get_secret("GEMINI_API_KEY"),
                                 st.session_state['client_profile'],
                                 holdings_list
                             )
@@ -983,7 +984,7 @@ def render_client_upload(df_asset_class, df_sector, df_country, df_underlying, k
                     if insight_key not in st.session_state:
                         with st.spinner("Generating insights..."):
                             from utils.llm_helper import generate_diversification_insights
-                            api_key = "AIzaSyCZThunnMaO5Ni6fJDLnWsN24JX0yCN3p0"
+                            api_key = get_secret("GEMINI_API_KEY")
                             st.session_state[insight_key] = generate_diversification_insights(api_key, div_result, div_weights)
 
                     if st.session_state.get(insight_key):
