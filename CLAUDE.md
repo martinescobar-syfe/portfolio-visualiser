@@ -23,7 +23,7 @@ The app is **three Streamlit pages** sharing a flat `utils/` layer, one Excel-ba
 | **Portfolio Builder** (password-gated) | `pages/Builder.py` | Power users constructing & backtesting custom portfolios |
 | **Client Portfolio Visualizer** | `pages/Client_PV.py` | Advisors analysing an existing client's book + planning goals |
 
-Run locally: `streamlit run Advisory_Tool.py` from inside `portfolio-visualiser/`.
+Run locally: `streamlit run Advisory_Tool.py` from inside `portfolio-visualiser/`. To host it for the team, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
@@ -82,7 +82,9 @@ portfolio-visualiser/
 ├── .mcp.json                    # Project-scoped MCP registration (the syfe-exposure server)
 ├── pytest.ini
 ├── requirements.txt
-└── requirements-mcp.txt         # Extra deps to run the MCP server (fastmcp + base stack)
+├── requirements-mcp.txt         # Extra deps to run the MCP server (fastmcp + base stack)
+├── Dockerfile / .dockerignore   # Container image for internal hosting (not yet build-tested)
+└── DEPLOYMENT.md                # Hosting guide: secrets, network, access control, smoke test
 ```
 
 ---
